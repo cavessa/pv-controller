@@ -8,10 +8,12 @@ let phaseLogs = [];
 let lastSolaxData = null;
 
 // ── Verlauf sub-tab state ─────────────────────────────
-let _vsec     = "tag";
-let _vTagDate = new Date().toISOString().slice(0, 10);
-let _vMonth   = new Date().toISOString().slice(0, 7);
-let _vYear    = new Date().getFullYear();
+let _vsec        = "tag";
+let _vTagDate    = new Date().toISOString().slice(0, 10);
+let _vMonth      = new Date().toISOString().slice(0, 7);
+let _vYear       = new Date().getFullYear();
+let _vStringsDate = new Date().toISOString().slice(0, 10);
+let _cachedNormalRatio = null;
 
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -788,10 +790,11 @@ function showVerlaufSection(name) {
 }
 
 function _loadCurrentVerlauf() {
-  if (_vsec === "tag")   loadVerlaufTag(_vTagDate);
-  if (_vsec === "woche") loadVerlaufWoche();
-  if (_vsec === "monat") loadVerlaufMonat(_vMonth);
-  if (_vsec === "jahr")  loadVerlaufJahr(_vYear);
+  if (_vsec === "tag")     loadVerlaufTag(_vTagDate);
+  if (_vsec === "woche")   loadVerlaufWoche();
+  if (_vsec === "monat")   loadVerlaufMonat(_vMonth);
+  if (_vsec === "jahr")    loadVerlaufJahr(_vYear);
+  if (_vsec === "strings") loadVerlaufStrings(_vStringsDate);
 }
 
 async function loadVerlauf() {
@@ -925,6 +928,175 @@ function renderYearChart(entries) {
   wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">
     <g>${yElems}</g>${bars}
   </svg>`;
+}
+
+// ── Strings sub-tab ──────────────────────────────────────────────────────────
+
+async function loadVerlaufStrings(dateStr) {
+  _vStringsDate = dateStr;
+  const labelEl = document.getElementById("verlauf-strings-label");
+  if (labelEl) labelEl.textContent = dateStr;
+  const nextBtn = document.getElementById("verlauf-strings-next");
+  const today = new Date().toISOString().slice(0, 10);
+  if (nextBtn) nextBtn.disabled = (_vStringsDate >= today);
+  try {
+    const [dayData, ratioData] = await Promise.all([
+      api(`/api/history/hourly?for_date=${dateStr}`),
+      api("/api/strings/ratio?days=30"),
+    ]);
+    _cachedNormalRatio = ratioData.normal_ratio;
+    renderStringsDayChart(dayData.entries || []);
+    renderStringRatioChart(ratioData.entries || [], ratioData.normal_ratio);
+    const alertData = await api("/api/strings/alerts?days=30");
+    renderStringAlertsList(alertData.entries || []);
+  } catch (e) {
+    showError("Strings-Verlauf konnte nicht geladen werden: " + e.message);
+  }
+}
+
+function renderStringsDayChart(entries) {
+  const wrap = document.getElementById("chart-strings-day-wrap");
+  if (!wrap) return;
+  if (!entries || !entries.length) {
+    wrap.innerHTML = '<div class="chart-empty">Noch keine Daten für diesen Tag.</div>';
+    return;
+  }
+  const VW = 460, VH = 100;
+  const pad = { t: 12, r: 8, b: 22, l: 40 };
+  const cw = VW - pad.l - pad.r;
+  const ch = VH - pad.t - pad.b;
+  const pts = entries.map(e => ({
+    h: new Date(e.timestamp).getHours(),
+    s1: e.str1_w || 0,
+    s2: e.str2_w || 0,
+  }));
+  const maxV = Math.max(...pts.flatMap(p => [p.s1, p.s2]), 1);
+  const sx = h => pad.l + (h / 23) * cw;
+  const sy = v => pad.t + ch * (1 - v / maxV);
+
+  let yElems = "";
+  const yStep = niceStep(maxV, 3);
+  for (let yv = 0; yv <= maxV + 1; yv += yStep) {
+    const ypx = sy(yv).toFixed(1);
+    yElems += `<line x1="${pad.l}" y1="${ypx}" x2="${pad.l + cw}" y2="${ypx}" class="grid-line"/>`;
+    yElems += `<text x="${pad.l - 4}" y="${ypx}" text-anchor="end" dominant-baseline="middle">${(yv / 1000).toFixed(1)}</text>`;
+  }
+
+  const mkPath = (key, color) => {
+    if (!pts.length) return "";
+    const d = pts.map((p, i) =>
+      `${i === 0 ? "M" : "L"}${sx(p.h).toFixed(1)},${sy(p[key]).toFixed(1)}`
+    ).join(" ");
+    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`;
+  };
+
+  const xLabels = [0, 6, 12, 18, 23].map(h =>
+    `<text x="${sx(h).toFixed(1)}" y="${VH - 2}" text-anchor="middle">${String(h).padStart(2, "0")}</text>`
+  ).join("");
+
+  wrap.innerHTML = `<svg viewBox="0 0 ${VW} ${VH}" class="spark-svg chart-svg">
+    <g class="grid-g">${yElems}</g>
+    ${mkPath("s1", "var(--c-pv)")}
+    ${mkPath("s2", "var(--c-str2)")}
+    <g class="axis-g">${xLabels}</g>
+  </svg>`;
+}
+
+function renderStringRatioChart(entries, normalRatio) {
+  const wrap = document.getElementById("chart-strings-ratio-wrap");
+  if (!wrap) return;
+  if (!entries || !entries.length) {
+    wrap.innerHTML = '<div class="chart-empty">Noch keine Verhältnis-Daten vorhanden.</div>';
+    return;
+  }
+  const VW = 460, VH = 100;
+  const pad = { t: 12, r: 8, b: 22, l: 36 };
+  const cw = VW - pad.l - pad.r;
+  const ch = VH - pad.t - pad.b;
+  const n = entries.length;
+  const allRatios = entries.map(e => e.avg).filter(v => v !== null);
+  const minR = Math.min(...allRatios, normalRatio != null ? normalRatio * 0.8 : Infinity);
+  const maxR = Math.max(...allRatios, normalRatio != null ? normalRatio * 1.2 : 0, 0.1);
+  const rRange = Math.max(maxR - minR, 0.3);
+  const sy = v => pad.t + ch * (1 - (v - minR) / rRange);
+  const sx = i => pad.l + (n > 1 ? (i / (n - 1)) * cw : cw / 2);
+
+  let bandElems = "";
+  if (normalRatio != null) {
+    const bandTop = sy(normalRatio * 1.15).toFixed(1);
+    const bandBot = sy(normalRatio * 0.85).toFixed(1);
+    bandElems = `<rect x="${pad.l}" y="${bandTop}" width="${cw}" height="${(parseFloat(bandBot) - parseFloat(bandTop)).toFixed(1)}" fill="rgba(255,255,255,0.07)"/>`;
+    const ny = sy(normalRatio).toFixed(1);
+    bandElems += `<line x1="${pad.l}" y1="${ny}" x2="${pad.l + cw}" y2="${ny}" stroke="rgba(255,255,255,0.2)" stroke-width="1" stroke-dasharray="4,3"/>`;
+  }
+
+  let line = "";
+  if (n >= 2) {
+    const segs = entries.map((e, i) => e.avg !== null
+      ? `${i === 0 ? "M" : "L"}${sx(i).toFixed(1)},${sy(e.avg).toFixed(1)}`
+      : null
+    ).filter(Boolean);
+    if (segs.length) {
+      line = `<path d="${segs.join(" ")}" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round"/>`;
+    }
+  }
+
+  let anomalyDots = "";
+  if (normalRatio != null) {
+    entries.forEach((e, i) => {
+      if (e.avg === null) return;
+      if (Math.abs(e.avg - normalRatio) / normalRatio * 100 > 30) {
+        anomalyDots += `<circle cx="${sx(i).toFixed(1)}" cy="${sy(e.avg).toFixed(1)}" r="3" fill="#f87171" opacity="0.9"/>`;
+      }
+    });
+  }
+
+  const step = Math.max(1, Math.floor(n / 6));
+  const xLabels = entries.map((e, i) => {
+    if (i % step !== 0 && i !== n - 1) return "";
+    return `<text x="${sx(i).toFixed(1)}" y="${VH - 2}" text-anchor="middle">${(e.day || "").slice(5)}</text>`;
+  }).join("");
+
+  wrap.innerHTML = `<svg viewBox="0 0 ${VW} ${VH}" class="spark-svg chart-svg">
+    ${bandElems}
+    ${line}
+    ${anomalyDots}
+    <g class="axis-g">${xLabels}</g>
+  </svg>`;
+}
+
+function renderStringAlertsList(alerts) {
+  const el = document.getElementById("strings-alerts-list");
+  if (!el) return;
+  if (!alerts.length) {
+    el.innerHTML = '<div class="chart-empty">Keine Anomalie-Meldungen in den letzten 30 Tagen.</div>';
+    return;
+  }
+  el.innerHTML = alerts.map(a => {
+    const cls = a.level === "error" ? "string-alert error" : "string-alert warn";
+    const ts = (a.ts || "").replace("T", " ").slice(0, 16);
+    const ratioStr = a.ratio != null ? ` · Ratio: ${(+a.ratio).toFixed(2)}` : "";
+    return `<div class="${cls}" style="margin-bottom:8px;">
+      <div style="font-size:10px;color:var(--text-muted);margin-bottom:3px;">${ts}</div>
+      ${a.message}
+      <div style="font-size:10px;color:var(--text-muted);margin-top:3px;">STR1: ${a.str1_w ?? "–"} W · STR2: ${a.str2_w ?? "–"} W${ratioStr}</div>
+    </div>`;
+  }).join("");
+}
+
+async function _checkLiveStringAlert() {
+  const el = document.getElementById("string-dash-alert");
+  if (!el) return;
+  try {
+    const data = await api("/api/strings/alerts?days=1");
+    const active = (data.entries || []);
+    if (!active.length) { el.className = "string-dash-alert hidden"; return; }
+    const top = active[0];
+    el.className = `string-dash-alert ${top.level === "error" ? "error" : "warn"}`;
+    el.textContent = "⚡ " + top.message;
+  } catch {
+    // ignore — non-critical
+  }
 }
 
 function fmtPhaseAction(a) {
@@ -1269,6 +1441,7 @@ async function refreshStatus() {
       checkCascadeAlerts(cascadeStatus);
     }
     if (activeTab === "prioritaeten") loadCascade();
+    _checkLiveStringAlert();
   } catch (e) {
     showError("Status-Abfrage fehlgeschlagen: " + e.message);
   }
@@ -1521,6 +1694,15 @@ function boot() {
   });
   document.getElementById("verlauf-jahr-next")?.addEventListener("click", () => {
     if (_vYear < new Date().getFullYear()) loadVerlaufJahr(_vYear + 1);
+  });
+
+  // Strings navigation
+  document.getElementById("verlauf-strings-prev")?.addEventListener("click", () => {
+    loadVerlaufStrings(_dateAddDays(_vStringsDate, -1));
+  });
+  document.getElementById("verlauf-strings-next")?.addEventListener("click", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    if (_vStringsDate < today) loadVerlaufStrings(_dateAddDays(_vStringsDate, 1));
   });
 
   refreshStatus();

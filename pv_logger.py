@@ -21,6 +21,10 @@ def maybe_log(result: ControllerResult) -> None:
     except Exception:
         log.exception("pv_logger: daily summary fehlgeschlagen")
     try:
+        _check_string_anomaly(result)
+    except Exception:
+        log.exception("pv_logger: string anomaly check fehlgeschlagen")
+    try:
         db.cleanup_old_hourly(90)
     except Exception:
         log.exception("pv_logger: cleanup fehlgeschlagen")
@@ -56,6 +60,44 @@ def _log_hourly(result: ControllerResult) -> None:
         heater_w=heater_w,
         wallbox_w=wallbox_w,
     )
+
+
+def _check_string_anomaly(result: ControllerResult) -> None:
+    import clients.solax_client as sc
+    raw = sc._cached_raw
+    if raw is None or len(raw) < 16:
+        return
+    r = result.readings
+    if r.pv_power_w is None or r.pv_power_w < 500:
+        return
+    str1_w = int(raw[14])
+    str2_w = int(raw[15])
+    if str1_w < 10 and str2_w > 200:
+        db.log_string_alert(
+            "error", "String 1 liefert 0 W während String 2 aktiv ist",
+            str1_w, str2_w, 0.0, db.get_normal_ratio(),
+        )
+        return
+    if str2_w < 10 and str1_w > 200:
+        db.log_string_alert(
+            "error", "String 2 liefert 0 W während String 1 aktiv ist",
+            str1_w, str2_w, None, db.get_normal_ratio(),
+        )
+        return
+    if str2_w < 50:
+        return
+    normal = db.get_normal_ratio()
+    if normal is None:
+        return
+    current_ratio = str1_w / str2_w
+    deviation = abs(current_ratio - normal) / normal * 100
+    if deviation > 30:
+        db.log_string_alert(
+            "warning",
+            f"String-Verhältnis weicht {deviation:.0f}% vom Normal ab "
+            f"(aktuell {current_ratio:.2f}, normal {normal:.2f})",
+            str1_w, str2_w, round(current_ratio, 3), normal,
+        )
 
 
 def _log_daily() -> None:

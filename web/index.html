@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=41">
+  <link rel="stylesheet" href="/static/styles.css?v=42">
 </head>
 <body>
   <div class="app-shell">
@@ -117,6 +117,7 @@
         <div class="card">
           <h2>PV Erzeugung</h2>
           <div class="pv-live-total" id="pv-live-total">– W</div>
+          <div id="string-dash-alert" class="string-dash-alert hidden"></div>
           <div id="pv-live-strings"></div>
           <div class="kv compact" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
             <div><span>Einspeisung / Bezug</span><b id="pv-live-feedin">–</b></div>
@@ -175,6 +176,7 @@
         <button class="verlauf-nav-btn" data-vsec="woche">Woche</button>
         <button class="verlauf-nav-btn" data-vsec="monat">Monat</button>
         <button class="verlauf-nav-btn" data-vsec="jahr">Jahr</button>
+        <button class="verlauf-nav-btn" data-vsec="strings">Strings</button>
       </div>
 
       <!-- ── Tag ── -->
@@ -269,6 +271,39 @@
         <div class="card">
           <h2>Jahresübersicht (monatlich)</h2>
           <div id="chart-year-wrap" class="temp-chart-wrap">
+            <div class="chart-empty">Lade…</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Strings ── -->
+      <div id="verlauf-strings" class="verlauf-section hidden">
+        <div class="verlauf-date-nav">
+          <button class="btn verlauf-btn-sm" id="verlauf-strings-prev">&#8249;</button>
+          <span id="verlauf-strings-label">–</span>
+          <button class="btn verlauf-btn-sm" id="verlauf-strings-next" disabled>&#8250;</button>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <h2>String-Leistung (täglich)</h2>
+            <div class="chart-legend-inline">
+              <span class="cl-str1-b">STR1</span>
+              <span class="cl-str2-b">STR2</span>
+            </div>
+          </div>
+          <div id="chart-strings-day-wrap" class="temp-chart-wrap">
+            <div class="chart-empty">Lade…</div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>String-Verhältnis (30 Tage)</h2>
+          <div id="chart-strings-ratio-wrap" class="temp-chart-wrap">
+            <div class="chart-empty">Lade…</div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Anomalie-Meldungen</h2>
+          <div id="strings-alerts-list">
             <div class="chart-empty">Lade…</div>
           </div>
         </div>
@@ -496,6 +531,6 @@
   </footer>
   </div>
 
-  <script src="/static/app.js?v=63" defer></script>
+  <script src="/static/app.js?v=64" defer></script>
 </body>
 </html>

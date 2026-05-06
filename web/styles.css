@@ -23,6 +23,8 @@
   --accent:   #5b8cff;
   --accent-2: #8af0c4;
 
+  --c-str2: #f5782a;
+
   --radius: 20px;
 }
 
@@ -754,6 +756,8 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 .cl-str1    { color: var(--c-pv);      background: rgba(251,191,36,0.1); }
 .cl-str2    { color: var(--accent);    background: rgba(91,140,255,0.1); }
 .cl-selfuse { color: var(--c-storage); background: rgba(167,139,250,0.1); }
+.cl-str1-b  { color: #e8a435;         background: rgba(232,164,53,0.1); }
+.cl-str2-b  { color: var(--c-str2);   background: rgba(245,120,42,0.12); }
 
 /* -------- String alert -------- */
 .string-alert {
@@ -768,6 +772,31 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
   color: var(--warn);
 }
 .string-alert.error {
+  border-color: rgba(248,113,113,0.4);
+  background: rgba(248,113,113,0.07);
+  color: var(--error);
+}
+
+/* -------- String dashboard alert -------- */
+.string-dash-alert {
+  display: none;
+  margin: 6px 0 2px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px solid var(--line);
+  background: var(--bg-3);
+}
+.string-dash-alert.hidden { display: none; }
+.string-dash-alert.warn {
+  display: block;
+  border-color: rgba(251,191,36,0.4);
+  background: rgba(251,191,36,0.07);
+  color: var(--warn);
+}
+.string-dash-alert.error {
+  display: block;
   border-color: rgba(248,113,113,0.4);
   background: rgba(248,113,113,0.07);
   color: var(--error);

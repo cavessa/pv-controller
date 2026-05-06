@@ -626,6 +626,26 @@ def api_yearly_history(year: int, response: Response) -> dict[str, Any]:
     return {"year": year, "entries": get_monthly_totals(year)}
 
 
+@app.get("/api/strings/ratio")
+def api_strings_ratio(
+    response: Response,
+    days: int = Query(default=30, ge=1, le=365),
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    from db import get_normal_ratio, get_string_ratio_history
+    return {"normal_ratio": get_normal_ratio(), "entries": get_string_ratio_history(days)}
+
+
+@app.get("/api/strings/alerts")
+def api_strings_alerts(
+    response: Response,
+    days: int = Query(default=30, ge=1, le=365),
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    from db import get_string_alerts
+    return {"entries": get_string_alerts(days)}
+
+
 @app.get("/api/logs")
 def api_logs(lines: int = Query(default=200, ge=1, le=1000)) -> dict[str, Any]:
     cfg = _load_cfg()

@@ -80,6 +80,18 @@ def init_pv_logging_tables() -> None:
             except sqlite3.OperationalError:
                 pass
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS string_alerts (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp    TEXT NOT NULL,
+                level        TEXT NOT NULL,
+                message      TEXT NOT NULL,
+                str1_w       INTEGER,
+                str2_w       INTEGER,
+                ratio        REAL,
+                normal_ratio REAL
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS pv_daily_log (
                 date            TEXT PRIMARY KEY,
                 pv_kwh          REAL,
@@ -233,6 +245,86 @@ def cleanup_old_hourly(keep_days: int = 90) -> None:
             "DELETE FROM pv_hourly_log WHERE timestamp < date('now', ?)",
             (f"-{keep_days} days",),
         )
+
+
+def get_normal_ratio() -> Optional[float]:
+    """Berechnet das Normalverhältnis STR1/STR2 aus den ersten 336 Taglichtstunden."""
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            """SELECT AVG(string_ratio) FROM (
+               SELECT string_ratio FROM pv_hourly_log
+               WHERE pv_w > 500
+               AND string_ratio > 0.5 AND string_ratio < 3.0
+               ORDER BY timestamp ASC LIMIT 336
+            )"""
+        ).fetchone()
+    return round(row[0], 3) if row and row[0] is not None else None
+
+
+def get_string_ratio_history(days: int = 30) -> list[dict]:
+    """Tägliche Durchschnitts-Ratios der letzten N Tage (nur Taglichtstunden)."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """SELECT date(timestamp) as day,
+                      AVG(string_ratio) as avg_ratio,
+                      MIN(string_ratio) as min_ratio,
+                      MAX(string_ratio) as max_ratio,
+                      COUNT(*) as samples
+               FROM pv_hourly_log
+               WHERE pv_w > 500
+               AND string_ratio > 0.5 AND string_ratio < 3.0
+               AND timestamp >= date('now', ?)
+               GROUP BY day ORDER BY day ASC""",
+            (f"-{days} days",),
+        ).fetchall()
+    return [
+        {"day": r[0],
+         "avg": round(r[1], 3) if r[1] is not None else None,
+         "min": round(r[2], 3) if r[2] is not None else None,
+         "max": round(r[3], 3) if r[3] is not None else None,
+         "samples": r[4]}
+        for r in rows
+    ]
+
+
+def log_string_alert(
+    level: str, message: str,
+    str1_w: int, str2_w: int,
+    ratio: Optional[float], normal_ratio: Optional[float],
+) -> None:
+    """Schreibt einen String-Alert; max. einer pro Level pro 55 Minuten."""
+    ts = datetime.now().isoformat(timespec="seconds")
+    with sqlite3.connect(DB_PATH) as conn:
+        existing = conn.execute(
+            """SELECT id FROM string_alerts
+               WHERE level = ? AND timestamp >= datetime('now', '-55 minutes')""",
+            (level,),
+        ).fetchone()
+        if existing:
+            return
+        conn.execute(
+            """INSERT INTO string_alerts
+               (timestamp, level, message, str1_w, str2_w, ratio, normal_ratio)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (ts, level, message, str1_w, str2_w, ratio, normal_ratio),
+        )
+
+
+def get_string_alerts(days: int = 30) -> list[dict]:
+    """Gibt String-Alerts der letzten N Tage zurück (neueste zuerst)."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """SELECT id, timestamp, level, message, str1_w, str2_w, ratio, normal_ratio
+               FROM string_alerts
+               WHERE timestamp >= datetime('now', ?)
+               ORDER BY timestamp DESC LIMIT 200""",
+            (f"-{days} days",),
+        ).fetchall()
+    return [
+        {"id": r[0], "ts": r[1], "level": r[2], "message": r[3],
+         "str1_w": r[4], "str2_w": r[5], "ratio": r[6], "normal_ratio": r[7]}
+        for r in rows
+    ]
 
 
 init_db()
