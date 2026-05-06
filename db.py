@@ -68,6 +68,17 @@ def init_pv_logging_tables() -> None:
                 string_ratio    REAL
             )
         """)
+        for col, definition in (
+            ("storage_temp_c", "REAL"),
+            ("heater_w",       "INTEGER"),
+            ("wallbox_w",      "INTEGER"),
+        ):
+            try:
+                conn.execute(
+                    f"ALTER TABLE pv_hourly_log ADD COLUMN {col} {definition}"
+                )
+            except sqlite3.OperationalError:
+                pass
         conn.execute("""
             CREATE TABLE IF NOT EXISTS pv_daily_log (
                 date            TEXT PRIMARY KEY,
@@ -91,6 +102,9 @@ def log_hourly_snapshot(
     str1_w: int, str2_w: int,
     str1_v: float, str1_a: float,
     str2_v: float, str2_a: float,
+    storage_temp_c: Optional[float] = None,
+    heater_w: Optional[int] = None,
+    wallbox_w: Optional[int] = None,
 ) -> None:
     ratio = round(str1_w / str2_w, 3) if str2_w > 0 else None
     ts = datetime.now().strftime("%Y-%m-%d %H:00")
@@ -98,10 +112,12 @@ def log_hourly_snapshot(
         conn.execute(
             """INSERT OR REPLACE INTO pv_hourly_log
                (timestamp, pv_w, feed_in_w, consumption_w,
-                str1_w, str2_w, str1_v, str1_a, str2_v, str2_a, string_ratio)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                str1_w, str2_w, str1_v, str1_a, str2_v, str2_a, string_ratio,
+                storage_temp_c, heater_w, wallbox_w)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (ts, pv_w, feed_in_w, consumption_w,
-             str1_w, str2_w, str1_v, str1_a, str2_v, str2_a, ratio),
+             str1_w, str2_w, str1_v, str1_a, str2_v, str2_a, ratio,
+             storage_temp_c, heater_w, wallbox_w),
         )
 
 
@@ -132,7 +148,8 @@ def get_hourly_data(date_str: str) -> list[dict]:
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute(
             """SELECT timestamp, pv_w, feed_in_w, consumption_w,
-                      str1_w, str2_w, str1_v, str1_a, str2_v, str2_a, string_ratio
+                      str1_w, str2_w, str1_v, str1_a, str2_v, str2_a, string_ratio,
+                      storage_temp_c, heater_w, wallbox_w
                FROM pv_hourly_log WHERE timestamp LIKE ?
                ORDER BY timestamp ASC""",
             (date_str + "%",),
@@ -140,7 +157,8 @@ def get_hourly_data(date_str: str) -> list[dict]:
     return [
         {"ts": r[0], "pv_w": r[1], "feed_in_w": r[2], "consumption_w": r[3],
          "str1_w": r[4], "str2_w": r[5], "str1_v": r[6], "str1_a": r[7],
-         "str2_v": r[8], "str2_a": r[9], "string_ratio": r[10]}
+         "str2_v": r[8], "str2_a": r[9], "string_ratio": r[10],
+         "storage_temp_c": r[11], "heater_w": r[12], "wallbox_w": r[13]}
         for r in rows
     ]
 
@@ -163,6 +181,58 @@ def get_daily_history(days: int = 30) -> list[dict]:
     ]
     result.reverse()
     return result
+
+
+def get_daily_for_month(year_month: str) -> list[dict]:
+    """Alle Tages-Einträge für einen Monat (Format YYYY-MM)."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """SELECT date, pv_kwh, feed_out_kwh, feed_in_kwh,
+                      selfuse_kwh, selfuse_pct, autarky_pct
+               FROM pv_daily_log WHERE date LIKE ?
+               ORDER BY date ASC""",
+            (year_month + "%",),
+        ).fetchall()
+    return [
+        {"date": r[0], "pv_kwh": r[1], "feed_out_kwh": r[2], "feed_in_kwh": r[3],
+         "selfuse_kwh": r[4], "selfuse_pct": r[5], "autarky_pct": r[6]}
+        for r in rows
+    ]
+
+
+def get_monthly_totals(year: int) -> list[dict]:
+    """Monatliche Summen für ein Jahr."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """SELECT strftime('%Y-%m', date) as month,
+                      SUM(pv_kwh) as pv_kwh,
+                      SUM(feed_out_kwh) as feed_out_kwh,
+                      SUM(feed_in_kwh) as feed_in_kwh,
+                      SUM(selfuse_kwh) as selfuse_kwh,
+                      AVG(selfuse_pct) as selfuse_pct,
+                      AVG(autarky_pct) as autarky_pct,
+                      COUNT(*) as days
+               FROM pv_daily_log WHERE date LIKE ?
+               GROUP BY month ORDER BY month ASC""",
+            (f"{year}%",),
+        ).fetchall()
+    return [
+        {"month": r[0], "pv_kwh": round(r[1] or 0, 2),
+         "feed_out_kwh": round(r[2] or 0, 2), "feed_in_kwh": round(r[3] or 0, 2),
+         "selfuse_kwh": round(r[4] or 0, 2),
+         "selfuse_pct": round(r[5] or 0, 1), "autarky_pct": round(r[6] or 0, 1),
+         "days": r[7]}
+        for r in rows
+    ]
+
+
+def cleanup_old_hourly(keep_days: int = 90) -> None:
+    """Löscht stündliche Einträge älter als keep_days Tage."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "DELETE FROM pv_hourly_log WHERE timestamp < date('now', ?)",
+            (f"-{keep_days} days",),
+        )
 
 
 init_db()

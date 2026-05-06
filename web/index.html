@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=40">
+  <link rel="stylesheet" href="/static/styles.css?v=41">
 </head>
 <body>
   <div class="app-shell">
@@ -170,75 +170,108 @@
     <!-- ========= Verlauf ========= -->
     <section id="tab-verlauf" class="tab-panel">
 
-      <div class="card">
-        <div class="card-head">
-          <h2>Tagesverlauf</h2>
-          <div class="chart-legend-inline">
-            <span class="cl-pv">PV</span>
-            <span class="cl-feed">Einsp.</span>
-            <span class="cl-cons">Verbr.</span>
+      <div class="verlauf-subnav">
+        <button class="verlauf-nav-btn active" data-vsec="tag">Tag</button>
+        <button class="verlauf-nav-btn" data-vsec="woche">Woche</button>
+        <button class="verlauf-nav-btn" data-vsec="monat">Monat</button>
+        <button class="verlauf-nav-btn" data-vsec="jahr">Jahr</button>
+      </div>
+
+      <!-- ── Tag ── -->
+      <div id="verlauf-tag" class="verlauf-section">
+        <div class="verlauf-date-nav">
+          <button class="btn verlauf-btn-sm" id="verlauf-tag-prev">&#8249;</button>
+          <span id="verlauf-tag-label">Heute</span>
+          <button class="btn verlauf-btn-sm" id="verlauf-tag-next" disabled>&#8250;</button>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Tagesverlauf</h2>
+            <div class="chart-legend-inline">
+              <span class="cl-pv">PV</span>
+              <span class="cl-feed">Einsp.</span>
+              <span class="cl-cons">Verbr.</span>
+            </div>
+          </div>
+          <div id="chart-daily-wrap" class="temp-chart-wrap">
+            <div class="chart-empty">Lade…</div>
           </div>
         </div>
-        <div id="chart-daily-wrap" class="temp-chart-wrap">
-          <div class="chart-empty">Lade…</div>
-        </div>
-      </div>
 
-      <div class="card">
-        <div class="card-head">
-          <h2>String-Performance</h2>
-          <div class="chart-legend-inline">
-            <span class="cl-str1">STR1</span>
-            <span class="cl-str2">STR2</span>
+        <div class="card">
+          <div class="card-head">
+            <h2>String-Performance</h2>
+            <div class="chart-legend-inline">
+              <span class="cl-str1">STR1</span>
+              <span class="cl-str2">STR2</span>
+            </div>
+          </div>
+          <div id="chart-strings-wrap" class="temp-chart-wrap">
+            <div class="chart-empty">Lade…</div>
+          </div>
+          <div id="string-alert" class="string-alert hidden"></div>
+        </div>
+
+        <div class="card" id="cascade-history-card">
+          <div class="card-head">
+            <h2>Kaskaden-Schaltvorgänge</h2>
+            <select id="cascade-hist-filter" class="cascade-hist-filter">
+              <option value="">Alle Geräte</option>
+            </select>
+          </div>
+          <div id="cascade-hist-list" class="cascade-hist-list">
+            <div class="chart-empty">Lade…</div>
           </div>
         </div>
-        <div id="chart-strings-wrap" class="temp-chart-wrap">
-          <div class="chart-empty">Lade…</div>
-        </div>
-        <div id="string-alert" class="string-alert hidden"></div>
       </div>
 
-      <div class="card">
-        <div class="card-head">
-          <h2>Letzte 7 Tage</h2>
-          <div class="chart-legend-inline">
-            <span class="cl-selfuse">Eigenverbr.</span>
-            <span class="cl-feed">Einsp.</span>
+      <!-- ── Woche ── -->
+      <div id="verlauf-woche" class="verlauf-section hidden">
+        <div class="card">
+          <div class="card-head">
+            <h2>Letzte 7 Tage</h2>
+            <div class="chart-legend-inline">
+              <span class="cl-selfuse">Eigenverbr.</span>
+              <span class="cl-feed">Einsp.</span>
+            </div>
+          </div>
+          <div id="chart-week-wrap" class="temp-chart-wrap">
+            <div class="chart-empty">Lade…</div>
           </div>
         </div>
-        <div id="chart-week-wrap" class="temp-chart-wrap">
-          <div class="chart-empty">Lade…</div>
+      </div>
+
+      <!-- ── Monat ── -->
+      <div id="verlauf-monat" class="verlauf-section hidden">
+        <div class="verlauf-date-nav">
+          <button class="btn verlauf-btn-sm" id="verlauf-monat-prev">&#8249;</button>
+          <span id="verlauf-monat-label">–</span>
+          <button class="btn verlauf-btn-sm" id="verlauf-monat-next">&#8250;</button>
+        </div>
+        <div class="verlauf-kpi-row" id="verlauf-monat-kpis"></div>
+        <div class="card">
+          <h2>PV-Ertrag (täglich)</h2>
+          <div id="chart-month-wrap" class="temp-chart-wrap">
+            <div class="chart-empty">Lade…</div>
+          </div>
         </div>
       </div>
 
-      <div class="card">
-        <h2>Letzte 30 Tage (PV-Ertrag)</h2>
-        <div id="chart-month-wrap" class="temp-chart-wrap">
-          <div class="chart-empty">Lade…</div>
+      <!-- ── Jahr ── -->
+      <div id="verlauf-jahr" class="verlauf-section hidden">
+        <div class="verlauf-date-nav">
+          <button class="btn verlauf-btn-sm" id="verlauf-jahr-prev">&#8249;</button>
+          <span id="verlauf-jahr-label">–</span>
+          <button class="btn verlauf-btn-sm" id="verlauf-jahr-next">&#8250;</button>
         </div>
-      </div>
-
-      <div class="card" id="cascade-history-card">
-        <div class="card-head">
-          <h2>Kaskaden-Schaltvorgänge</h2>
-          <select id="cascade-hist-filter" class="cascade-hist-filter">
-            <option value="">Alle Geräte</option>
-          </select>
+        <div class="verlauf-kpi-row" id="verlauf-jahr-kpis"></div>
+        <div class="card">
+          <h2>Jahresübersicht (monatlich)</h2>
+          <div id="chart-year-wrap" class="temp-chart-wrap">
+            <div class="chart-empty">Lade…</div>
+          </div>
         </div>
-        <div id="cascade-hist-list" class="cascade-hist-list">
-          <div class="chart-empty">Lade…</div>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2>Prognose &amp; Wetter</h2>
-        <div class="kv">
-          <div><span>Prognose morgen</span><b id="forecast-tomorrow">–</b></div>
-          <div><span>Sonnenstunden heute</span><b id="weather-sun">–</b></div>
-          <div><span>Einstrahlung (GHI)</span><b id="weather-ghi">–</b></div>
-          <div><span>Bedeckungsgrad</span><b id="weather-cloud">–</b></div>
-        </div>
-        <p class="note">Prognose basiert auf historischer GHI→PV-Korrelation (lineare Regression, min. 3 Tage).</p>
       </div>
 
     </section>
@@ -463,6 +496,6 @@
   </footer>
   </div>
 
-  <script src="/static/app.js?v=62" defer></script>
+  <script src="/static/app.js?v=63" defer></script>
 </body>
 </html>

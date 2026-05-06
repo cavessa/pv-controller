@@ -65,7 +65,9 @@ def main(argv: list[str] | None = None) -> int:
         log.exception("Unerwarteter Fehler im Kaskaden-Durchlauf")
 
     try:
-        Controller(config).run()
+        result = Controller(config).run()
+        from pv_logger import maybe_log
+        maybe_log(result)
         return 0
     except Exception:
         log.exception("Unerwarteter Fehler im Controller-Lauf")

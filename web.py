@@ -607,6 +607,25 @@ def api_daily_history(
     return {"entries": get_daily_history(days)}
 
 
+@app.get("/api/history/month/{year_month}")
+def api_monthly_history(year_month: str, response: Response) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    import re
+    if not re.match(r"^\d{4}-\d{2}$", year_month):
+        raise HTTPException(400, "Format muss YYYY-MM sein")
+    from db import get_daily_for_month
+    return {"month": year_month, "entries": get_daily_for_month(year_month)}
+
+
+@app.get("/api/history/year/{year}")
+def api_yearly_history(year: int, response: Response) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    if year < 2020 or year > 2100:
+        raise HTTPException(400, "Ungültiges Jahr")
+    from db import get_monthly_totals
+    return {"year": year, "entries": get_monthly_totals(year)}
+
+
 @app.get("/api/logs")
 def api_logs(lines: int = Query(default=200, ge=1, le=1000)) -> dict[str, Any]:
     cfg = _load_cfg()

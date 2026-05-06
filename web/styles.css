@@ -773,6 +773,87 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
   color: var(--error);
 }
 
+/* -------- Verlauf Sub-Navigation -------- */
+.verlauf-subnav {
+  display: flex;
+  gap: 4px;
+  padding: 12px 0 8px;
+}
+.verlauf-nav-btn {
+  flex: 1;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text-dim);
+  padding: 8px 4px;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.verlauf-nav-btn:hover  { background: rgba(255,255,255,0.07); color: var(--text); }
+.verlauf-nav-btn.active {
+  background: rgba(91,140,255,0.12);
+  border-color: rgba(91,140,255,0.35);
+  color: #a5c0ff;
+}
+
+/* -------- Verlauf Date Navigation -------- */
+.verlauf-date-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.verlauf-date-nav span {
+  font-size: 12px;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+  text-align: center;
+  flex: 1;
+}
+.verlauf-btn-sm {
+  min-height: 34px !important;
+  padding: 6px 14px !important;
+  font-size: 16px !important;
+  flex-shrink: 0;
+}
+
+/* -------- Verlauf KPI row -------- */
+.verlauf-kpi-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.verlauf-kpi {
+  flex: 1;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 6px;
+  text-align: center;
+  min-width: 0;
+}
+.verlauf-kpi-label {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.verlauf-kpi-val {
+  font-size: 14px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* -------- Verlauf section visibility -------- */
+.verlauf-section.hidden { display: none; }
+
 /* -------- Verlauf tab stagger -------- */
 #tab-verlauf .card:nth-child(1) { animation-delay: 0.04s; }
 #tab-verlauf .card:nth-child(2) { animation-delay: 0.09s; }

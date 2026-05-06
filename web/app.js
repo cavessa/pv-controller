@@ -7,6 +7,12 @@ let lastConfig = null;
 let phaseLogs = [];
 let lastSolaxData = null;
 
+// ── Verlauf sub-tab state ─────────────────────────────
+let _vsec     = "tag";
+let _vTagDate = new Date().toISOString().slice(0, 10);
+let _vMonth   = new Date().toISOString().slice(0, 7);
+let _vYear    = new Date().getFullYear();
+
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -749,33 +755,176 @@ function checkStringAlert(entries) {
   el.className = "string-alert hidden";
 }
 
+// ── Verlauf helpers ───────────────────────────────────
+
+function _dateAddDays(iso, n) {
+  const d = new Date(iso + "T12:00:00");
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function _monthAdd(ym, n) {
+  const [y, m] = ym.split("-").map(Number);
+  const d = new Date(y, m - 1 + n, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function _fmtDate(iso) {
+  try {
+    return new Date(iso + "T12:00:00").toLocaleDateString("de-DE",
+      { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" });
+  } catch { return iso; }
+}
+function _fmtMonth(ym) {
+  try {
+    return new Date(ym + "-01T12:00:00").toLocaleDateString("de-DE",
+      { month: "long", year: "numeric" });
+  } catch { return ym; }
+}
+
+function showVerlaufSection(name) {
+  _vsec = name;
+  $$(".verlauf-nav-btn").forEach(b => b.classList.toggle("active", b.dataset.vsec === name));
+  $$(".verlauf-section").forEach(s => s.classList.toggle("hidden", s.id !== "verlauf-" + name));
+  _loadCurrentVerlauf();
+}
+
+function _loadCurrentVerlauf() {
+  if (_vsec === "tag")   loadVerlaufTag(_vTagDate);
+  if (_vsec === "woche") loadVerlaufWoche();
+  if (_vsec === "monat") loadVerlaufMonat(_vMonth);
+  if (_vsec === "jahr")  loadVerlaufJahr(_vYear);
+}
+
 async function loadVerlauf() {
   try {
-    const today = new Date().toISOString().slice(0, 10);
-    const [hourly, daily, solax, cascadeLog, cascadeDevs] = await Promise.all([
-      api(`/api/history/hourly?for_date=${today}`),
-      api("/api/history/daily?days=30"),
-      api("/api/solax").catch(() => null),
+    const [cascadeLog, cascadeDevs] = await Promise.all([
       api("/api/cascade/log?limit=200").catch(() => ({ entries: [] })),
       api("/api/cascade/devices").catch(() => ({ devices: [] })),
     ]);
-    renderKpiGauges(solax);
+    renderCascadeHistory(cascadeLog.entries || [], cascadeDevs.devices || []);
+  } catch (e) {
+    console.error("Cascade history error:", e);
+  }
+  _loadCurrentVerlauf();
+}
+
+async function loadVerlaufTag(dateStr) {
+  _vTagDate = dateStr;
+  const today = new Date().toISOString().slice(0, 10);
+  const labelEl = document.getElementById("verlauf-tag-label");
+  if (labelEl) labelEl.textContent = dateStr === today ? "Heute" : _fmtDate(dateStr);
+  const nextBtn = document.getElementById("verlauf-tag-next");
+  if (nextBtn) nextBtn.disabled = dateStr >= today;
+  try {
+    const hourly = await api(`/api/history/hourly?for_date=${dateStr}`);
     renderDailyChart(hourly.entries || []);
     renderStringChart(hourly.entries || []);
-    renderWeekChart(daily.entries || []);
-    renderMonthChart(daily.entries || []);
     checkStringAlert(hourly.entries || []);
-    renderCascadeHistory(cascadeLog.entries || [], cascadeDevs.devices || []);
-
-    const latestDaily = (daily.entries || []).slice(-1)[0] || {};
-    const setEl = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val ?? "–"; };
-    setEl("forecast-tomorrow", latestDaily.forecast_kwh != null ? `~${latestDaily.forecast_kwh.toFixed(1)} kWh` : "–");
-    setEl("weather-sun",   latestDaily.sunshine_h      != null ? `${latestDaily.sunshine_h.toFixed(1)} h`         : "–");
-    setEl("weather-ghi",   latestDaily.ghi_kwh_m2      != null ? `${latestDaily.ghi_kwh_m2.toFixed(2)} kWh/m²`   : "–");
-    setEl("weather-cloud", latestDaily.cloud_cover_pct != null ? `${Math.round(latestDaily.cloud_cover_pct)} %`   : "–");
   } catch (e) {
-    showError("Verlauf konnte nicht geladen werden: " + e.message);
+    showError("Tagesverlauf konnte nicht geladen werden: " + e.message);
   }
+}
+
+async function loadVerlaufWoche() {
+  try {
+    const daily = await api("/api/history/daily?days=7");
+    renderWeekChart(daily.entries || []);
+  } catch (e) {
+    showError("Wochenverlauf konnte nicht geladen werden: " + e.message);
+  }
+}
+
+async function loadVerlaufMonat(monthStr) {
+  _vMonth = monthStr;
+  const labelEl = document.getElementById("verlauf-monat-label");
+  if (labelEl) labelEl.textContent = _fmtMonth(monthStr);
+  const thisMonth = new Date().toISOString().slice(0, 7);
+  const nextBtn = document.getElementById("verlauf-monat-next");
+  if (nextBtn) nextBtn.disabled = monthStr >= thisMonth;
+  try {
+    const data = await api(`/api/history/month/${monthStr}`);
+    renderMonthChart(data.entries || []);
+    _renderKpiRow("verlauf-monat-kpis", data.entries || []);
+  } catch (e) {
+    showError("Monatsverlauf konnte nicht geladen werden: " + e.message);
+  }
+}
+
+async function loadVerlaufJahr(year) {
+  _vYear = year;
+  const labelEl = document.getElementById("verlauf-jahr-label");
+  if (labelEl) labelEl.textContent = String(year);
+  const thisYear = new Date().getFullYear();
+  const nextBtn = document.getElementById("verlauf-jahr-next");
+  if (nextBtn) nextBtn.disabled = year >= thisYear;
+  try {
+    const data = await api(`/api/history/year/${year}`);
+    renderYearChart(data.entries || []);
+    _renderKpiRow("verlauf-jahr-kpis", data.entries || [], true);
+  } catch (e) {
+    showError("Jahresverlauf konnte nicht geladen werden: " + e.message);
+  }
+}
+
+function _renderKpiRow(elemId, entries, round0 = false) {
+  const wrap = document.getElementById(elemId);
+  if (!wrap) return;
+  if (!entries.length) { wrap.innerHTML = ""; return; }
+  const total = entries.reduce((s, e) => ({
+    pv:      s.pv      + (e.pv_kwh      || 0),
+    feed:    s.feed    + (e.feed_out_kwh || 0),
+    selfuse: s.selfuse + (e.selfuse_kwh  || 0),
+  }), { pv: 0, feed: 0, selfuse: 0 });
+  const fmt = v => round0 ? v.toFixed(0) : v.toFixed(1);
+  wrap.innerHTML = `
+    <div class="verlauf-kpi"><div class="verlauf-kpi-label">PV gesamt</div><div class="verlauf-kpi-val">${fmt(total.pv)} kWh</div></div>
+    <div class="verlauf-kpi"><div class="verlauf-kpi-label">Einspeisung</div><div class="verlauf-kpi-val">${fmt(total.feed)} kWh</div></div>
+    <div class="verlauf-kpi"><div class="verlauf-kpi-label">Eigenverbr.</div><div class="verlauf-kpi-val">${fmt(total.selfuse)} kWh</div></div>
+  `;
+}
+
+function renderYearChart(entries) {
+  const wrap = document.getElementById("chart-year-wrap");
+  if (!wrap) return;
+  if (!entries || !entries.length) {
+    wrap.innerHTML = '<div class="chart-empty">Noch keine Jahresdaten vorhanden.</div>';
+    return;
+  }
+  const MONTHS_DE = ["Jan","Feb","Mär","Apr","Mai","Jun","Jul","Aug","Sep","Okt","Nov","Dez"];
+  const VW = 460, VH = 100;
+  const pad = { t: 12, r: 8, b: 24, l: 36 };
+  const cw = VW - pad.l - pad.r;
+  const ch = VH - pad.t - pad.b;
+  const n = entries.length;
+  const maxVal = Math.max(...entries.map(e => e.pv_kwh || 0), 1);
+  const gap = 3;
+  const barW = (cw - (n - 1) * gap) / n;
+  const sy = v => pad.t + ch - (v / maxVal) * ch;
+  const x0 = i => pad.l + i * (barW + gap);
+
+  let yElems = "";
+  const yStep = niceStep(maxVal, 3);
+  for (let yv = 0; yv <= maxVal + 0.01; yv += yStep) {
+    const ypx = sy(yv).toFixed(1);
+    yElems += `<line x1="${pad.l}" y1="${ypx}" x2="${pad.l + cw}" y2="${ypx}" class="grid-line"/>`;
+    yElems += `<text x="${pad.l - 4}" y="${ypx}" text-anchor="end" dominant-baseline="middle">${yv.toFixed(0)}</text>`;
+  }
+
+  let bars = "";
+  entries.forEach((d, i) => {
+    const val = d.pv_kwh || 0;
+    const h = Math.max(1, val / maxVal * ch);
+    const x = x0(i);
+    bars += `<rect x="${x.toFixed(1)}" y="${(pad.t + ch - h).toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="1" fill="var(--c-pv)" opacity="0.8"/>`;
+    const mi = parseInt((d.month || "").split("-")[1] || "1") - 1;
+    bars += `<text x="${(x + barW / 2).toFixed(1)}" y="${VH - 4}" text-anchor="middle">${MONTHS_DE[mi] ?? ""}</text>`;
+    if (val >= 1) {
+      bars += `<text x="${(x + barW / 2).toFixed(1)}" y="${(pad.t + ch - h - 3).toFixed(1)}" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.5)">${val.toFixed(0)}</text>`;
+    }
+  });
+
+  wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">
+    <g>${yElems}</g>${bars}
+  </svg>`;
 }
 
 function fmtPhaseAction(a) {
@@ -1344,6 +1493,35 @@ function boot() {
   });
   $("#btn-sa-test")?.addEventListener("click", _testShellyConnection);
   $("#shelly-add-form")?.addEventListener("submit", _submitShellyAdd);
+
+  // Verlauf sub-navigation
+  $$(".verlauf-nav-btn").forEach(b => b.addEventListener("click", () => showVerlaufSection(b.dataset.vsec)));
+
+  // Tag navigation
+  document.getElementById("verlauf-tag-prev")?.addEventListener("click", () => {
+    loadVerlaufTag(_dateAddDays(_vTagDate, -1));
+  });
+  document.getElementById("verlauf-tag-next")?.addEventListener("click", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    if (_vTagDate < today) loadVerlaufTag(_dateAddDays(_vTagDate, 1));
+  });
+
+  // Monat navigation
+  document.getElementById("verlauf-monat-prev")?.addEventListener("click", () => {
+    loadVerlaufMonat(_monthAdd(_vMonth, -1));
+  });
+  document.getElementById("verlauf-monat-next")?.addEventListener("click", () => {
+    const thisMonth = new Date().toISOString().slice(0, 7);
+    if (_vMonth < thisMonth) loadVerlaufMonat(_monthAdd(_vMonth, 1));
+  });
+
+  // Jahr navigation
+  document.getElementById("verlauf-jahr-prev")?.addEventListener("click", () => {
+    loadVerlaufJahr(_vYear - 1);
+  });
+  document.getElementById("verlauf-jahr-next")?.addEventListener("click", () => {
+    if (_vYear < new Date().getFullYear()) loadVerlaufJahr(_vYear + 1);
+  });
 
   refreshStatus();
   refreshTimer = setInterval(refreshStatus, REFRESH_MS);
