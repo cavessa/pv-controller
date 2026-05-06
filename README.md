@@ -2,6 +2,8 @@
 
 > 🤖 100% built with [Claude Code](https://claude.ai/code) — from first line to final commit.
 
+![PV Controller Dashboard](docs/screenshot.png)
+
 ## Was kann der PV Controller?
 
 **Intelligente PV-Überschuss-Steuerung für dein Zuhause.** Verteilt jeden Watt Solarstrom automatisch auf deine Verbraucher – in der Reihenfolge die du per Drag & Drop festlegst. Ziel: maximaler Eigenverbrauch, minimale Netzeinspeisung.
