@@ -3,6 +3,7 @@
 > 🤖 100% built with [Claude Code](https://claude.ai/code) — from first line to final commit.
 
 ![PV Controller Dashboard](docs/screenshot.png)
+![PV Controller Dashboard 2](docs/screenshot2.png)
 
 ## Was kann der PV Controller?
 
