@@ -17,6 +17,7 @@ __pycache__/
 
 # Claude Code (lokale Einstellungen mit echten IPs)
 .claude/
+CLAUDE.md
 
 # System
 .DS_Store
