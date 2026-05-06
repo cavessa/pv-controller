@@ -1,0 +1,14 @@
+[Unit]
+Description=PV-Controller Web Interface
+After=network.target
+
+[Service]
+Type=simple
+User=openhabian
+WorkingDirectory=/home/openhabian/pvcontroller
+ExecStart=/home/openhabian/pvcontroller/.venv/bin/uvicorn web:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

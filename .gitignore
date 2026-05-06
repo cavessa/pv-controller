@@ -1,0 +1,21 @@
+# Config mit echten Daten
+config.json
+config.backup-*.json
+
+# Datenbanken
+*.db
+
+# Laufzeit-Daten
+temp_history.json
+cron.log
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Claude Code (lokale Einstellungen mit echten IPs)
+.claude/
+
+# System
+.DS_Store

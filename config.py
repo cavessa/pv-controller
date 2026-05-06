@@ -1,0 +1,121 @@
+"""Konfiguration laden und validieren."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass
+class SolaxConfig:
+    url: str
+    pwd: str
+
+
+@dataclass
+class ShellyConfig:
+    ph1_url: str
+    ph2_url: str
+    ph3_url: str
+    storage_url: str
+    main_meter_url: str
+    heater_meter_url: str
+
+
+@dataclass
+class HeaterConfig:
+    phase_power_w: int = 1500
+    storage_max_temp: float = 63.0
+    storage_temp_hysteresis: float = 1.0
+    min_pv_power_ph1: float = 1500.0
+    min_pv_power_ph2: float = 3000.0
+    min_pv_power_ph3: float = 4500.0
+
+    def __post_init__(self) -> None:
+        if self.storage_max_temp <= 0:
+            raise ValueError(
+                f"heater.storage_max_temp must be > 0, got {self.storage_max_temp}"
+            )
+        if self.storage_temp_hysteresis < 0:
+            raise ValueError(
+                "heater.storage_temp_hysteresis must be >= 0, "
+                f"got {self.storage_temp_hysteresis}"
+            )
+
+    @property
+    def heat_resume_temp(self) -> float:
+        return self.storage_max_temp - self.storage_temp_hysteresis
+
+
+@dataclass
+class RuntimeConfig:
+    enabled: bool
+    dry_run: bool
+    request_timeout_seconds: int
+    log_file: str
+
+
+@dataclass
+class SimulationConfig:
+    enabled: bool = False
+    pv_power: float = 0.0
+    main_meter_power: float = 0.0
+    heater_meter_power: float = 0.0
+    storage_temp: float = 0.0
+    ph1_on: bool = False
+    ph2_on: bool = False
+    ph3_on: bool = False
+
+
+@dataclass
+class WallboxConfig:
+    enabled: bool = False
+    url: str = ""
+    only_control_when_pv_surplus_active: bool = True
+    pause_below_storage_temp: float = 58.0
+    release_above_storage_temp: float = 62.0
+    request_timeout_seconds: int = 5
+    fail_safe: str = "no_change"
+
+    def __post_init__(self) -> None:
+        if self.release_above_storage_temp <= self.pause_below_storage_temp:
+            raise ValueError(
+                "wallbox.release_above_storage_temp must be > "
+                "wallbox.pause_below_storage_temp "
+                f"(got release={self.release_above_storage_temp}, "
+                f"pause={self.pause_below_storage_temp})"
+            )
+        if self.enabled and not self.url:
+            raise ValueError(
+                "wallbox.url must be set when wallbox.enabled=true"
+            )
+
+
+@dataclass
+class Config:
+    solax: SolaxConfig
+    shelly: ShellyConfig
+    heater: HeaterConfig
+    runtime: RuntimeConfig
+    simulation: SimulationConfig
+    wallbox: WallboxConfig
+
+
+def load_config(path: str | Path) -> Config:
+    with open(path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+
+    return Config(
+        solax=SolaxConfig(**raw["solax"]),
+        shelly=ShellyConfig(**raw["shelly"]),
+        heater=HeaterConfig(**raw["heater"]),
+        runtime=RuntimeConfig(
+            enabled=raw["runtime"].get("enabled", True),
+            dry_run=raw["runtime"]["dry_run"],
+            request_timeout_seconds=raw["runtime"]["request_timeout_seconds"],
+            log_file=raw["runtime"]["log_file"],
+        ),
+        simulation=SimulationConfig(**raw.get("simulation", {})),
+        wallbox=WallboxConfig(**raw.get("wallbox", {})),
+    )

@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#080b14">
+  <title>PV Controller</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/static/styles.css?v=39">
+</head>
+<body>
+  <div class="app-shell">
+  <header class="topbar">
+    <h1 class="brand-title">PV Controller</h1>
+    <span class="pill subtle" id="pill-time">aktualisiert …</span>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="dashboard">Dashboard</button>
+    <button class="tab" data-tab="verlauf">Verlauf</button>
+    <button class="tab" data-tab="prioritaeten">Prioritäten</button>
+    <button class="tab" data-tab="settings">Settings</button>
+    <button class="tab" data-tab="logs">Logs</button>
+  </nav>
+
+  <main>
+    <div id="error-banner" class="banner hidden"></div>
+
+    <!-- ========= Dashboard ========= -->
+    <section id="tab-dashboard" class="tab-panel active">
+
+      <div id="wb-banner" class="wb-banner hidden"></div>
+      <div id="cascade-alert-strip" class="cascade-alert-strip hidden"></div>
+
+      <div class="dashboard-toolbar">
+        <div class="status-pills" id="status-pills">
+          <span class="pill" id="pill-enabled">Automatik …</span>
+          <span class="pill" id="pill-wb">Wallbox …</span>
+        </div>
+        <div class="actions">
+          <button id="btn-refresh" class="btn">Aktualisieren</button>
+        </div>
+      </div>
+
+      <div class="dashboard-cols">
+      <div class="dashboard-left">
+
+      <div class="card decision-card">
+        <div class="card-head">
+          <h2>Aktuelle Entscheidung</h2>
+          <span class="severity-badge" id="summary-severity">…</span>
+        </div>
+        <div class="decision-state" id="summary-state">…</div>
+        <div class="decision-reason" id="summary-reason">…</div>
+      </div>
+
+      <div class="card flow-card">
+        <h2>Energiefluss</h2>
+        <div id="flow-diagram"></div>
+      </div>
+
+      <div class="card">
+        <h2>Eigenverbrauch &amp; Autarkie</h2>
+        <div id="kpi-gauges"></div>
+      </div>
+
+      <div class="card">
+        <h2>Hausverbrauch</h2>
+        <div class="hv-val" id="hv-val">– W</div>
+        <div class="hv-today" id="hv-today">Heute: –</div>
+      </div>
+
+      <div class="card cascade-mini-card" id="cascade-mini">
+        <div class="card-head">
+          <h2>Kaskade</h2>
+          <span class="cascade-mini-surplus" id="cascade-mini-surplus">Überschuss: –</span>
+        </div>
+        <div id="cascade-mini-devices"></div>
+        <div id="cascade-mini-footer" class="cascade-mini-footer"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Speicher</h2>
+          <span class="dot hidden" id="storage-dot"></span>
+        </div>
+        <div class="big-temp" id="m-temp">–</div>
+        <div class="progress">
+          <div class="progress-bar" id="m-temp-bar"></div>
+          <div class="progress-marker resume" id="m-temp-marker-resume"></div>
+          <div class="progress-marker max" id="m-temp-marker-max"></div>
+        </div>
+        <div class="kv compact">
+          <div><span>Maximaltemperatur</span><b id="m-temp-max">–</b></div>
+          <div><span>Resume-Temperatur</span><b id="m-temp-resume">–</b></div>
+          <div><span>Status</span><b id="m-temp-status" class="badge">–</b></div>
+        </div>
+        <div id="temp-chart-wrap" class="temp-chart-wrap"></div>
+      </div>
+
+      </div><!-- .dashboard-left -->
+      <div class="dashboard-right">
+      <div class="grid">
+        <div class="card">
+          <h2>PV &amp; Netz</h2>
+          <div class="kv">
+            <div><span>PV-Leistung</span><b id="m-pv">–</b></div>
+            <div><span>Hauptzähler</span><b id="m-grid">–</b></div>
+            <div><span>Heizstab 3EM</span><b id="m-heater">–</b></div>
+            <div><span>Überschuss o. Heizstab</span><b id="m-surplus">–</b></div>
+          </div>
+          <p class="note">Negative Netz-/Überschusswerte = Einspeisung/Überschuss.</p>
+        </div>
+
+        <div class="card">
+          <h2>PV Erzeugung</h2>
+          <div class="pv-live-total" id="pv-live-total">– W</div>
+          <div id="pv-live-strings"></div>
+          <div class="kv compact" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+            <div><span>Einspeisung / Bezug</span><b id="pv-live-feedin">–</b></div>
+            <div><span>Hausverbrauch</span><b id="pv-live-consumption">–</b></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Heute</h2>
+          <div id="sol-today"></div>
+        </div>
+
+        <div class="card">
+          <h2>Heizstab Phasen</h2>
+          <div class="phases" id="phases"></div>
+          <div id="phase-timeline" class="phase-tl-wrap hidden"></div>
+        </div>
+
+        <div class="card" id="wallbox-card">
+          <div class="card-head">
+            <h2>Wallbox (go-e)</h2>
+            <span class="dot hidden" id="wallbox-dot"></span>
+          </div>
+          <div class="charge-indicator" id="charge-indicator">
+            <div class="charge-icon">🚗</div>
+            <div class="charge-meta">
+              <div class="charge-state" id="charge-state">–</div>
+              <div class="charge-power" id="charge-power">–</div>
+            </div>
+            <div class="charge-bolts" aria-hidden="true">
+              <span></span><span></span><span></span><span></span>
+            </div>
+          </div>
+          <div class="charge-energy" id="charge-energy">
+            <div><span>Diese Session</span><b id="charge-session">–</b></div>
+            <div><span>Gesamt (lifetime)</span><b id="charge-total">–</b></div>
+            <div><span>Ladezeit</span><b id="charge-duration">–</b></div>
+          </div>
+          <details class="wb-raw">
+            <summary>Technische Details</summary>
+            <div class="kv compact" id="wallbox-kv"></div>
+            <div class="decision-mini" id="wallbox-decision"></div>
+          </details>
+          <div id="wb-chart-wrap" class="temp-chart-wrap"></div>
+        </div>
+      </div><!-- .grid -->
+      </div><!-- .dashboard-right -->
+      </div><!-- .dashboard-cols -->
+    </section>
+
+    <!-- ========= Verlauf ========= -->
+    <section id="tab-verlauf" class="tab-panel">
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Tagesverlauf</h2>
+          <div class="chart-legend-inline">
+            <span class="cl-pv">PV</span>
+            <span class="cl-feed">Einsp.</span>
+            <span class="cl-cons">Verbr.</span>
+          </div>
+        </div>
+        <div id="chart-daily-wrap" class="temp-chart-wrap">
+          <div class="chart-empty">Lade…</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>String-Performance</h2>
+          <div class="chart-legend-inline">
+            <span class="cl-str1">STR1</span>
+            <span class="cl-str2">STR2</span>
+          </div>
+        </div>
+        <div id="chart-strings-wrap" class="temp-chart-wrap">
+          <div class="chart-empty">Lade…</div>
+        </div>
+        <div id="string-alert" class="string-alert hidden"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Letzte 7 Tage</h2>
+          <div class="chart-legend-inline">
+            <span class="cl-selfuse">Eigenverbr.</span>
+            <span class="cl-feed">Einsp.</span>
+          </div>
+        </div>
+        <div id="chart-week-wrap" class="temp-chart-wrap">
+          <div class="chart-empty">Lade…</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Letzte 30 Tage (PV-Ertrag)</h2>
+        <div id="chart-month-wrap" class="temp-chart-wrap">
+          <div class="chart-empty">Lade…</div>
+        </div>
+      </div>
+
+      <div class="card" id="cascade-history-card">
+        <div class="card-head">
+          <h2>Kaskaden-Schaltvorgänge</h2>
+          <select id="cascade-hist-filter" class="cascade-hist-filter">
+            <option value="">Alle Geräte</option>
+          </select>
+        </div>
+        <div id="cascade-hist-list" class="cascade-hist-list">
+          <div class="chart-empty">Lade…</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Prognose &amp; Wetter</h2>
+        <div class="kv">
+          <div><span>Prognose morgen</span><b id="forecast-tomorrow">–</b></div>
+          <div><span>Sonnenstunden heute</span><b id="weather-sun">–</b></div>
+          <div><span>Einstrahlung (GHI)</span><b id="weather-ghi">–</b></div>
+          <div><span>Bedeckungsgrad</span><b id="weather-cloud">–</b></div>
+        </div>
+        <p class="note">Prognose basiert auf historischer GHI→PV-Korrelation (lineare Regression, min. 3 Tage).</p>
+      </div>
+
+    </section>
+
+    <!-- ========= Prioritäten ========= -->
+    <section id="tab-prioritaeten" class="tab-panel">
+
+      <div class="card">
+        <div class="card-head">
+          <h2>PV-Überschuss Kaskade</h2>
+        </div>
+        <div class="surplus-bar-wrap">
+          <div class="surplus-bar-labels">
+            <span>Aktueller Überschuss: <b id="cs-surplus">–</b></span>
+            <span>Zugewiesen: <b id="cs-assigned">–</b></span>
+          </div>
+          <div class="surplus-bar-track">
+            <div class="surplus-bar-fill" id="cs-fill" style="width:0%"></div>
+          </div>
+        </div>
+        <p class="note" style="margin-top:10px">Ziehe die Geräte in die gewünschte Reihenfolge.</p>
+      </div>
+
+      <div id="cascade-device-list"></div>
+
+      <button class="btn cascade-add-btn" id="btn-shelly-add">
+        + Shelly-Gerät hinzufügen
+      </button>
+
+    </section>
+
+    <!-- ========= Settings ========= -->
+    <section id="tab-settings" class="tab-panel">
+      <div class="card">
+        <h2>Einstellungen</h2>
+        <p class="note">Alle Geräte-URLs und Einstellungen editierbar. log_file wird nur über config.json geändert.</p>
+        <div class="settings-run-bar">
+          <span class="pill" id="pill-dry">Dry-Run …</span>
+          <button id="btn-run" class="btn primary">Controller jetzt ausführen</button>
+        </div>
+        <form id="settings-form" class="settings">
+          <fieldset>
+            <legend>Runtime</legend>
+            <label class="check"><input type="checkbox" name="runtime.enabled"> Automatik aktiv (runtime.enabled)</label>
+            <label class="check"><input type="checkbox" name="runtime.dry_run"> Dry-Run (runtime.dry_run)</label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Solax</legend>
+            <label>URL<input type="text" name="solax.url" placeholder="http://192.168.x.x"></label>
+            <label>Passwort (pwd)<input type="text" name="solax.pwd" placeholder="XXXXXXXXXX"></label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Shelly IPs</legend>
+            <label>Phase 1 (ph1_url)<input type="text" name="shelly.ph1_url" placeholder="http://192.168.x.x"></label>
+            <label>Phase 2 (ph2_url)<input type="text" name="shelly.ph2_url" placeholder="http://192.168.x.x"></label>
+            <label>Phase 3 (ph3_url)<input type="text" name="shelly.ph3_url" placeholder="http://192.168.x.x"></label>
+            <label>Speicher (storage_url)<input type="text" name="shelly.storage_url" placeholder="http://192.168.x.x"></label>
+            <label>Hauptzähler (main_meter_url)<input type="text" name="shelly.main_meter_url" placeholder="http://192.168.x.x"></label>
+            <label>Heizstab 3EM (heater_meter_url)<input type="text" name="shelly.heater_meter_url" placeholder="http://192.168.x.x"></label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Heizstab &amp; Speicher</legend>
+            <label>storage_max_temp (°C)<input type="number" step="0.1" name="heater.storage_max_temp"></label>
+            <label>storage_temp_hysteresis (K)<input type="number" step="0.1" name="heater.storage_temp_hysteresis"></label>
+            <label>min_pv_power_ph1 (W)<input type="number" step="50" name="heater.min_pv_power_ph1"></label>
+            <label>min_pv_power_ph2 (W)<input type="number" step="50" name="heater.min_pv_power_ph2"></label>
+            <label>min_pv_power_ph3 (W)<input type="number" step="50" name="heater.min_pv_power_ph3"></label>
+            <label>Speicher-Priorität aktiv bis (°C)<input type="number" step="0.1" name="wallbox.pause_below_storage_temp"><small class="field-hint">Unterhalb dieser Temperatur bleibt PV-Überschuss zuerst für den Speicher reserviert.</small></label>
+            <label>Wallbox wieder freigeben ab Speicher-Temperatur (°C)<input type="number" step="0.1" name="wallbox.release_above_storage_temp"><small class="field-hint">Ab dieser Temperatur darf die Wallbox wieder laden.</small></label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Wallbox (go-e)</legend>
+            <label class="check"><input type="checkbox" name="wallbox.enabled"> Wallbox aktiv</label>
+            <label>URL<input type="text" name="wallbox.url" placeholder="http://192.168.x.x"></label>
+            <label class="check"><input type="checkbox" name="wallbox.only_control_when_pv_surplus_active"> Nur eingreifen wenn fup=true</label>
+            <label>fail_safe
+              <select name="wallbox.fail_safe">
+                <option value="no_change">no_change</option>
+              </select>
+            </label>
+          </fieldset>
+
+          <div class="form-actions">
+            <button type="submit" class="btn primary">Einstellungen speichern</button>
+            <span id="settings-msg" class="form-msg"></span>
+          </div>
+        </form>
+
+        <fieldset class="cascade-settings-fieldset" style="margin-top:20px">
+          <legend>Kaskade</legend>
+          <label class="check"><input type="checkbox" id="cs-enabled"> Kaskaden-Automatik aktiv</label>
+          <label>Polling-Intervall (Shelly-Abfrage)
+            <select id="cs-polling">
+              <option value="15">15 Sekunden</option>
+              <option value="30">30 Sekunden</option>
+              <option value="60" selected>60 Sekunden</option>
+            </select>
+          </label>
+          <label>Mindest-Überschuss zum Einschalten (W)
+            <input type="number" id="cs-min-surplus" min="0" step="50" placeholder="0">
+            <small class="field-hint">Kaskade schaltet erst ein wenn Überschuss diesen Wert übersteigt.</small>
+          </label>
+          <label class="check"><input type="checkbox" id="cs-grid-draw"> Netzbezug erlaubt (allow_grid_draw)</label>
+          <small class="field-hint" style="display:block;margin-bottom:10px">Wenn deaktiviert, schaltet die Kaskade alle Geräte ab sobald Netzbezug einsetzt.</small>
+          <div class="form-actions">
+            <button type="button" id="btn-cascade-settings-save" class="btn primary">Kaskade speichern</button>
+            <span id="cs-settings-msg" class="form-msg"></span>
+          </div>
+        </fieldset>
+      </div>
+    </section>
+
+    <!-- ========= Logs ========= -->
+    <section id="tab-logs" class="tab-panel">
+      <div class="card">
+        <div class="logs-toolbar">
+          <h2>Logs</h2>
+          <label>Zeilen
+            <select id="log-lines">
+              <option>100</option>
+              <option selected>200</option>
+              <option>500</option>
+              <option>1000</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" id="log-auto"> Auto-Refresh</label>
+          <button class="btn" id="btn-logs-refresh">Logs aktualisieren</button>
+        </div>
+        <pre id="log-output" class="log-output">Lade Logs…</pre>
+      </div>
+    </section>
+  </main>
+
+  <!-- ========= Cascade Edit Modal ========= -->
+  <div id="cascade-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <h3 id="modal-title">Gerät bearbeiten</h3>
+      <form id="cascade-edit-form">
+        <input type="hidden" id="modal-device-id">
+        <label>Name
+          <input type="text" id="modal-name" required>
+        </label>
+        <label>Leistung (W)
+          <input type="number" id="modal-power" min="1" required>
+        </label>
+        <label>Mindest-Laufzeit (min)
+          <input type="number" id="modal-min-on" min="0">
+        </label>
+        <label>Mindest-Pause (min)
+          <input type="number" id="modal-min-off" min="0">
+        </label>
+        <label>Hysterese (W)
+          <input type="number" id="modal-hysteresis" min="0">
+        </label>
+        <div class="modal-actions">
+          <button type="button" id="modal-cancel" class="btn">Abbrechen</button>
+          <button type="submit" class="btn primary">Speichern</button>
+        </div>
+      </form>
+      <div id="modal-msg" class="form-msg" style="margin-top:8px"></div>
+    </div>
+  </div>
+
+  <!-- ========= Shelly Add Modal ========= -->
+  <div id="shelly-add-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <h3>Shelly-Gerät hinzufügen</h3>
+      <form id="shelly-add-form">
+        <label>Name
+          <input type="text" id="sa-name" required placeholder="z.B. Warmwasser">
+        </label>
+        <label>IP-Adresse
+          <input type="text" id="sa-ip" required placeholder="192.168.1.x">
+        </label>
+        <fieldset class="radio-group">
+          <legend>Generation</legend>
+          <label class="radio-label"><input type="radio" name="sa-gen" value="shelly_gen1" id="sa-gen1"> Gen1 (Plug S, 1, 2.5 …)</label>
+          <label class="radio-label"><input type="radio" name="sa-gen" value="shelly_gen2" id="sa-gen2" checked> Gen2 (Plus, Pro …)</label>
+        </fieldset>
+        <label>Kanal (Channel)
+          <input type="number" id="sa-channel" min="0" max="3" value="0">
+        </label>
+        <label>Leistung (W)
+          <input type="number" id="sa-power" min="1" required placeholder="z.B. 800">
+        </label>
+        <label>Mindest-Laufzeit (min)
+          <input type="number" id="sa-min-on" min="0" value="5">
+        </label>
+        <label>Mindest-Pause (min)
+          <input type="number" id="sa-min-off" min="0" value="3">
+        </label>
+        <label>Hysterese (W)
+          <input type="number" id="sa-hysteresis" min="0" value="100">
+        </label>
+        <div class="sa-test-bar">
+          <button type="button" id="btn-sa-test" class="btn">Verbindung testen</button>
+          <div id="sa-test-result" class="sa-test-result hidden"></div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" id="sa-cancel" class="btn">Abbrechen</button>
+          <button type="submit" id="sa-submit" class="btn primary">Hinzufügen</button>
+        </div>
+      </form>
+      <div id="sa-msg" class="form-msg" style="margin-top:8px"></div>
+    </div>
+  </div>
+
+  <footer class="footer">
+    <span>PV-Controller · lokal · keine Auth – nicht ins Internet freigeben.</span>
+  </footer>
+  </div>
+
+  <script src="/static/app.js?v=61" defer></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+services:
+  pvcontroller:
+    build: .
+    restart: unless-stopped
+    network_mode: host        # direkter LAN-Zugriff auf Shelly / go-e / OpenHAB
+    volumes:
+      - ./config.json:/app/config.json          # Konfiguration pro Installation anpassen
+      - ./logs:/app/logs                         # Logs auf dem Host einsehbar
+      - ./temp_history.json:/app/temp_history.json  # Temperaturverlauf persistent

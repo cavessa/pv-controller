@@ -1,0 +1,47 @@
+{
+  "solax": {
+    "url": "http://192.168.x.x",
+    "pwd": "YOUR_POCKET_WIFI_PASSWORD"
+  },
+  "shelly": {
+    "ph1_url": "http://192.168.x.x",
+    "ph2_url": "http://192.168.x.x",
+    "ph3_url": "http://192.168.x.x",
+    "storage_url": "http://192.168.x.x",
+    "main_meter_url": "http://192.168.x.x",
+    "heater_meter_url": "http://192.168.x.x"
+  },
+  "heater": {
+    "phase_power_w": 1500,
+    "storage_max_temp": 63,
+    "storage_temp_hysteresis": 1,
+    "min_pv_power_ph1": 1500,
+    "min_pv_power_ph2": 3000,
+    "min_pv_power_ph3": 4500
+  },
+  "runtime": {
+    "enabled": true,
+    "dry_run": false,
+    "request_timeout_seconds": 5,
+    "log_file": "/app/logs/pv-controller.log"
+  },
+  "simulation": {
+    "enabled": false,
+    "pv_power": 3600,
+    "main_meter_power": -1100,
+    "heater_meter_power": 1600,
+    "storage_temp": 53.1,
+    "ph1_on": true,
+    "ph2_on": false,
+    "ph3_on": false
+  },
+  "wallbox": {
+    "enabled": true,
+    "url": "http://192.168.x.x",
+    "only_control_when_pv_surplus_active": true,
+    "pause_below_storage_temp": 62,
+    "release_above_storage_temp": 63,
+    "request_timeout_seconds": 5,
+    "fail_safe": "no_change"
+  }
+}
