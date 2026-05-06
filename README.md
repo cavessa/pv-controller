@@ -222,7 +222,7 @@ Damit ergibt sich:
 ## Installation
 
 ```bash
-cd /home/openhabian/pvcontroller
+cd ~/pvcontroller
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -235,19 +235,19 @@ Konfiguration anpassen: `config.json`.
 Einmaliger Lauf:
 
 ```bash
-python3 /home/openhabian/pvcontroller/main.py
+python3 ~/pvcontroller/main.py
 ```
 
 Dry-Run (schaltet nichts, loggt nur):
 
 ```bash
-python3 /home/openhabian/pvcontroller/main.py --dry-run
+python3 ~/pvcontroller/main.py --dry-run
 ```
 
 Anderen Config-Pfad verwenden:
 
 ```bash
-python3 /home/openhabian/pvcontroller/main.py --config /pfad/zur/config.json
+python3 ~/pvcontroller/main.py --config /pfad/zur/config.json
 ```
 
 ## Cronjob
@@ -255,7 +255,7 @@ python3 /home/openhabian/pvcontroller/main.py --config /pfad/zur/config.json
 Beispiel: alle 2 Minuten ausführen.
 
 ```cron
-*/2 * * * * /home/openhabian/pvcontroller/.venv/bin/python /home/openhabian/pvcontroller/main.py >> /home/openhabian/pvueberschuss/pv-controller.cron.log 2>&1
+*/2 * * * * $HOME/pvcontroller/.venv/bin/python $HOME/pvcontroller/main.py >> $HOME/pvcontroller/data/logs/cron.log 2>&1
 ```
 
 ## Konfiguration (`config.json`)
@@ -307,7 +307,7 @@ prüfen.
 
 ## Logs
 
-Die Logdatei (Default: `/home/openhabian/pvueberschuss/pv-controller.log`)
+Die Logdatei (Default: `/app/logs/pv-controller.log` im Container, konfigurierbar über `runtime.log_file`)
 enthält pro Lauf u. a.:
 
 - Start-/Endemarker
@@ -329,7 +329,7 @@ alles aus `web/` ausgeliefert.
 ### Installation
 
 ```bash
-cd /home/openhabian/pvcontroller
+cd ~/pvcontroller
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
@@ -340,7 +340,7 @@ python3 -m venv .venv
 .venv/bin/uvicorn web:app --host 0.0.0.0 --port 8099
 ```
 
-Aufruf im Browser: `http://<openhabian-ip>:8099`.
+Aufruf im Browser: `http://<server-ip>:8099`.
 
 ### Endpoints
 
@@ -385,10 +385,10 @@ Description=PV Controller Web UI
 After=network-online.target
 
 [Service]
-WorkingDirectory=/home/openhabian/pvcontroller
-ExecStart=/home/openhabian/pvcontroller/.venv/bin/uvicorn web:app --host 0.0.0.0 --port 8099
+WorkingDirectory=/home/<user>/pvcontroller
+ExecStart=/home/<user>/pvcontroller/.venv/bin/uvicorn web:app --host 0.0.0.0 --port 8099
 Restart=always
-User=openhabian
+User=<user>
 Environment=PYTHONUNBUFFERED=1
 
 [Install]
@@ -444,7 +444,7 @@ geloggt — aber weder Heizstab noch Wallbox tatsächlich geschaltet.
 
 ## Hinweis zur Migration
 
-Die alten Skripte unter `/home/openhabian/pvueberschuss/` (`shelly.py`,
+Die alten Skripte unter `~/pvueberschuss/` (`shelly.py`,
 `wintermodus.py`, `wintermodus_on.py`) werden nicht mehr benötigt. Vor dem
 Deaktivieren ihrer Cronjobs einen Lauf des neuen Controllers im Dry-Run
 prüfen.
