@@ -43,5 +43,8 @@
     "release_above_storage_temp": 63,
     "request_timeout_seconds": 5,
     "fail_safe": "no_change"
-  }
+  },
+  "auth_enabled": false,
+  "auth_user": "admin",
+  "auth_password": ""
 }

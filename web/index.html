@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=39">
+  <link rel="stylesheet" href="/static/styles.css?v=40">
 </head>
 <body>
   <div class="app-shell">
@@ -325,6 +325,14 @@
             </label>
           </fieldset>
 
+          <fieldset>
+            <legend>Zugriffschutz</legend>
+            <label class="check"><input type="checkbox" name="auth.enabled"> Passwortschutz aktiv</label>
+            <label>Benutzername<input type="text" name="auth.user" placeholder="admin" autocomplete="username"></label>
+            <label>Passwort<input type="password" name="auth.password" placeholder="leer = deaktiviert" autocomplete="new-password"></label>
+            <p class="note">Nach dem Aktivieren wirst du nach dem Neuladen nach dem Passwort gefragt. Das Passwortfeld muss befüllt sein, damit der Schutz greift. /api/health und /api/status bleiben immer offen (Docker-Healthcheck).</p>
+          </fieldset>
+
           <div class="form-actions">
             <button type="submit" class="btn primary">Einstellungen speichern</button>
             <span id="settings-msg" class="form-msg"></span>
@@ -451,10 +459,10 @@
   </div>
 
   <footer class="footer">
-    <span>PV-Controller · lokal · keine Auth – nicht ins Internet freigeben.</span>
+    <span>PV-Controller · lokal · optionaler Passwortschutz – nicht direkt ins Internet freigeben.</span>
   </footer>
   </div>
 
-  <script src="/static/app.js?v=61" defer></script>
+  <script src="/static/app.js?v=62" defer></script>
 </body>
 </html>

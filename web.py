@@ -4,20 +4,23 @@ Wichtig:
 - /api/status ist *read-only* und schaltet niemals.
 - /api/run-once führt einen NORMAL-Lauf aus (respektiert runtime.enabled +
   runtime.dry_run wie `python main.py`).
-- Keine Auth — nur im lokalen Netz betreiben (siehe README).
+- Optionale Basic Auth via auth_enabled/auth_user/auth_password in config.json.
+  /api/health und /api/status sind immer offen (Docker Healthcheck).
 """
 
 from __future__ import annotations
 
+import base64
 import copy
 import json
 import logging
+import secrets
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -64,6 +67,42 @@ log = logging.getLogger("pv-controller.web")
 
 app = FastAPI(title="PV-Controller Web", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
+
+
+# ---- Auth middleware -------------------------------------------------------
+
+_AUTH_OPEN_PATHS = {"/api/health", "/api/status"}
+
+
+@app.middleware("http")
+async def _auth_middleware(request: Request, call_next):
+    if request.url.path in _AUTH_OPEN_PATHS:
+        return await call_next(request)
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as _f:
+            _raw = json.load(_f)
+    except Exception:
+        return await call_next(request)
+    if not _raw.get("auth_enabled", False):
+        return await call_next(request)
+    expected_user = _raw.get("auth_user", "admin")
+    expected_pass = _raw.get("auth_password", "")
+    if not expected_pass:
+        log.warning("auth_enabled=true but auth_password is empty — skipping auth")
+        return await call_next(request)
+    header = request.headers.get("Authorization", "")
+    if header.startswith("Basic "):
+        try:
+            user, _, pw = base64.b64decode(header[6:]).decode("utf-8").partition(":")
+            if (secrets.compare_digest(user.encode(), expected_user.encode())
+                    and secrets.compare_digest(pw.encode(), expected_pass.encode())):
+                return await call_next(request)
+        except Exception:
+            pass
+    return Response(
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="PV Controller"'},
+    )
 
 
 # ---- Helpers --------------------------------------------------------------
@@ -356,6 +395,7 @@ _ALLOWED_SHELLY_KEYS = {
     "ph1_url", "ph2_url", "ph3_url",
     "storage_url", "main_meter_url", "heater_meter_url",
 }
+_ALLOWED_AUTH_KEYS = {"enabled", "user", "password"}
 
 
 class ConfigUpdate(BaseModel):
@@ -364,6 +404,7 @@ class ConfigUpdate(BaseModel):
     wallbox: dict[str, Any] | None = None
     solax: dict[str, Any] | None = None
     shelly: dict[str, Any] | None = None
+    auth: dict[str, Any] | None = None
 
 
 def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str, Any]:
@@ -431,6 +472,23 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
             if not isinstance(v, str) or not (v.startswith("http://") or v.startswith("https://")):
                 raise HTTPException(400, f"shelly.{k} must start with http:// or https://")
             new_cfg["shelly"][k] = v
+
+    if patch.auth:
+        bad = set(patch.auth) - _ALLOWED_AUTH_KEYS
+        if bad:
+            raise HTTPException(400, f"auth keys not allowed: {sorted(bad)}")
+        if "enabled" in patch.auth:
+            if not isinstance(patch.auth["enabled"], bool):
+                raise HTTPException(400, "auth.enabled must be boolean")
+            new_cfg["auth_enabled"] = patch.auth["enabled"]
+        if "user" in patch.auth:
+            if not isinstance(patch.auth["user"], str) or not patch.auth["user"].strip():
+                raise HTTPException(400, "auth.user must be a non-empty string")
+            new_cfg["auth_user"] = patch.auth["user"]
+        if "password" in patch.auth:
+            if not isinstance(patch.auth["password"], str):
+                raise HTTPException(400, "auth.password must be a string")
+            new_cfg["auth_password"] = patch.auth["password"]
 
     # Final-Validierung über die echten dataclasses (wirft ValueError -> 400):
     try:

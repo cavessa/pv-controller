@@ -1187,6 +1187,9 @@ async function loadSettings() {
     setFormValue(f, "wallbox.pause_below_storage_temp", lastConfig.wallbox?.pause_below_storage_temp);
     setFormValue(f, "wallbox.release_above_storage_temp", lastConfig.wallbox?.release_above_storage_temp);
     setFormValue(f, "wallbox.fail_safe", lastConfig.wallbox?.fail_safe ?? "no_change");
+    setFormValue(f, "auth.enabled", lastConfig.auth_enabled ?? false);
+    setFormValue(f, "auth.user", lastConfig.auth_user ?? "admin");
+    // Passwort-Feld bewusst leer lassen
   } catch (e) {
     showError("Konnte Settings nicht laden: " + e.message);
   }
@@ -1249,6 +1252,11 @@ async function saveSettings(e) {
       pause_below_storage_temp: numField("wallbox.pause_below_storage_temp"),
       release_above_storage_temp: numField("wallbox.release_above_storage_temp"),
       fail_safe: f.elements.namedItem("wallbox.fail_safe")?.value,
+    },
+    auth: {
+      enabled: boolField("auth.enabled"),
+      user: strField("auth.user"),
+      password: f.elements.namedItem("auth.password")?.value ?? "",
     },
   };
   // undefined entfernen
