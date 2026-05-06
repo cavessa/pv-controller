@@ -7,7 +7,8 @@ config.backup-*.json
 
 # Laufzeit-Daten
 temp_history.json
-cron.log
+*.log
+data/logs/
 
 # Python
 .venv/

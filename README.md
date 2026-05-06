@@ -13,6 +13,37 @@ Live-Dashboard, Settings-Editor und Log-Viewer.
 Der Cron-Betrieb (`python main.py`) bleibt parallel zur Web-UI bestehen
 und ist die primäre Schaltinstanz.
 
+## Schnellstart mit Docker
+
+```bash
+# 1. Konfiguration anlegen
+cp config.example.json config.json
+nano config.json        # IPs und Passwort eintragen
+
+# 2. Starten
+docker compose up -d
+
+# 3. Dashboard öffnen: http://<server-ip>:8000
+```
+
+**Updates**
+
+```bash
+git pull && docker compose up -d --build
+```
+
+**Logs / Stopp**
+
+```bash
+docker compose logs -f   # Live-Logs
+docker compose down      # Stoppen
+```
+
+> Persistent: DB und Logs liegen in `./data/`, Konfiguration in `./config.json`.
+> Der Controller (`main.py`) läuft jede Minute automatisch via Cron im Container.
+
+---
+
 ## Was der Controller macht
 
 Pro Lauf (Cron):

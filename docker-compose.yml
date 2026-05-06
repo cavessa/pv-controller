@@ -1,9 +1,14 @@
 services:
-  pvcontroller:
+  pv-controller:
     build: .
+    container_name: pv-controller
     restart: unless-stopped
-    network_mode: host        # direkter LAN-Zugriff auf Shelly / go-e / OpenHAB
+    network_mode: host            # muss Shelly / Wallbox / Wechselrichter im LAN erreichen
     volumes:
-      - ./config.json:/app/config.json          # Konfiguration pro Installation anpassen
-      - ./logs:/app/logs                         # Logs auf dem Host einsehbar
-      - ./temp_history.json:/app/temp_history.json  # Temperaturverlauf persistent
+      - ./data:/data              # DB, Logs, temp_history persistent
+      - ./config.json:/app/config.json  # Konfiguration außerhalb des Containers
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
