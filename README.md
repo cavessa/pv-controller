@@ -323,7 +323,7 @@ enthält pro Lauf u. a.:
 
 ## Phase 3: Weboberfläche
 
-Lokales Dashboard mit FastAPI. Keine Auth, keine externen CDN-Assets,
+Lokales Dashboard mit FastAPI. Optionale Basic Auth, keine externen CDN-Assets,
 alles aus `web/` ausgeliefert.
 
 ### Installation
@@ -370,6 +370,7 @@ gefahrlos alle 10 s pollen.
   `wallbox.pause_below_storage_temp`, `wallbox.release_above_storage_temp`,
   `wallbox.fail_safe`, `wallbox.url` (muss mit `http://` oder `https://`
   beginnen)
+- `auth.enabled` (bool), `auth.user` (string), `auth.password` (string)
 
 Shelly-IPs, OpenHAB-URL, `log_file`, Timeouts sind über die UI gesperrt;
 sie werden nur angezeigt. Vor jedem Schreibvorgang legt der Server eine
@@ -406,14 +407,33 @@ sudo systemctl status pv-controller-web.service
 Der bestehende **Cronjob** für `python main.py` bleibt unverändert
 bestehen — die Web-UI ersetzt ihn nicht.
 
+### Passwortschutz (Basic Auth)
+
+Der Passwortschutz ist optional und wird über `config.json` gesteuert:
+
+```json
+"auth_enabled": true,
+"auth_user": "admin",
+"auth_password": "geheimesPasswort"
+```
+
+Oder bequem über Settings → **Zugriffschutz** im Dashboard aktivieren.
+
+Sobald `auth_enabled: true` und `auth_password` gesetzt ist, verlangt jede
+Anfrage (außer `/api/health` und `/api/status`) eine gültige HTTP-Basic-Auth.
+Der Browser zeigt automatisch einen Login-Dialog.
+
+**Für Zugriff von außen** (z. B. unterwegs): Am einfachsten über
+[Tailscale](https://tailscale.com) oder WireGuard — dann braucht man kein
+Port-Forwarding und der Datenverkehr ist verschlüsselt.
+
 ### Sicherheitshinweis
 
-Phase 3 hat **keine Authentifizierung**. Der Service ist ausdrücklich
-**nur** für den Betrieb im lokalen Heimnetz gedacht. Niemals direkt ins
-Internet exponieren — kein Port-Forwarding auf 8099, kein
-Reverse-Proxy ohne zusätzliche Auth/IP-Restriction. Das Dashboard kann
-über `PUT /api/config` Schwellen ändern und über `POST /api/run-once`
-echte Schaltbefehle auslösen.
+Der Service ist ausdrücklich **nur** für den Betrieb im lokalen Heimnetz
+oder über ein VPN gedacht. Niemals direkt ins Internet exponieren — kein
+Port-Forwarding, kein Reverse-Proxy ohne zusätzliche Absicherung. Das
+Dashboard kann über `PUT /api/config` Schwellen ändern und über
+`POST /api/run-once` echte Schaltbefehle auslösen.
 
 ## Manuelles Testen
 
