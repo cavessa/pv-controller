@@ -1,5 +1,7 @@
 # PV-Controller (Phase 1 + Phase 2 + Phase 3)
 
+> 🤖 100% built with [Claude Code](https://claude.ai/code) — from first line to final commit.
+
 Steuert die drei Heizstab-Phasen (Shelly Plug PH1/PH2/PH3) anhand des
 PV-Überschusses und der Speichertemperatur. Phase 1 hat die alten Skripte
 (`shelly.py` Sommer + `wintermodus.py`) durch einen sauberen Controller
