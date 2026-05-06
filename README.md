@@ -2,18 +2,56 @@
 
 > 🤖 100% built with [Claude Code](https://claude.ai/code) — from first line to final commit.
 
-Steuert die drei Heizstab-Phasen (Shelly Plug PH1/PH2/PH3) anhand des
-PV-Überschusses und der Speichertemperatur. Phase 1 hat die alten Skripte
-(`shelly.py` Sommer + `wintermodus.py`) durch einen sauberen Controller
-ersetzt. **Phase 2** ergänzt die go-eCharger-Wallbox: Speicher hat
-Priorität, die Wallbox wird im Eco/PV-Überschussmodus gesperrt, solange
-der Speicher noch zu kalt ist, und wieder freigegeben, sobald er warm
-genug ist. Manuelles Laden bleibt unangetastet. **Phase 3** liefert eine
-schlanke lokale Weboberfläche (FastAPI + Vanilla-HTML/CSS/JS) mit
-Live-Dashboard, Settings-Editor und Log-Viewer.
+## Was kann der PV Controller?
 
-Der Cron-Betrieb (`python main.py`) bleibt parallel zur Web-UI bestehen
-und ist die primäre Schaltinstanz.
+**Intelligente PV-Überschuss-Steuerung für dein Zuhause.** Verteilt jeden Watt Solarstrom automatisch auf deine Verbraucher – in der Reihenfolge die du per Drag & Drop festlegst. Ziel: maximaler Eigenverbrauch, minimale Netzeinspeisung.
+
+### Features
+
+**Echtzeit-Dashboard**
+- Energiefluss-Diagramm mit Haus in der Mitte – alle Flüsse auf einen Blick
+- PV-Erzeugung, Netzeinspeisung/-bezug, Hausverbrauch live
+- Eigenverbrauchsquote & Autarkiegrad als Gauges
+- Speichertemperatur mit Verlaufsgraph
+- Heizstab-Phasen-Visualisierung
+- Wallbox-Status und Ladehistorie
+
+**Prioritäts-Kaskade mit Drag & Drop**
+- Lege per Drag & Drop fest, wer den PV-Überschuss zuerst bekommt
+- Das System schaltet automatisch von oben nach unten ein – solange Überschuss da ist
+- Heizstab, Wallbox und Shelly-Geräte in einer gemeinsamen Prioritätsliste
+- Beispiel: Bei 5 kW Überschuss → eBike (180W) ✅ → Heizstab 3 Phasen (4.5kW) ✅ → Rest ins Netz
+
+**Shelly Smarthome Integration**
+- Shelly Gen1 + Gen2 Geräte per IP hinzufügen
+- Verbindungstest direkt aus der UI
+- Automatisches Schalten bei PV-Überschuss
+- Echte Leistungsmessung (wenn vom Shelly unterstützt)
+
+**Heizstab-Steuerung (3 Phasen)**
+- Steuert bis zu 3 Shelly-Schaltrelais für den Heizstab
+- Phasenweise Zuschaltung je nach Überschuss
+- Speicher-Temperaturüberwachung mit Hysterese
+
+**Wallbox go-eCharger**
+- Eco/PV-Überschuss-Laden
+- Kaskade gibt Wallbox frei wenn genug Überschuss nach höher priorisierten Geräten
+- Manuelles Laden bleibt jederzeit möglich
+
+**Lokale Web-UI**
+- Dark Theme Dashboard – optimiert für Desktop und Mobile
+- Settings-Editor für alle Geräte-IPs direkt im Browser
+- Log-Viewer und Verlaufs-Tab
+- Läuft komplett lokal – keine Cloud, keine Registrierung, keine Daten die das Haus verlassen
+
+### Unterstützte Hardware
+
+- **Wechselrichter:** Solax (Modbus TCP via PocketWifi)
+- **Heizstab:** 3× Shelly Schaltrelais (Plug S, 1PM, Plus 1PM, etc.)
+- **Warmwasserspeicher:** Shelly Temperatursensor
+- **Hauptzähler:** Shelly 3EM / Pro 3EM
+- **Wallbox:** go-eCharger (HTTP API)
+- **Smarthome:** Beliebige Shelly Gen1 + Gen2 Geräte
 
 ## Schnellstart mit Docker
 
