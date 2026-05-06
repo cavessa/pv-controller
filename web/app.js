@@ -795,6 +795,7 @@ function _loadCurrentVerlauf() {
   if (_vsec === "monat")   loadVerlaufMonat(_vMonth);
   if (_vsec === "jahr")    loadVerlaufJahr(_vYear);
   if (_vsec === "strings") loadVerlaufStrings(_vStringsDate);
+  if (_vsec === "wetter")  loadVerlaufWetter();
 }
 
 async function loadVerlauf() {
@@ -928,6 +929,58 @@ function renderYearChart(entries) {
   wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">
     <g>${yElems}</g>${bars}
   </svg>`;
+}
+
+// ── Forecast card ────────────────────────────────────────────────────────────
+
+let _lastForecastData = null;
+
+async function loadForecast() {
+  try {
+    const data = await api("/api/forecast");
+    _lastForecastData = data;
+    renderForecastCard(data);
+  } catch {
+    // non-critical – silently skip
+  }
+}
+
+function renderForecastCard(data) {
+  const card = document.getElementById("forecast-card");
+  const kwhEl = document.getElementById("forecast-kwh");
+  const badgeEl = document.getElementById("forecast-badge");
+  const sunEl = document.getElementById("forecast-sun");
+  const ghiEl = document.getElementById("forecast-ghi");
+  const compareEl = document.getElementById("forecast-compare");
+  if (!card) return;
+
+  const t = data?.tomorrow;
+  const today = data?.today;
+
+  if (!t) {
+    kwhEl.textContent = "–";
+    badgeEl.textContent = today?.weather_icon ?? "";
+    const days = data?.data_days ?? 0;
+    if (compareEl) {
+      compareEl.className = "forecast-compare";
+      compareEl.textContent = days < 7
+        ? `Noch nicht genug Daten für eine Prognose (${days}/7 Tage)`
+        : "Keine Wetterdaten für morgen verfügbar.";
+    }
+    return;
+  }
+
+  kwhEl.textContent = `~${t.predicted_kwh} kWh`;
+  badgeEl.textContent = `${t.weather_icon ?? ""} ${t.temp_max != null ? Math.round(t.temp_max) + "°C" : ""}`.trim();
+  if (sunEl) sunEl.textContent = t.sunshine_hours != null ? t.sunshine_hours.toFixed(1) + " h" : "–";
+  if (ghiEl) ghiEl.textContent = t.ghi_kwh_m2 != null ? t.ghi_kwh_m2.toFixed(1) + " kWh/m²" : "–";
+
+  if (compareEl && today) {
+    const actual = today.actual_kwh != null ? today.actual_kwh.toFixed(1) + " kWh" : "–";
+    const predicted = today.predicted_kwh != null ? ` (Prognose war ${today.predicted_kwh.toFixed(1)} kWh)` : "";
+    compareEl.className = "forecast-compare";
+    compareEl.textContent = `Heute: ${actual}${predicted}`;
+  }
 }
 
 // ── Strings sub-tab ──────────────────────────────────────────────────────────
@@ -1097,6 +1150,93 @@ async function _checkLiveStringAlert() {
   } catch {
     // ignore — non-critical
   }
+}
+
+// ── Wetter sub-tab ───────────────────────────────────────────────────────────
+
+async function loadVerlaufWetter() {
+  try {
+    const data = await api("/api/forecast");
+    _lastForecastData = data;
+    const r2El = document.getElementById("weather-corr-r2");
+    if (r2El) r2El.textContent = data.r2 != null ? `r² = ${data.r2.toFixed(2)}` : "–";
+    renderScatterPlot(
+      data.correlation || [],
+      data.tomorrow,
+      data.r2,
+      data.slope,
+      data.intercept,
+    );
+  } catch (e) {
+    showError("Wetter-Korrelation konnte nicht geladen werden: " + e.message);
+  }
+}
+
+function renderScatterPlot(corrData, forecastPt, r2, slope, intercept) {
+  const wrap = document.getElementById("chart-weather-corr-wrap");
+  if (!wrap) return;
+  if (!corrData || !corrData.length) {
+    const days = _lastForecastData?.data_days ?? 0;
+    wrap.innerHTML = `<div class="chart-empty">${
+      days < 7
+        ? `Noch nicht genug Daten (${days}/7 Tage mit Wetter + PV-Ertrag benötigt).`
+        : "Keine Korrelationsdaten verfügbar."
+    }</div>`;
+    return;
+  }
+  const VW = 460, VH = 150;
+  const pad = { t: 14, r: 20, b: 28, l: 40 };
+  const cw = VW - pad.l - pad.r;
+  const ch = VH - pad.t - pad.b;
+
+  const maxGhi = Math.max(...corrData.map(d => d.ghi_kwh_m2),
+    forecastPt?.ghi_kwh_m2 ?? 0, 0.1);
+  const maxPv = Math.max(...corrData.map(d => d.pv_kwh),
+    forecastPt?.predicted_kwh ?? 0, 1);
+
+  const sx = x => pad.l + (x / maxGhi) * cw;
+  const sy = y => pad.t + ch * (1 - y / maxPv);
+
+  let yElems = "";
+  const yStep = niceStep(maxPv, 4);
+  for (let yv = 0; yv <= maxPv + 0.01; yv += yStep) {
+    const ypx = sy(yv).toFixed(1);
+    yElems += `<line x1="${pad.l}" y1="${ypx}" x2="${pad.l + cw}" y2="${ypx}" class="grid-line"/>`;
+    yElems += `<text x="${pad.l - 4}" y="${ypx}" text-anchor="end" dominant-baseline="middle">${yv.toFixed(0)}</text>`;
+  }
+
+  const xStep = niceStep(maxGhi, 5);
+  let xElems = `<text x="${(pad.l + cw / 2).toFixed(0)}" y="${VH}" text-anchor="middle" font-size="8" fill="rgba(255,255,255,0.35)">GHI kWh/m²</text>`;
+  for (let xv = 0; xv <= maxGhi + 0.01; xv += xStep) {
+    xElems += `<text x="${sx(xv).toFixed(1)}" y="${VH - 10}" text-anchor="middle">${xv.toFixed(1)}</text>`;
+  }
+
+  let regLine = "";
+  if (slope != null && intercept != null) {
+    const x0 = 0, x1 = maxGhi;
+    const y0 = Math.max(0, slope * x0 + intercept);
+    const y1 = Math.max(0, slope * x1 + intercept);
+    regLine = `<line x1="${sx(x0).toFixed(1)}" y1="${sy(y0).toFixed(1)}" x2="${sx(x1).toFixed(1)}" y2="${sy(y1).toFixed(1)}" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="5,3" opacity="0.65"/>`;
+  }
+
+  const dots = corrData.map(d =>
+    `<circle cx="${sx(d.ghi_kwh_m2).toFixed(1)}" cy="${sy(d.pv_kwh).toFixed(1)}" r="2.5" fill="var(--c-pv)" opacity="0.65"/>`
+  ).join("");
+
+  let starEl = "";
+  if (forecastPt?.ghi_kwh_m2 != null && forecastPt?.predicted_kwh != null) {
+    starEl = `<text x="${sx(forecastPt.ghi_kwh_m2).toFixed(1)}" y="${sy(forecastPt.predicted_kwh).toFixed(1)}" text-anchor="middle" dominant-baseline="middle" font-size="15" fill="var(--ok)">★</text>`;
+  }
+
+  const r2label = r2 != null
+    ? `<text x="${pad.l + cw - 2}" y="${pad.t + 10}" text-anchor="end" font-size="9" fill="rgba(255,255,255,0.45)" letter-spacing="0.05em">r²=${r2.toFixed(2)}</text>`
+    : "";
+
+  wrap.innerHTML = `<svg viewBox="0 0 ${VW} ${VH}" class="spark-svg chart-svg">
+    <g class="grid-g">${yElems}</g>
+    ${regLine}${dots}${starEl}${r2label}
+    <g class="axis-g">${xElems}</g>
+  </svg>`;
 }
 
 function fmtPhaseAction(a) {
@@ -1442,6 +1582,7 @@ async function refreshStatus() {
     }
     if (activeTab === "prioritaeten") loadCascade();
     _checkLiveStringAlert();
+    loadForecast();
   } catch (e) {
     showError("Status-Abfrage fehlgeschlagen: " + e.message);
   }
@@ -1512,6 +1653,9 @@ async function loadSettings() {
     setFormValue(f, "auth.enabled", lastConfig.auth_enabled ?? false);
     setFormValue(f, "auth.user", lastConfig.auth_user ?? "admin");
     // Passwort-Feld bewusst leer lassen
+    setFormValue(f, "location.latitude",  lastConfig.latitude  ?? "");
+    setFormValue(f, "location.longitude", lastConfig.longitude ?? "");
+    setFormValue(f, "location.name",      lastConfig.location_name ?? "");
   } catch (e) {
     showError("Konnte Settings nicht laden: " + e.message);
   }
@@ -1579,6 +1723,11 @@ async function saveSettings(e) {
       enabled: boolField("auth.enabled"),
       user: strField("auth.user"),
       password: f.elements.namedItem("auth.password")?.value ?? "",
+    },
+    location: {
+      latitude:  numField("location.latitude"),
+      longitude: numField("location.longitude"),
+      name:      strField("location.name"),
     },
   };
   // undefined entfernen

@@ -46,5 +46,8 @@
   },
   "auth_enabled": false,
   "auth_user": "admin",
-  "auth_password": ""
+  "auth_password": "",
+  "latitude": 0.0,
+  "longitude": 0.0,
+  "location_name": ""
 }

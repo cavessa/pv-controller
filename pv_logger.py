@@ -13,6 +13,10 @@ log = logging.getLogger(__name__)
 def maybe_log(result: ControllerResult) -> None:
     """Einmal pro Cron-Lauf aufrufen (jede Minute)."""
     try:
+        _fetch_weather_if_needed()
+    except Exception:
+        log.exception("pv_logger: Wetter-Abruf fehlgeschlagen")
+    try:
         _log_hourly(result)
     except Exception:
         log.exception("pv_logger: hourly snapshot fehlgeschlagen")
@@ -62,6 +66,23 @@ def _log_hourly(result: ControllerResult) -> None:
     )
 
 
+def _fetch_weather_if_needed() -> None:
+    import json as _json
+    from pathlib import Path as _Path
+    cfg_path = _Path(__file__).resolve().parent / "config.json"
+    try:
+        with open(cfg_path) as f:
+            raw = _json.load(f)
+        lat = float(raw.get("latitude", 0.0))
+        lon = float(raw.get("longitude", 0.0))
+    except Exception:
+        return
+    if lat == 0.0 and lon == 0.0:
+        return
+    import weather as _weather
+    _weather.fetch_and_store(lat, lon)
+
+
 def _check_string_anomaly(result: ControllerResult) -> None:
     import clients.solax_client as sc
     raw = sc._cached_raw
@@ -106,9 +127,12 @@ def _log_daily() -> None:
     if raw is None or len(raw) < 93:
         return
     today = datetime.now().strftime("%Y-%m-%d")
+    today_weather = db.get_weather(today)
     db.log_daily_summary(
         date_str=today,
         pv_kwh=raw[82] / 10.0,
         feed_out_kwh=raw[90] / 100.0,
         feed_in_kwh=raw[92] / 100.0,
+        sunshine_h=today_weather.get("sunshine_hours") if today_weather else None,
+        ghi_kwh_m2=today_weather.get("ghi_kwh_m2") if today_weather else None,
     )

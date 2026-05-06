@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=42">
+  <link rel="stylesheet" href="/static/styles.css?v=43">
 </head>
 <body>
   <div class="app-shell">
@@ -130,6 +130,19 @@
           <div id="sol-today"></div>
         </div>
 
+        <div class="card" id="forecast-card">
+          <div class="card-head">
+            <h2>Prognose Morgen</h2>
+            <span id="forecast-badge" class="forecast-badge"></span>
+          </div>
+          <div id="forecast-kwh" class="forecast-kwh">–</div>
+          <div class="kv compact" id="forecast-details" style="margin-top:6px">
+            <div><span>Sonnenstunden</span><b id="forecast-sun">–</b></div>
+            <div><span>Globalstrahlung</span><b id="forecast-ghi">–</b></div>
+          </div>
+          <div id="forecast-compare" class="forecast-compare hidden"></div>
+        </div>
+
         <div class="card">
           <h2>Heizstab Phasen</h2>
           <div class="phases" id="phases"></div>
@@ -177,6 +190,7 @@
         <button class="verlauf-nav-btn" data-vsec="monat">Monat</button>
         <button class="verlauf-nav-btn" data-vsec="jahr">Jahr</button>
         <button class="verlauf-nav-btn" data-vsec="strings">Strings</button>
+        <button class="verlauf-nav-btn" data-vsec="wetter">Wetter</button>
       </div>
 
       <!-- ── Tag ── -->
@@ -309,6 +323,20 @@
         </div>
       </div>
 
+      <!-- ── Wetter ── -->
+      <div id="verlauf-wetter" class="verlauf-section hidden">
+        <div class="card">
+          <div class="card-head">
+            <h2>Wetter-Korrelation (letzte 90 Tage)</h2>
+            <span class="forecast-r2" id="weather-corr-r2">–</span>
+          </div>
+          <div id="chart-weather-corr-wrap" class="temp-chart-wrap">
+            <div class="chart-empty">Lade…</div>
+          </div>
+          <p class="note" style="margin-top:8px">Punkte = historische Tage · Linie = Trendlinie · ★ = Prognose morgen</p>
+        </div>
+      </div>
+
     </section>
 
     <!-- ========= Prioritäten ========= -->
@@ -399,6 +427,14 @@
             <label>Benutzername<input type="text" name="auth.user" placeholder="admin" autocomplete="username"></label>
             <label>Passwort<input type="password" name="auth.password" placeholder="leer = deaktiviert" autocomplete="new-password"></label>
             <p class="note">Nach dem Aktivieren wirst du nach dem Neuladen nach dem Passwort gefragt. Das Passwortfeld muss befüllt sein, damit der Schutz greift. /api/health und /api/status bleiben immer offen (Docker-Healthcheck).</p>
+          </fieldset>
+
+          <fieldset>
+            <legend>Standort (Wetterprognose)</legend>
+            <label>Breitengrad<input type="number" step="0.0001" name="location.latitude" placeholder="z.B. 48.8764"></label>
+            <label>Längengrad<input type="number" step="0.0001" name="location.longitude" placeholder="z.B. 9.2722"></label>
+            <label>Ortsname<input type="text" name="location.name" placeholder="z.B. Remseck am Neckar"></label>
+            <p class="note">Google Maps → Rechtsklick → Koordinaten kopieren. Wird für die PV-Ertrags&shy;prognose via Open-Meteo verwendet (kostenlos, kein API-Key).</p>
           </fieldset>
 
           <div class="form-actions">
@@ -531,6 +567,6 @@
   </footer>
   </div>
 
-  <script src="/static/app.js?v=64" defer></script>
+  <script src="/static/app.js?v=65" defer></script>
 </body>
 </html>

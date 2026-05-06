@@ -92,6 +92,16 @@ def init_pv_logging_tables() -> None:
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS weather_log (
+                date           TEXT PRIMARY KEY,
+                sunshine_hours REAL,
+                ghi_kwh_m2     REAL,
+                temp_max       REAL,
+                temp_min       REAL,
+                weathercode    INTEGER
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS pv_daily_log (
                 date            TEXT PRIMARY KEY,
                 pv_kwh          REAL,
@@ -245,6 +255,69 @@ def cleanup_old_hourly(keep_days: int = 90) -> None:
             "DELETE FROM pv_hourly_log WHERE timestamp < date('now', ?)",
             (f"-{keep_days} days",),
         )
+
+
+def upsert_weather(
+    date_str: str,
+    sunshine_hours: Optional[float],
+    ghi_kwh_m2: Optional[float],
+    temp_max: Optional[float],
+    temp_min: Optional[float],
+    weathercode: Optional[int],
+) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO weather_log
+               (date, sunshine_hours, ghi_kwh_m2, temp_max, temp_min, weathercode)
+               VALUES (?,?,?,?,?,?)""",
+            (date_str, sunshine_hours, ghi_kwh_m2, temp_max, temp_min, weathercode),
+        )
+
+
+def get_weather(date_str: str) -> Optional[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            """SELECT date, sunshine_hours, ghi_kwh_m2, temp_max, temp_min, weathercode
+               FROM weather_log WHERE date = ?""",
+            (date_str,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "date": row[0], "sunshine_hours": row[1], "ghi_kwh_m2": row[2],
+        "temp_max": row[3], "temp_min": row[4], "weathercode": row[5],
+    }
+
+
+def get_forecast_correlation_data(limit: int = 90) -> list[dict]:
+    """Historische (GHI, PV) Paare für lineare Regression – nur Tage mit beiden Werten."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """SELECT date, pv_kwh, ghi_kwh_m2 FROM pv_daily_log
+               WHERE pv_kwh > 0 AND ghi_kwh_m2 > 0
+               ORDER BY date DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [{"date": r[0], "pv_kwh": r[1], "ghi_kwh_m2": r[2]} for r in rows]
+
+
+def get_daily_for_date(date_str: str) -> Optional[dict]:
+    """Einzelner Tageseintrag aus pv_daily_log."""
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            """SELECT date, pv_kwh, feed_out_kwh, feed_in_kwh,
+                      selfuse_kwh, selfuse_pct, autarky_pct, sunshine_h, ghi_kwh_m2
+               FROM pv_daily_log WHERE date = ?""",
+            (date_str,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "date": row[0], "pv_kwh": row[1], "feed_out_kwh": row[2],
+        "feed_in_kwh": row[3], "selfuse_kwh": row[4],
+        "selfuse_pct": row[5], "autarky_pct": row[6],
+        "sunshine_h": row[7], "ghi_kwh_m2": row[8],
+    }
 
 
 def get_normal_ratio() -> Optional[float]:

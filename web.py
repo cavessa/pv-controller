@@ -396,6 +396,7 @@ _ALLOWED_SHELLY_KEYS = {
     "storage_url", "main_meter_url", "heater_meter_url",
 }
 _ALLOWED_AUTH_KEYS = {"enabled", "user", "password"}
+_ALLOWED_LOCATION_KEYS = {"latitude", "longitude", "name"}
 
 
 class ConfigUpdate(BaseModel):
@@ -405,6 +406,7 @@ class ConfigUpdate(BaseModel):
     solax: dict[str, Any] | None = None
     shelly: dict[str, Any] | None = None
     auth: dict[str, Any] | None = None
+    location: dict[str, Any] | None = None
 
 
 def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str, Any]:
@@ -489,6 +491,26 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
             if not isinstance(patch.auth["password"], str):
                 raise HTTPException(400, "auth.password must be a string")
             new_cfg["auth_password"] = patch.auth["password"]
+
+    if patch.location:
+        bad = set(patch.location) - _ALLOWED_LOCATION_KEYS
+        if bad:
+            raise HTTPException(400, f"location keys not allowed: {sorted(bad)}")
+        if "latitude" in patch.location:
+            v = patch.location["latitude"]
+            if not isinstance(v, (int, float)) or isinstance(v, bool):
+                raise HTTPException(400, "location.latitude must be a number")
+            new_cfg["latitude"] = float(v)
+        if "longitude" in patch.location:
+            v = patch.location["longitude"]
+            if not isinstance(v, (int, float)) or isinstance(v, bool):
+                raise HTTPException(400, "location.longitude must be a number")
+            new_cfg["longitude"] = float(v)
+        if "name" in patch.location:
+            v = patch.location["name"]
+            if not isinstance(v, str):
+                raise HTTPException(400, "location.name must be a string")
+            new_cfg["location_name"] = v
 
     # Final-Validierung über die echten dataclasses (wirft ValueError -> 400):
     try:
@@ -624,6 +646,26 @@ def api_yearly_history(year: int, response: Response) -> dict[str, Any]:
         raise HTTPException(400, "Ungültiges Jahr")
     from db import get_monthly_totals
     return {"year": year, "entries": get_monthly_totals(year)}
+
+
+@app.get("/api/forecast")
+def api_forecast(response: Response) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as _f:
+            _raw = json.load(_f)
+        lat = float(_raw.get("latitude", 0.0))
+        lon = float(_raw.get("longitude", 0.0))
+    except Exception:
+        lat, lon = 0.0, 0.0
+    if lat != 0.0 or lon != 0.0:
+        try:
+            from weather import fetch_and_store
+            fetch_and_store(lat, lon)
+        except Exception:
+            log.warning("weather fetch_and_store failed in /api/forecast")
+    from weather import calculate_forecast
+    return calculate_forecast()
 
 
 @app.get("/api/strings/ratio")

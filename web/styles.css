@@ -777,6 +777,36 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
   color: var(--error);
 }
 
+/* -------- Forecast card -------- */
+.forecast-kwh {
+  font-size: 34px;
+  font-weight: 500;
+  color: var(--c-pv);
+  text-align: center;
+  padding: 12px 0 6px;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.forecast-badge {
+  font-size: 22px;
+  line-height: 1;
+}
+.forecast-compare {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  letter-spacing: 0.03em;
+}
+.forecast-compare.hidden { display: none; }
+.forecast-r2 {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 /* -------- String dashboard alert -------- */
 .string-dash-alert {
   display: none;
