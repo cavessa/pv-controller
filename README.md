@@ -1,4 +1,4 @@
-# PV-Controller (Phase 1 + Phase 2 + Phase 3)
+# PV-Controller - Überschussmanagement Solax Wechselrichter, go-e Wallbox, Heizstab mit Shelly & weitere Shelly
 
 > 🤖 100% built with [Claude Code](https://claude.ai/code) — from first line to final commit.
 
