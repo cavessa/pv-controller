@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-05-07 – PV & Netz Card verschoben
+
+- **index.html**: Card "PV & Netz" nach "Heizstab Phasen" verschoben — neue Reihenfolge: PV Erzeugung → Heizstab Phasen → PV & Netz → Heute → …
+
+## 2026-05-07 – Heizstab Phasen Card verschoben
+
+- **index.html**: Card "Heizstab Phasen" direkt nach "PV Erzeugung" verschoben (war zuvor nach "Prognose Morgen")
+
 ## 2026-05-07 – String-Verhältnis Banner Abstand
 
 - **styles.css**: `.string-dash-alert` margin-bottom `2px` → `12px` — verhindert das Anquetschen des Banners an den STR1-Balken darunter

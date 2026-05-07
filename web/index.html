@@ -132,17 +132,6 @@
       <div class="dashboard-right">
       <div class="grid">
         <div class="card">
-          <h2>PV &amp; Netz</h2>
-          <div class="kv">
-            <div><span>PV-Leistung</span><b id="m-pv">–</b></div>
-            <div><span>Hauptzähler</span><b id="m-grid">–</b></div>
-            <div><span>Heizstab 3EM</span><b id="m-heater">–</b></div>
-            <div><span>Überschuss o. Heizstab</span><b id="m-surplus">–</b></div>
-          </div>
-          <p class="note">Negative Netz-/Überschusswerte = Einspeisung/Überschuss.</p>
-        </div>
-
-        <div class="card">
           <h2>PV Erzeugung</h2>
           <div class="pv-live-total" id="pv-live-total">– W</div>
           <div id="string-dash-alert" class="string-dash-alert hidden"></div>
@@ -151,6 +140,23 @@
             <div><span>Einspeisung / Bezug</span><b id="pv-live-feedin">–</b></div>
             <div><span>Hausverbrauch</span><b id="pv-live-consumption">–</b></div>
           </div>
+        </div>
+
+        <div class="card">
+          <h2>Heizstab Phasen</h2>
+          <div class="phases" id="phases"></div>
+          <div id="phase-timeline" class="phase-tl-wrap hidden"></div>
+        </div>
+
+        <div class="card">
+          <h2>PV &amp; Netz</h2>
+          <div class="kv">
+            <div><span>PV-Leistung</span><b id="m-pv">–</b></div>
+            <div><span>Hauptzähler</span><b id="m-grid">–</b></div>
+            <div><span>Heizstab 3EM</span><b id="m-heater">–</b></div>
+            <div><span>Überschuss o. Heizstab</span><b id="m-surplus">–</b></div>
+          </div>
+          <p class="note">Negative Netz-/Überschusswerte = Einspeisung/Überschuss.</p>
         </div>
 
         <div class="card">
@@ -169,12 +175,6 @@
             <div><span>Globalstrahlung</span><b id="forecast-ghi">–</b></div>
           </div>
           <div id="forecast-compare" class="forecast-compare hidden"></div>
-        </div>
-
-        <div class="card">
-          <h2>Heizstab Phasen</h2>
-          <div class="phases" id="phases"></div>
-          <div id="phase-timeline" class="phase-tl-wrap hidden"></div>
         </div>
 
         <div class="card" id="wallbox-card">
