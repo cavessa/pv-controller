@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-05-07 – String-Verhältnis Banner Abstand
+
+- **styles.css**: `.string-dash-alert` margin-bottom `2px` → `12px` — verhindert das Anquetschen des Banners an den STR1-Balken darunter
+
 ## 2026-05-07 – Loading-Overlay beim Seitenstart
 
 - **index.html**: Fullscreen-Overlay (`#loading-overlay`) direkt nach `<body>` — gleiche Hintergrundfarbe wie Dashboard (#1a1d23), Spinner in #2ed8a3, z-index 9999

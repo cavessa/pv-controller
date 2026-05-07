@@ -766,7 +766,7 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 
 /* -------- String alert -------- */
 .string-alert {
-  margin-top: 10px; padding: 9px 12px; border-radius: 10px;
+  margin-top: 10px; margin-bottom: 12px; padding: 9px 12px; border-radius: 10px;
   font-size: 12px; line-height: 1.5;
   border: 1px solid var(--line); background: var(--bg-3);
 }
@@ -815,7 +815,7 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 /* -------- String dashboard alert -------- */
 .string-dash-alert {
   display: none;
-  margin: 6px 0 2px;
+  margin: 6px 0 12px;
   padding: 8px 12px;
   border-radius: 10px;
   font-size: 12px;
