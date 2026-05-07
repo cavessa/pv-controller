@@ -518,19 +518,24 @@ main {
 .temp-chart-wrap { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
 .temp-chart      { width: 100%; height: auto; display: block; overflow: visible; }
 .chart-empty     { color: var(--text-dim); font-size: 11px; text-align: center; padding: 10px 0 2px; }
-.temp-chart .grid-line { stroke: var(--line); stroke-width: 0.5; }
+.temp-chart .grid-line { stroke: rgba(255,255,255,0.06); stroke-width: 0.7; }
 .temp-chart text {
-  fill: var(--text-muted);
-  font-size: 8px;
+  fill: #a0a3ab;
+  font-size: 9px;
   font-family: 'DM Mono', monospace;
 }
-.temp-chart .temp-area  { opacity: 0.15; }
-.temp-chart .temp-line  { stroke: var(--c-storage); stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; }
-.temp-chart .max-line   { stroke: var(--c-grid); stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.45; }
-.temp-chart .now-line   { stroke: rgba(255,255,255,0.15); stroke-width: 1; }
+.temp-chart .temp-area  { opacity: 0.25; }
+.temp-chart .temp-line  { stroke: var(--c-storage); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.temp-chart .max-line   { stroke: var(--c-grid); stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.55; }
+.temp-chart .now-line   { stroke: rgba(255,255,255,0.2); stroke-width: 1.2; }
 .temp-chart .last-dot   { fill: var(--c-storage); stroke: var(--bg); stroke-width: 1.5; }
-.temp-chart .wb-line    { stroke: var(--c-wallbox); stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; }
+.temp-chart .wb-line    { stroke: var(--c-wallbox); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
 .temp-chart .wb-dot     { fill: var(--c-wallbox); stroke: var(--bg); stroke-width: 1.5; }
+
+/* Verlauf / History / Strings / Wetter charts */
+.chart-svg { width: 100%; height: auto; display: block; overflow: visible; }
+.chart-svg .grid-line { stroke: rgba(255,255,255,0.06); stroke-width: 0.7; }
+.chart-svg text { fill: #a0a3ab; font-size: 9px; font-family: 'DM Mono', monospace; }
 
 /* -------- Phase Timeline -------- */
 .phase-tl-wrap        { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }

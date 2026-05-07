@@ -594,13 +594,17 @@ function renderDailyChart(entries) {
   const now = new Date();
   const nowX = sx(now.getHours() + now.getMinutes() / 60).toFixed(1);
   const path = key => pts.map((p, i) => `${i===0?"M":"L"}${sx(p.h).toFixed(1)},${sy(p[key]).toFixed(1)}`).join(" ");
+  const area = key => path(key) + ` L${sx(pts[pts.length-1].h).toFixed(1)},${(pad.t+ch).toFixed(1)} L${sx(pts[0].h).toFixed(1)},${(pad.t+ch).toFixed(1)} Z`;
 
   wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">
     <g>${yElems}${xElems}</g>
     <line x1="${nowX}" y1="${pad.t}" x2="${nowX}" y2="${pad.t+ch}" class="now-line"/>
-    <path d="${path('cons')}" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
-    <path d="${path('feed')}" fill="none" stroke="var(--ok)" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
-    <path d="${path('pv')}" fill="none" stroke="var(--c-pv)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="${area('cons')}" fill="rgba(224,226,230,0.1)" stroke="none"/>
+    <path d="${area('feed')}" fill="rgba(46,216,163,0.15)" stroke="none"/>
+    <path d="${area('pv')}" fill="rgba(232,164,53,0.2)" stroke="none"/>
+    <path d="${path('cons')}" fill="none" stroke="#e0e2e6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="${path('feed')}" fill="none" stroke="#2ed8a3" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="${path('pv')}" fill="none" stroke="#e8a435" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
   </svg>`;
 }
 
@@ -639,12 +643,15 @@ function renderStringChart(entries) {
   const now = new Date();
   const nowX = sx(now.getHours() + now.getMinutes() / 60).toFixed(1);
   const path = key => pts.map((p, i) => `${i===0?"M":"L"}${sx(p.h).toFixed(1)},${sy(p[key]).toFixed(1)}`).join(" ");
+  const area = key => path(key) + ` L${sx(pts[pts.length-1].h).toFixed(1)},${(pad.t+ch).toFixed(1)} L${sx(pts[0].h).toFixed(1)},${(pad.t+ch).toFixed(1)} Z`;
 
   wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">
     <g>${yElems}${xElems}</g>
     <line x1="${nowX}" y1="${pad.t}" x2="${nowX}" y2="${pad.t+ch}" class="now-line"/>
-    <path d="${path('s2')}" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
-    <path d="${path('s1')}" fill="none" stroke="var(--c-pv)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="${area('s2')}" fill="rgba(245,120,42,0.15)" stroke="none"/>
+    <path d="${area('s1')}" fill="rgba(232,164,53,0.15)" stroke="none"/>
+    <path d="${path('s2')}" fill="none" stroke="#f5782a" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="${path('s1')}" fill="none" stroke="#e8a435" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
   </svg>`;
 }
 
@@ -680,8 +687,8 @@ function renderWeekChart(dailyData) {
     const x = x0(i), bot = pad.t + ch;
     const feedH = Math.max(0, feedout / maxVal * ch);
     const selfH = Math.max(0, selfuse / maxVal * ch);
-    bars += `<rect x="${x.toFixed(1)}" y="${(bot-feedH).toFixed(1)}" width="${barW.toFixed(1)}" height="${feedH.toFixed(1)}" rx="2" fill="var(--ok)" opacity="0.7"/>`;
-    bars += `<rect x="${x.toFixed(1)}" y="${(bot-feedH-selfH).toFixed(1)}" width="${barW.toFixed(1)}" height="${selfH.toFixed(1)}" rx="2" fill="var(--c-storage)" opacity="0.85"/>`;
+    bars += `<rect x="${x.toFixed(1)}" y="${(bot-feedH).toFixed(1)}" width="${barW.toFixed(1)}" height="${feedH.toFixed(1)}" rx="2" fill="rgba(232,164,53,0.7)"/>`;
+    bars += `<rect x="${x.toFixed(1)}" y="${(bot-feedH-selfH).toFixed(1)}" width="${barW.toFixed(1)}" height="${selfH.toFixed(1)}" rx="2" fill="#2ed8a3"/>`;
     const dayIdx = new Date(d.date + "T12:00:00").getDay();
     bars += `<text x="${(x+barW/2).toFixed(1)}" y="${VH-3}" text-anchor="middle">${weekdays[dayIdx]}</text>`;
   });
@@ -718,7 +725,7 @@ function renderMonthChart(dailyData) {
     const val = d.pv_kwh || 0, h = Math.max(1, val / maxVal * ch);
     const x = x0(i);
     const opacity = (0.3 + (val / maxVal) * 0.65).toFixed(2);
-    bars += `<rect x="${x.toFixed(1)}" y="${(pad.t+ch-h).toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="1" fill="var(--c-pv)" opacity="${opacity}"/>`;
+    bars += `<rect x="${x.toFixed(1)}" y="${(pad.t+ch-h).toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="1" fill="#e8a435" opacity="${opacity}"/>`;
     if (i === 0 || i % 5 === 0 || i === n - 1) {
       const day = parseInt((d.date || "").split("-")[2] || "0");
       bars += `<text x="${(x+barW/2).toFixed(1)}" y="${VH-3}" text-anchor="middle">${day}.</text>`;
@@ -918,7 +925,7 @@ function renderYearChart(entries) {
     const val = d.pv_kwh || 0;
     const h = Math.max(1, val / maxVal * ch);
     const x = x0(i);
-    bars += `<rect x="${x.toFixed(1)}" y="${(pad.t + ch - h).toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="1" fill="var(--c-pv)" opacity="0.8"/>`;
+    bars += `<rect x="${x.toFixed(1)}" y="${(pad.t + ch - h).toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="1" fill="#e8a435" opacity="0.85"/>`;
     const mi = parseInt((d.month || "").split("-")[1] || "1") - 1;
     bars += `<text x="${(x + barW / 2).toFixed(1)}" y="${VH - 4}" text-anchor="middle">${MONTHS_DE[mi] ?? ""}</text>`;
     if (val >= 1) {
@@ -1040,7 +1047,13 @@ function renderStringsDayChart(entries) {
     const d = pts.map((p, i) =>
       `${i === 0 ? "M" : "L"}${sx(p.h).toFixed(1)},${sy(p[key]).toFixed(1)}`
     ).join(" ");
-    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`;
+    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`;
+  };
+  const mkArea = (key, fillColor) => {
+    if (!pts.length) return "";
+    const d = pts.map((p, i) => `${i === 0 ? "M" : "L"}${sx(p.h).toFixed(1)},${sy(p[key]).toFixed(1)}`).join(" ");
+    const bottom = pad.t + ch;
+    return `<path d="${d} L${sx(pts[pts.length-1].h).toFixed(1)},${bottom} L${sx(pts[0].h).toFixed(1)},${bottom} Z" fill="${fillColor}" stroke="none"/>`;
   };
 
   const xLabels = [0, 6, 12, 18, 23].map(h =>
@@ -1049,8 +1062,10 @@ function renderStringsDayChart(entries) {
 
   wrap.innerHTML = `<svg viewBox="0 0 ${VW} ${VH}" class="spark-svg chart-svg">
     <g class="grid-g">${yElems}</g>
-    ${mkPath("s1", "var(--c-pv)")}
-    ${mkPath("s2", "var(--c-str2)")}
+    ${mkArea("s2", "rgba(245,120,42,0.15)")}
+    ${mkArea("s1", "rgba(232,164,53,0.15)")}
+    ${mkPath("s2", "#f5782a")}
+    ${mkPath("s1", "#e8a435")}
     <g class="axis-g">${xLabels}</g>
   </svg>`;
 }
@@ -1078,7 +1093,7 @@ function renderStringRatioChart(entries, normalRatio) {
   if (normalRatio != null) {
     const bandTop = sy(normalRatio * 1.15).toFixed(1);
     const bandBot = sy(normalRatio * 0.85).toFixed(1);
-    bandElems = `<rect x="${pad.l}" y="${bandTop}" width="${cw}" height="${(parseFloat(bandBot) - parseFloat(bandTop)).toFixed(1)}" fill="rgba(255,255,255,0.07)"/>`;
+    bandElems = `<rect x="${pad.l}" y="${bandTop}" width="${cw}" height="${(parseFloat(bandBot) - parseFloat(bandTop)).toFixed(1)}" fill="rgba(255,255,255,0.05)"/>`;
     const ny = sy(normalRatio).toFixed(1);
     bandElems += `<line x1="${pad.l}" y1="${ny}" x2="${pad.l + cw}" y2="${ny}" stroke="rgba(255,255,255,0.2)" stroke-width="1" stroke-dasharray="4,3"/>`;
   }
@@ -1090,7 +1105,7 @@ function renderStringRatioChart(entries, normalRatio) {
       : null
     ).filter(Boolean);
     if (segs.length) {
-      line = `<path d="${segs.join(" ")}" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round"/>`;
+      line = `<path d="${segs.join(" ")}" fill="none" stroke="#2ed8a3" stroke-width="2.5" stroke-linejoin="round"/>`;
     }
   }
 
@@ -1099,7 +1114,7 @@ function renderStringRatioChart(entries, normalRatio) {
     entries.forEach((e, i) => {
       if (e.avg === null) return;
       if (Math.abs(e.avg - normalRatio) / normalRatio * 100 > 30) {
-        anomalyDots += `<circle cx="${sx(i).toFixed(1)}" cy="${sy(e.avg).toFixed(1)}" r="3" fill="#f87171" opacity="0.9"/>`;
+        anomalyDots += `<circle cx="${sx(i).toFixed(1)}" cy="${sy(e.avg).toFixed(1)}" r="4" fill="#ff6b6b" opacity="0.9"/>`;
       }
     });
   }
@@ -1216,16 +1231,16 @@ function renderScatterPlot(corrData, forecastPt, r2, slope, intercept) {
     const x0 = 0, x1 = maxGhi;
     const y0 = Math.max(0, slope * x0 + intercept);
     const y1 = Math.max(0, slope * x1 + intercept);
-    regLine = `<line x1="${sx(x0).toFixed(1)}" y1="${sy(y0).toFixed(1)}" x2="${sx(x1).toFixed(1)}" y2="${sy(y1).toFixed(1)}" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="5,3" opacity="0.65"/>`;
+    regLine = `<line x1="${sx(x0).toFixed(1)}" y1="${sy(y0).toFixed(1)}" x2="${sx(x1).toFixed(1)}" y2="${sy(y1).toFixed(1)}" stroke="rgba(46,216,163,0.6)" stroke-width="2" stroke-dasharray="5,3"/>`;
   }
 
   const dots = corrData.map(d =>
-    `<circle cx="${sx(d.ghi_kwh_m2).toFixed(1)}" cy="${sy(d.pv_kwh).toFixed(1)}" r="2.5" fill="var(--c-pv)" opacity="0.65"/>`
+    `<circle cx="${sx(d.ghi_kwh_m2).toFixed(1)}" cy="${sy(d.pv_kwh).toFixed(1)}" r="5" fill="#e8a435" opacity="0.75"/>`
   ).join("");
 
   let starEl = "";
   if (forecastPt?.ghi_kwh_m2 != null && forecastPt?.predicted_kwh != null) {
-    starEl = `<text x="${sx(forecastPt.ghi_kwh_m2).toFixed(1)}" y="${sy(forecastPt.predicted_kwh).toFixed(1)}" text-anchor="middle" dominant-baseline="middle" font-size="15" fill="var(--ok)">★</text>`;
+    starEl = `<text x="${sx(forecastPt.ghi_kwh_m2).toFixed(1)}" y="${sy(forecastPt.predicted_kwh).toFixed(1)}" text-anchor="middle" dominant-baseline="middle" font-size="18" fill="#ff6b6b">★</text>`;
   }
 
   const r2label = r2 != null
@@ -1854,8 +1869,15 @@ function boot() {
     if (_vStringsDate < today) loadVerlaufStrings(_dateAddDays(_vStringsDate, 1));
   });
 
-  refreshStatus();
+  refreshStatus().finally(hideLoadingOverlay);
   refreshTimer = setInterval(refreshStatus, REFRESH_MS);
+}
+
+function hideLoadingOverlay() {
+  const overlay = document.getElementById("loading-overlay");
+  if (!overlay) return;
+  overlay.style.opacity = "0";
+  setTimeout(() => overlay.remove(), 300);
 }
 
 document.addEventListener("DOMContentLoaded", boot);

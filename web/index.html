@@ -11,6 +11,34 @@
   <link rel="stylesheet" href="/static/styles.css?v=43">
 </head>
 <body>
+  <div id="loading-overlay" style="
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: #1a1d23;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    transition: opacity 0.3s ease;
+  ">
+    <div style="font-size: 24px; margin-bottom: 12px;">☀️</div>
+    <div style="
+      font-family: 'Courier New', monospace;
+      color: #e8a435;
+      font-size: 14px;
+      letter-spacing: 2px;
+    ">PV CONTROLLER</div>
+    <div style="
+      margin-top: 16px;
+      width: 40px; height: 40px;
+      border: 3px solid #3a3d45;
+      border-top-color: #2ed8a3;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    "></div>
+    <style>@keyframes spin { to { transform: rotate(360deg); } }</style>
+  </div>
   <div class="app-shell">
   <header class="topbar">
     <h1 class="brand-title">PV Controller</h1>
