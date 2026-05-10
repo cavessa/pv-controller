@@ -1333,7 +1333,7 @@ function renderStringsDayChart(entries) {
   const cw = VW - pad.l - pad.r;
   const ch = VH - pad.t - pad.b;
   const pts = entries.map(e => ({
-    h: new Date(e.timestamp).getHours(),
+    h: parseInt((e.ts || "").split(" ")[1]?.split(":")[0] || "0", 10),
     s1: e.str1_w || 0,
     s2: e.str2_w || 0,
   }));

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-05-10 – Bugfix: String-Leistung Chart (täglich) war leer
+
+- **app.js** `renderStringsDayChart`: `e.timestamp` → `e.ts` korrigiert; API liefert das Feld als `ts`, deshalb wurde `new Date(undefined)` aufgerufen → alle Stunden wurden als `NaN` berechnet und der Chart blieb leer
+
+## 2026-05-10 – Browser-Cache bust für app.js
+
+- **index.html**: `app.js` Version-Parameter auf `v=20260510` hochgezählt (war `v=70`)
+
 ## 2026-05-10 – Prognose-Einschätzung berücksichtigt Sonnenuntergang
 
 - **app.js**: Neue Funktion `getForecastAssessment` ersetzt die inline-Logik; berechnet verbleibenden möglichen Ertrag (Durchschnitt × Restzeit × 0.5 für Abendsonne) statt nur Fortschritts-Prozentsatz; Texte zeigen verbleibende kWh und Restzeit bei orangenem/rotem Status
