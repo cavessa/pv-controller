@@ -613,28 +613,70 @@ function renderToday(d) {
   const el = document.getElementById("sol-today");
   if (!el) return;
 
-  if (!d) {
-    el.innerHTML = '<div class="chart-empty">Keine Daten verfügbar.</div>';
+  const H2 = `<span style="font-size:11px;letter-spacing:0.14em;color:rgba(255,255,255,0.65);text-transform:uppercase;font-weight:500">Heute</span>`;
+  const seg = (pct, bg, txt) =>
+    `<div style="width:${pct.toFixed(1)}%;background:${bg};display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;overflow:hidden;flex-shrink:0">${pct > 20 ? txt : ''}</div>`;
+  const lbl = (txt) =>
+    `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">${txt}</div>`;
+  const barWrap = (inner) =>
+    `<div style="height:28px;background:#1a1d23;border-radius:6px;overflow:hidden;display:flex;margin-bottom:6px">${inner}</div>`;
+
+  if (!d || (d.yield_today_kwh ?? 0) < 0.001) {
+    const pvZero = barWrap(`<div style="width:100%;background:rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center;font-size:10px;color:rgba(255,255,255,0.3)">kein PV</div>`);
+    const netzFull = barWrap(seg(100, 'rgba(255,107,107,0.5)', 'Netz 100%'));
+    el.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">${H2}<span style="color:#e8a435;font-size:13px">– kWh erzeugt</span></div>
+      ${lbl('Wohin ging der PV-Strom?')}${pvZero}
+      ${lbl('Woher kam der Hausstrom?')}${netzFull}
+      <div style="display:flex;gap:8px;margin-top:14px">
+        ${kpiBox('–%', 'Eigenverbr.', '#2ed8a3')}
+        ${kpiBox('–%', 'Autarkie', '#e8a435')}
+        ${kpiBox('–', 'kWh verbr.', '#e0e2e6')}
+      </div>`;
     return;
   }
 
-  const maxVal = Math.max(d.yield_today_kwh, 0.01);
-  const rows = [
-    { label: "Erzeugt",      val: d.yield_today_kwh,       color: "var(--c-pv)" },
-    { label: "Eingespeist",  val: d.grid_out_today_kwh,    color: "var(--ok)" },
-    { label: "Netzbezug",    val: d.grid_in_today_kwh,     color: "var(--c-grid)" },
-    { label: "Eigenverbr.",  val: d.self_consumption_kwh,  color: "var(--c-storage)" },
-  ];
+  const pvKwh    = d.yield_today_kwh       ?? 0;
+  const einspKwh = d.grid_out_today_kwh    ?? 0;
+  const bezugKwh = d.grid_in_today_kwh     ?? 0;
+  const eigenKwh = d.self_consumption_kwh  ?? Math.max(0, pvKwh - einspKwh);
+  const gesamtKwh = eigenKwh + bezugKwh;
 
-  el.innerHTML = rows.map(r => {
-    const pct  = Math.max(0, Math.min(100, r.val / maxVal * 100)).toFixed(1);
-    const disp = r.val >= 10 ? r.val.toFixed(1) : r.val.toFixed(2);
-    return `<div class="today-row">
-      <div class="today-label">${r.label}</div>
-      <div class="today-bar-wrap"><div class="today-bar" style="width:${pct}%;background:${r.color}"></div></div>
-      <div class="today-val">${disp} kWh</div>
+  const eigenPct  = pvKwh > 0 ? Math.min(100, eigenKwh / pvKwh * 100) : 0;
+  const einspPct  = Math.max(0, 100 - eigenPct);
+  const pvAntPct  = gesamtKwh > 0 ? Math.min(100, eigenKwh / gesamtKwh * 100) : 0;
+  const bezugPct  = Math.max(0, 100 - pvAntPct);
+
+  const evQuote = pvKwh > 0 ? Math.round(eigenKwh / pvKwh * 100) : 0;
+  const autarkie = gesamtKwh > 0 ? Math.round(eigenKwh / gesamtKwh * 100) : 0;
+
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      ${H2}
+      <span style="color:#e8a435;font-size:13px">${pvKwh.toFixed(1)} kWh erzeugt</span>
+    </div>
+    ${lbl('Wohin ging der PV-Strom?')}
+    ${barWrap(
+      seg(eigenPct,  '#2ed8a3',               `Eigenverbr. ${eigenKwh.toFixed(1)}`) +
+      seg(einspPct,  'rgba(232,164,53,0.5)',   `Einspeisung ${einspKwh.toFixed(1)}`)
+    )}
+    ${lbl('Woher kam der Hausstrom?')}
+    ${barWrap(
+      seg(pvAntPct,  '#2ed8a3',               `PV ${eigenKwh.toFixed(1)}`) +
+      seg(bezugPct,  'rgba(255,107,107,0.5)', `Netz ${bezugKwh.toFixed(1)}`)
+    )}
+    <div style="display:flex;gap:8px;margin-top:14px">
+      ${kpiBox(evQuote + '%',              'Eigenverbr.', '#2ed8a3')}
+      ${kpiBox(autarkie + '%',             'Autarkie',    '#e8a435')}
+      ${kpiBox(gesamtKwh.toFixed(1),       'kWh verbr.',  '#e0e2e6')}
     </div>`;
-  }).join("");
+}
+
+function kpiBox(val, label, color) {
+  return `<div style="flex:1;background:#1a1d23;border-radius:8px;padding:10px;text-align:center">
+    <div style="font-size:20px;font-weight:500;color:${color}">${val}</div>
+    <div style="font-size:10px;color:var(--text-muted);margin-top:2px">${label}</div>
+  </div>`;
 }
 
 // ---------- KPI Gauges ----------
