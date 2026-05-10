@@ -344,7 +344,9 @@ class Controller:
         )
 
     def _decide_wallbox(
-        self, storage_temp_c: Optional[float]
+        self,
+        storage_temp_c: Optional[float],
+        all_phases_on: Optional[bool],
     ) -> tuple[Optional[WallboxStatus], WallboxDecision]:
         cfg = self.cfg.wallbox
 
@@ -401,57 +403,68 @@ class Controller:
                 reason="Storage temperature unavailable. fail_safe=no_change.",
             )
 
-        pause_below = cfg.pause_below_storage_temp
         release_above = cfg.release_above_storage_temp
 
-        if storage_temp_c < pause_below:
-            if status.force_state != 1:
-                return status, WallboxDecision(
-                    action=WallboxAction.PAUSE,
-                    target_force_state=1,
-                    reason=(
-                        f"Storage temperature {storage_temp_c:.1f} °C below "
-                        f"pause threshold {pause_below:.1f} °C and go-e "
-                        f"PV surplus mode active."
-                    ),
-                )
-            return status, WallboxDecision(
-                action=WallboxAction.UNCHANGED,
-                target_force_state=1,
-                reason=(
-                    f"Storage temperature {storage_temp_c:.1f} °C below "
-                    f"pause threshold {pause_below:.1f} °C, wallbox already paused."
-                ),
-            )
-
+        # Speicher voll: Wallbox freigeben
         if storage_temp_c >= release_above:
             if status.force_state != 0:
                 return status, WallboxDecision(
                     action=WallboxAction.RELEASE,
                     target_force_state=0,
                     reason=(
-                        f"Storage temperature {storage_temp_c:.1f} °C >= "
-                        f"release threshold {release_above:.1f} °C and go-e "
-                        f"PV surplus mode active."
+                        f"Speicher voll ({storage_temp_c:.1f} °C >= "
+                        f"{release_above:.1f} °C) – Wallbox freigegeben."
                     ),
                 )
             return status, WallboxDecision(
                 action=WallboxAction.UNCHANGED,
                 target_force_state=0,
                 reason=(
-                    f"Storage temperature {storage_temp_c:.1f} °C >= "
-                    f"release threshold {release_above:.1f} °C, wallbox "
-                    f"already neutral/released."
+                    f"Speicher voll ({storage_temp_c:.1f} °C >= "
+                    f"{release_above:.1f} °C) – Wallbox bereits freigegeben."
                 ),
             )
 
+        # Alle 3 Phasen AN: Überschuss über Heizstab-Volllast geht in die Wallbox
+        if all_phases_on is True:
+            if status.force_state != 0:
+                return status, WallboxDecision(
+                    action=WallboxAction.RELEASE,
+                    target_force_state=0,
+                    reason=(
+                        f"Alle 3 Heizstab-Phasen aktiv – Überschuss über "
+                        f"Heizstab-Volllast wird in Wallbox geleitet "
+                        f"(Speicher {storage_temp_c:.1f} °C)."
+                    ),
+                )
+            return status, WallboxDecision(
+                action=WallboxAction.UNCHANGED,
+                target_force_state=0,
+                reason=(
+                    f"Alle 3 Heizstab-Phasen aktiv – Wallbox bereits freigegeben "
+                    f"(Speicher {storage_temp_c:.1f} °C)."
+                ),
+            )
+
+        # Nicht alle Phasen AN (oder Phasen-Status unbekannt): Speicher hat Priorität
+        phases_info = (
+            "Phasen-Status unbekannt" if all_phases_on is None else "Nicht alle Phasen aktiv"
+        )
+        if status.force_state != 1:
+            return status, WallboxDecision(
+                action=WallboxAction.PAUSE,
+                target_force_state=1,
+                reason=(
+                    f"{phases_info} – Speicher priorisiert, Wallbox pausiert "
+                    f"(Speicher {storage_temp_c:.1f} °C)."
+                ),
+            )
         return status, WallboxDecision(
             action=WallboxAction.UNCHANGED,
-            target_force_state=None,
+            target_force_state=1,
             reason=(
-                f"Storage temperature {storage_temp_c:.1f} °C within hysteresis "
-                f"band {pause_below:.1f}-{release_above:.1f} °C. "
-                f"Keeping current wallbox state."
+                f"{phases_info} – Speicher priorisiert, Wallbox bereits pausiert "
+                f"(Speicher {storage_temp_c:.1f} °C)."
             ),
         )
 
@@ -716,7 +729,7 @@ class Controller:
             err = "" if not d.execution_error else f" [ERR: {d.execution_error}]"
             log.info("Reason: %s%s", d.reason, err)
 
-        wallbox_status, wallbox_decision = self._handle_wallbox(readings.storage_temp_c)
+        wallbox_status, wallbox_decision = self._handle_wallbox(readings)
 
         result = ControllerResult(
             timestamp=now,
@@ -737,16 +750,33 @@ class Controller:
         return result
 
     def _handle_wallbox(
-        self, storage_temp_c: Optional[float]
+        self, readings: Readings
     ) -> tuple[Optional[WallboxStatus], WallboxDecision]:
         log.info(
             "Wallbox: enabled=%s url=%s",
             str(self.cfg.wallbox.enabled).lower(),
             self.cfg.wallbox.url or "n/a",
         )
-        status, decision = self._decide_wallbox(storage_temp_c)
+        # Alle 3 Phasen AN → Speicher läuft auf Volllast, Überschuss darüber in Wallbox
+        ph = (readings.ph1_on, readings.ph2_on, readings.ph3_on)
+        all_phases_on: Optional[bool] = (
+            True if all(p is True for p in ph)
+            else None if any(p is None for p in ph)
+            else False
+        )
+        log.info(
+            "Heizstab-Phasen: PH1=%s PH2=%s PH3=%s → all_phases_on=%s",
+            "AN" if readings.ph1_on else "AUS" if readings.ph1_on is False else "?",
+            "AN" if readings.ph2_on else "AUS" if readings.ph2_on is False else "?",
+            "AN" if readings.ph3_on else "AUS" if readings.ph3_on is False else "?",
+            all_phases_on,
+        )
+        status, decision = self._decide_wallbox(readings.storage_temp_c, all_phases_on)
 
-        # Kaskaden-Gate: Kaskade ist alleiniger Entscheider wenn aktiv
+        # Kaskaden-Gate: Kaskade kann nur blockieren, nicht das Temp-Gate überstimmen.
+        # Das Temp-Gate (pause_below_storage_temp) ist autoritativ für "Speicher priorisiert".
+        # Wenn Kaskade False → Wallbox pausieren (zu wenig Überschuss).
+        # Wenn Kaskade True  → keine Aktion: Temp-Gate bleibt entscheidend.
         cascade_wallbox = get_cascade_permission("wallbox")
         if cascade_wallbox is False:
             if decision.action is WallboxAction.RELEASE:
@@ -759,20 +789,6 @@ class Controller:
                 decision.action = WallboxAction.PAUSE
                 decision.target_force_state = 1
                 decision.reason = "[Kaskade pausiert] " + decision.reason
-        elif cascade_wallbox is True:
-            # Kaskade hat genug Überschuss für Wallbox berechnet → Temp-Gate überstimmen.
-            # Die Kaskade priorisiert Heizstab (Prio 2) vor Wallbox (Prio 3); wenn sie
-            # die Wallbox freigibt, ist genügend Surplus nach dem Heizstab übrig.
-            if decision.action is WallboxAction.PAUSE:
-                decision.action = WallboxAction.RELEASE
-                decision.target_force_state = 0
-                decision.reason = "[Kaskade freigegeben] " + decision.reason
-            elif decision.action is WallboxAction.UNCHANGED and (
-                status is not None and status.force_state == 1
-            ):
-                decision.action = WallboxAction.RELEASE
-                decision.target_force_state = 0
-                decision.reason = "[Kaskade freigegeben] " + decision.reason
 
         self._maybe_set_unlock(decision, status)
         self._execute_wallbox(decision)
