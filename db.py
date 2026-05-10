@@ -114,9 +114,19 @@ def init_pv_logging_tables() -> None:
                 ghi_kwh_m2      REAL,
                 cloud_cover_pct REAL,
                 temp_avg_c      REAL,
-                forecast_kwh    REAL
+                forecast_kwh    REAL,
+                forecast_ghi    REAL
             )
         """)
+        for col, definition in (
+            ("forecast_ghi", "REAL"),
+        ):
+            try:
+                conn.execute(
+                    f"ALTER TABLE pv_daily_log ADD COLUMN {col} {definition}"
+                )
+            except sqlite3.OperationalError:
+                pass
 
 
 def log_hourly_snapshot(
@@ -147,7 +157,7 @@ def log_daily_summary(
     date_str: str, pv_kwh: float, feed_out_kwh: float, feed_in_kwh: float,
     sunshine_h: float | None = None, ghi_kwh_m2: float | None = None,
     cloud_cover_pct: float | None = None, temp_avg_c: float | None = None,
-    forecast_kwh: float | None = None,
+    forecast_kwh: float | None = None, forecast_ghi: float | None = None,
 ) -> None:
     selfuse = max(0.0, pv_kwh - feed_out_kwh)
     selfuse_pct = round(selfuse / pv_kwh * 100, 1) if pv_kwh > 0 else 0.0
@@ -158,11 +168,11 @@ def log_daily_summary(
             """INSERT OR REPLACE INTO pv_daily_log
                (date, pv_kwh, feed_out_kwh, feed_in_kwh,
                 selfuse_kwh, selfuse_pct, autarky_pct,
-                sunshine_h, ghi_kwh_m2, cloud_cover_pct, temp_avg_c, forecast_kwh)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                sunshine_h, ghi_kwh_m2, cloud_cover_pct, temp_avg_c, forecast_kwh, forecast_ghi)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (date_str, round(pv_kwh, 2), round(feed_out_kwh, 2), round(feed_in_kwh, 2),
              round(selfuse, 2), selfuse_pct, autarky_pct,
-             sunshine_h, ghi_kwh_m2, cloud_cover_pct, temp_avg_c, forecast_kwh),
+             sunshine_h, ghi_kwh_m2, cloud_cover_pct, temp_avg_c, forecast_kwh, forecast_ghi),
         )
 
 
@@ -299,6 +309,36 @@ def get_forecast_correlation_data(limit: int = 90) -> list[dict]:
             (limit,),
         ).fetchall()
     return [{"date": r[0], "pv_kwh": r[1], "ghi_kwh_m2": r[2]} for r in rows]
+
+
+def get_forecast_accuracy_data(days: int = 30) -> list[dict]:
+    """Prognose-Genauigkeit: für jeden Tag Prognose (vom Vortag) vs. tatsächlicher Ertrag."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """SELECT d.date,
+                      prev.forecast_kwh AS forecast_kwh,
+                      d.pv_kwh          AS actual_kwh
+               FROM pv_daily_log d
+               LEFT JOIN pv_daily_log prev ON prev.date = date(d.date, '-1 day')
+               WHERE d.pv_kwh IS NOT NULL
+               ORDER BY d.date DESC
+               LIMIT ?""",
+            (days,),
+        ).fetchall()
+    result = []
+    for date_str, fc, actual in rows:
+        if fc is None or actual is None:
+            result.append({"date": date_str, "forecast_kwh": None, "actual_kwh": actual,
+                           "diff_kwh": None, "diff_percent": None, "hit": None})
+        else:
+            diff = round(actual - fc, 2)
+            diff_pct = round((actual - fc) / fc * 100) if fc > 0 else None
+            hit = abs(diff_pct) <= 20 if diff_pct is not None else None
+            result.append({"date": date_str, "forecast_kwh": round(fc, 1),
+                           "actual_kwh": round(actual, 1), "diff_kwh": diff,
+                           "diff_percent": diff_pct, "hit": hit})
+    result.reverse()
+    return result
 
 
 def get_daily_for_date(date_str: str) -> Optional[dict]:

@@ -914,6 +914,35 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
   font-variant-numeric: tabular-nums;
   color: var(--text);
 }
+.verlauf-kpi-sub {
+  font-size: 9px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* -------- Prognose-Tabelle -------- */
+.forecast-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.forecast-table th {
+  text-align: left;
+  padding: 4px 8px 6px;
+  font-size: 9px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--line);
+}
+.forecast-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+.forecast-table tbody tr:last-child td { border-bottom: none; }
 
 /* -------- Verlauf section visibility -------- */
 .verlauf-section.hidden { display: none; }

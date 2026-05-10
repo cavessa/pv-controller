@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=45">
+  <link rel="stylesheet" href="/static/styles.css?v=46">
 </head>
 <body>
   <div id="loading-overlay" style="
@@ -219,6 +219,7 @@
         <button class="verlauf-nav-btn" data-vsec="jahr">Jahr</button>
         <button class="verlauf-nav-btn" data-vsec="strings">Strings</button>
         <button class="verlauf-nav-btn" data-vsec="wetter">Wetter</button>
+        <button class="verlauf-nav-btn" data-vsec="prognose">Prognose</button>
       </div>
 
       <!-- ── Tag ── -->
@@ -362,6 +363,29 @@
             <div class="chart-empty">Lade…</div>
           </div>
           <p class="note" style="margin-top:8px">Punkte = historische Tage · Linie = Trendlinie · ★ = Prognose morgen</p>
+        </div>
+      </div>
+
+      <!-- ── Prognose ── -->
+      <div id="verlauf-prognose" class="verlauf-section hidden">
+        <div class="verlauf-kpi-row" id="verlauf-prognose-kpis"></div>
+        <div class="card">
+          <div class="card-head">
+            <h2>Prognose vs. Tatsächlich (30 Tage)</h2>
+            <div class="chart-legend-inline">
+              <span style="opacity:0.4;color:#e8a435">&#9646;</span><span style="font-size:9px;color:var(--text-muted)">Prognose</span>
+              <span style="color:#e8a435">&#9646;</span><span style="font-size:9px;color:var(--text-muted)">Ist</span>
+            </div>
+          </div>
+          <div id="chart-forecast-wrap" class="temp-chart-wrap">
+            <div class="chart-empty">Lade…</div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Tageswerte</h2>
+          <div id="forecast-table-wrap">
+            <div class="chart-empty">Lade…</div>
+          </div>
         </div>
       </div>
 
@@ -595,6 +619,6 @@
   </footer>
   </div>
 
-  <script src="/static/app.js?v=65" defer></script>
+  <script src="/static/app.js?v=66" defer></script>
 </body>
 </html>

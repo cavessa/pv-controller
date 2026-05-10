@@ -71,10 +71,9 @@ def daily_job(cfg) -> None:
     today      = date.today().isoformat()
     weather    = get_today_weather()
     weather_tm = get_tomorrow_weather()
-    history    = get_daily_history(30)
-    forecast   = None
-    if weather_tm and weather_tm.get("ghi_kwh_m2"):
-        forecast = _linear_forecast(history, weather_tm["ghi_kwh_m2"])
+    history      = get_daily_history(30)
+    forecast_ghi = weather_tm.get("ghi_kwh_m2") if weather_tm else None
+    forecast     = _linear_forecast(history, forecast_ghi) if forecast_ghi else None
     log_daily_summary(
         date_str=today,
         pv_kwh=data.yield_today_kwh,
@@ -85,6 +84,7 @@ def daily_job(cfg) -> None:
         cloud_cover_pct=weather.get("cloud_cover_pct") if weather else None,
         temp_avg_c=weather.get("temp_avg_c") if weather else None,
         forecast_kwh=forecast,
+        forecast_ghi=forecast_ghi,
     )
     log.info("Daily log: date=%s pv=%.1f kWh forecast=%s",
              today, data.yield_today_kwh,

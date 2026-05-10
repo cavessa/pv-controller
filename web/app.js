@@ -802,7 +802,8 @@ function _loadCurrentVerlauf() {
   if (_vsec === "monat")   loadVerlaufMonat(_vMonth);
   if (_vsec === "jahr")    loadVerlaufJahr(_vYear);
   if (_vsec === "strings") loadVerlaufStrings(_vStringsDate);
-  if (_vsec === "wetter")  loadVerlaufWetter();
+  if (_vsec === "wetter")   loadVerlaufWetter();
+  if (_vsec === "prognose") loadVerlaufPrognose();
 }
 
 async function loadVerlauf() {
@@ -1185,6 +1186,147 @@ async function loadVerlaufWetter() {
   } catch (e) {
     showError("Wetter-Korrelation konnte nicht geladen werden: " + e.message);
   }
+}
+
+// ── Prognose-Genauigkeit ─────────────────────────────
+
+async function loadVerlaufPrognose() {
+  try {
+    const data = await api("/api/history/forecast?days=30");
+    const entries = data.entries || [];
+    renderPrognoseKPIs(entries);
+    renderPrognoseChart(entries);
+    renderPrognoseTable(entries);
+  } catch (e) {
+    showError("Prognose-Daten konnten nicht geladen werden: " + e.message);
+  }
+}
+
+function renderPrognoseKPIs(entries) {
+  const el = document.getElementById("verlauf-prognose-kpis");
+  if (!el) return;
+
+  const valid = entries.filter(e => e.hit !== null);
+  const hits  = valid.filter(e => e.hit).length;
+  const hitRate = valid.length > 0 ? Math.round(hits / valid.length * 100) : null;
+
+  const withDiff = entries.filter(e => e.diff_kwh !== null);
+  const avgAbsKwh = withDiff.length > 0
+    ? withDiff.reduce((s, e) => s + Math.abs(e.diff_kwh), 0) / withDiff.length
+    : null;
+  const avgAbsPct = withDiff.length > 0
+    ? withDiff.reduce((s, e) => s + Math.abs(e.diff_percent), 0) / withDiff.length
+    : null;
+
+  const meanDiff = withDiff.length > 0
+    ? withDiff.reduce((s, e) => s + e.diff_kwh, 0) / withDiff.length
+    : null;
+  let tendenz = "–", tendenzSub = "";
+  if (meanDiff !== null) {
+    if (meanDiff > 1)       { tendenz = "eher konservativ"; }
+    else if (meanDiff < -1) { tendenz = "eher optimistisch"; }
+    else                    { tendenz = "gut kalibriert"; }
+    tendenzSub = `Ø ${meanDiff >= 0 ? "+" : ""}${meanDiff.toFixed(1)} kWh`;
+  }
+
+  el.innerHTML = [
+    { label: "Treffer ±20%",  val: hitRate !== null ? `${hitRate}%` : "–",              sub: hitRate !== null ? `(${hits}/${valid.length})` : "" },
+    { label: "Ø Abweichung",  val: avgAbsKwh !== null ? `${avgAbsKwh.toFixed(1)} kWh` : "–", sub: avgAbsPct !== null ? `(${avgAbsPct.toFixed(0)}%)` : "" },
+    { label: "Tendenz",       val: tendenz,                                               sub: tendenzSub },
+  ].map(k => `<div class="verlauf-kpi">
+    <div class="verlauf-kpi-label">${k.label}</div>
+    <div class="verlauf-kpi-val">${k.val}</div>
+    ${k.sub ? `<div class="verlauf-kpi-sub">${k.sub}</div>` : ""}
+  </div>`).join("");
+}
+
+function renderPrognoseChart(entries) {
+  const wrap = document.getElementById("chart-forecast-wrap");
+  if (!wrap) return;
+
+  const valid = entries.filter(e => e.forecast_kwh !== null);
+  if (!valid.length) {
+    wrap.innerHTML = '<div class="chart-empty">Noch keine Prognose-Daten vorhanden.</div>';
+    return;
+  }
+
+  const VW = 480, VH = 120;
+  const pad = { t: 8, r: 8, b: 28, l: 36 };
+  const cw = VW - pad.l - pad.r, ch = VH - pad.t - pad.b;
+  const n = valid.length;
+  const groupW = cw / n;
+  const barW = Math.max(1.5, groupW * 0.38);
+  const gap  = Math.max(0.5, groupW * 0.05);
+
+  const maxVal = Math.max(
+    ...valid.map(e => Math.max(e.forecast_kwh || 0, e.actual_kwh || 0)), 0.5
+  );
+  const sy = v => pad.t + ch - (v / maxVal * ch);
+  const x0 = i => pad.l + i * groupW + (groupW - 2 * barW - gap) / 2;
+
+  let yElems = "";
+  const yStep = niceStep(maxVal, 3);
+  for (let yv = 0; yv <= maxVal + 0.01; yv += yStep) {
+    const ypx = sy(yv).toFixed(1);
+    yElems += `<line x1="${pad.l}" y1="${ypx}" x2="${pad.l+cw}" y2="${ypx}" class="grid-line"/>`;
+    yElems += `<text x="${pad.l-4}" y="${ypx}" text-anchor="end" dominant-baseline="middle">${yv.toFixed(0)}</text>`;
+  }
+
+  let bars = "";
+  valid.forEach((d, i) => {
+    const fc  = d.forecast_kwh || 0;
+    const ac  = d.actual_kwh   || 0;
+    const xFc = x0(i), xAc = xFc + barW + gap;
+    const bot = pad.t + ch;
+    const fcH = Math.max(1, fc / maxVal * ch);
+    const acH = Math.max(1, ac / maxVal * ch);
+    bars += `<rect x="${xFc.toFixed(1)}" y="${(bot-fcH).toFixed(1)}" width="${barW.toFixed(1)}" height="${fcH.toFixed(1)}" rx="1" fill="rgba(232,164,53,0.3)"/>`;
+    bars += `<rect x="${xAc.toFixed(1)}" y="${(bot-acH).toFixed(1)}" width="${barW.toFixed(1)}" height="${acH.toFixed(1)}" rx="1" fill="#e8a435"/>`;
+    if (i === 0 || (i + 1) % 5 === 0 || i === n - 1) {
+      const parts = (d.date || "").split("-");
+      const lbl = `${parseInt(parts[2] || 0)}.${parseInt(parts[1] || 0)}.`;
+      bars += `<text x="${(xFc + barW + gap / 2).toFixed(1)}" y="${VH-3}" text-anchor="middle">${lbl}</text>`;
+    }
+  });
+
+  wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">
+    <g>${yElems}</g>${bars}
+  </svg>`;
+}
+
+function renderPrognoseTable(entries) {
+  const wrap = document.getElementById("forecast-table-wrap");
+  if (!wrap) return;
+
+  const withFc = entries.filter(e => e.forecast_kwh !== null).slice().reverse();
+  if (!withFc.length) {
+    wrap.innerHTML = '<div class="chart-empty">Noch keine Prognose-Daten vorhanden.</div>';
+    return;
+  }
+
+  const rows = withFc.map(e => {
+    const parts = (e.date || "").split("-");
+    const day   = `${parts[2]}.${parts[1]}.`;
+    const sign  = e.diff_kwh >= 0 ? "+" : "";
+    const color = e.diff_kwh >= 0 ? "var(--ok)" : "var(--error)";
+    const icon  = e.hit ? "✅" : "❌";
+    const pct   = e.diff_percent !== null ? ` (${sign}${e.diff_percent}%)` : "";
+    const bg    = e.hit ? "" : ' style="background:rgba(248,113,113,0.08)"';
+    return `<tr${bg}>
+      <td>${day}</td>
+      <td>${e.forecast_kwh} kWh</td>
+      <td>${e.actual_kwh} kWh</td>
+      <td style="color:${color}">${sign}${e.diff_kwh} kWh</td>
+      <td>${icon}<span style="color:${color}">${pct}</span></td>
+    </tr>`;
+  }).join("");
+
+  wrap.innerHTML = `<table class="forecast-table">
+    <thead><tr>
+      <th>Datum</th><th>Prognose</th><th>Ist</th><th>Diff</th><th>Status</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
 }
 
 function renderScatterPlot(corrData, forecastPt, r2, slope, intercept) {

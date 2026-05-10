@@ -668,6 +668,16 @@ def api_forecast(response: Response) -> dict[str, Any]:
     return calculate_forecast()
 
 
+@app.get("/api/history/forecast")
+def api_forecast_accuracy(
+    response: Response,
+    days: int = Query(default=30, ge=7, le=365),
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    from db import get_forecast_accuracy_data
+    return {"entries": get_forecast_accuracy_data(days)}
+
+
 @app.get("/api/strings/ratio")
 def api_strings_ratio(
     response: Response,
