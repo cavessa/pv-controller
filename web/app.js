@@ -1046,6 +1046,33 @@ function renderForecastProgress(data, histEntries) {
   if (fpBarRemaining) fpBarRemaining.textContent = remainingText;
   if (fpSunset) fpSunset.textContent = sunset ?? "–";
 
+  const assessEl = document.getElementById("forecast-assessment");
+  if (assessEl && actual != null) {
+    const now = new Date();
+    const curH = now.getHours() + now.getMinutes() / 60;
+    const sunH = sunset ? parseInt(sunset.split(":")[0], 10) + parseInt(sunset.split(":")[1], 10) / 60 : 21;
+    const hoursLeft = Math.max(0, sunH - curH);
+    const expectedPct = Math.min(100, Math.max(0, curH - 6) / Math.max(1, sunH - 6) * 100);
+    let a;
+    if (hoursLeft <= 0) {
+      if (pct >= 90) a = { text: "Prognose erreicht ✅", color: "#2ed8a3" };
+      else if (pct >= 70) a = { text: "Knapp verfehlt", color: "#e8a435" };
+      else a = { text: "Deutlich unter Prognose", color: "#ff6b6b" };
+    } else if (pct >= expectedPct * 1.1) {
+      a = { text: "Auf Kurs – wird voraussichtlich übertroffen 🎉", color: "#2ed8a3" };
+    } else if (pct >= expectedPct * 0.8) {
+      a = { text: "Auf Kurs – Prognose wird vermutlich erreicht", color: "#2ed8a3" };
+    } else if (pct >= expectedPct * 0.5) {
+      a = { text: "Unter Plan – wird vermutlich nicht erreicht", color: "#e8a435" };
+    } else {
+      a = { text: "Deutlich unter Plan – Prognose wird verfehlt", color: "#ff6b6b" };
+    }
+    assessEl.textContent = a.text;
+    assessEl.style.color = a.color;
+  } else if (assessEl) {
+    assessEl.textContent = "";
+  }
+
   const daysEl = document.getElementById("forecast-last-days");
   if (daysEl) {
     const recent = histEntries
