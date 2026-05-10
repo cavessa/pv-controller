@@ -64,11 +64,13 @@ def fetch_weather(lat: float, lon: float, timeout: int = 10) -> Optional[dict]:
 
 
 def fetch_and_store(lat: float, lon: float) -> bool:
-    """Ruft Wetterdaten ab und speichert sie. Überspringt wenn morgen bereits vorhanden."""
+    """Ruft Wetterdaten ab und speichert sie. Überspringt wenn morgen + heutiger Sonnenuntergang vorhanden."""
     if lat == 0.0 and lon == 0.0:
         return False
+    today_str = date.today().isoformat()
     tomorrow = (date.today() + timedelta(days=1)).isoformat()
-    if db.get_weather(tomorrow) is not None:
+    today_w = db.get_weather(today_str)
+    if db.get_weather(tomorrow) is not None and today_w and today_w.get("sunset"):
         return False
     data = fetch_weather(lat, lon)
     if data is None:
