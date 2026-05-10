@@ -1044,7 +1044,20 @@ function renderForecastProgress(data, histEntries) {
   }
   if (fpRemaining) fpRemaining.textContent = remainingText;
   if (fpBarRemaining) fpBarRemaining.textContent = remainingText;
-  if (fpSunset) fpSunset.textContent = sunset ?? "–";
+  if (fpSunset) {
+    if (!sunset) {
+      fpSunset.textContent = "–";
+    } else if (isEndstand) {
+      fpSunset.textContent = `${sunset} (vorbei)`;
+    } else {
+      const now = new Date();
+      const [sh, sm] = sunset.split(":").map(Number);
+      const diffMin = (sh * 60 + sm) - (now.getHours() * 60 + now.getMinutes());
+      const hLeft = Math.floor(diffMin / 60);
+      const mLeft = diffMin % 60;
+      fpSunset.textContent = `${sunset} (noch ${hLeft}h ${mLeft}min)`;
+    }
+  }
 
   const assessEl = document.getElementById("forecast-assessment");
   if (assessEl && actual != null) {

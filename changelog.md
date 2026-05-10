@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-05-10 – Sonnenuntergang: Uhrzeit + verbleibende Zeit
+
+- **app.js**: `fpSunset` zeigt jetzt "20:50 (noch 7h 12min)" tagsüber bzw. "20:50 (vorbei)" nach Sonnenuntergang; v70
+
 ## 2026-05-10 – Heute vs. Prognose: Einschätzung "Wird Prognose erreicht?"
 
 - **index.html**: `#forecast-assessment` div direkt unter `#forecast-percent`
