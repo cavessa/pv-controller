@@ -1143,6 +1143,34 @@ function renderForecastCard(data) {
   if (ghiEl) ghiEl.textContent = t.ghi_kwh_m2 != null ? t.ghi_kwh_m2.toFixed(1) + " kWh/m²" : "–";
 }
 
+function getForecastAssessment(actualKwh, forecastKwh, currentHour, currentMinute, sunsetHour, sunsetMinute) {
+  const percent = forecastKwh > 0 ? (actualKwh / forecastKwh * 100) : 0;
+  const now = currentHour + currentMinute / 60;
+  const sunset = sunsetHour + sunsetMinute / 60;
+  const hoursLeft = Math.max(0, sunset - now);
+  const remaining = forecastKwh - actualKwh;
+
+  if (hoursLeft <= 0.25) {
+    if (percent >= 90) return { text: 'Prognose erreicht ✅', color: '#2ed8a3' };
+    if (percent >= 70) return { text: 'Knapp verfehlt (' + Math.round(percent) + '%)', color: '#e8a435' };
+    return { text: 'Deutlich unter Prognose (' + Math.round(percent) + '%)', color: '#ff6b6b' };
+  }
+
+  const neededPerHour = remaining / hoursLeft;
+  const sunriseApprox = 6;
+  const sunHoursElapsed = Math.max(1, now - sunriseApprox);
+  const avgPerHour = actualKwh / sunHoursElapsed;
+  const expectedRemaining = avgPerHour * hoursLeft * 0.5;
+
+  if (actualKwh + expectedRemaining >= forecastKwh * 0.9) {
+    return { text: 'Auf Kurs – Prognose wird vermutlich erreicht', color: '#2ed8a3' };
+  }
+  if (actualKwh + expectedRemaining >= forecastKwh * 0.7) {
+    return { text: 'Knapp – noch ' + remaining.toFixed(1) + ' kWh in ' + hoursLeft.toFixed(1) + 'h', color: '#e8a435' };
+  }
+  return { text: 'Wird nicht mehr erreicht – noch ' + remaining.toFixed(1) + ' kWh in ' + hoursLeft.toFixed(1) + 'h nötig', color: '#ff6b6b' };
+}
+
 function renderForecastProgress(data, histEntries) {
   const wrap = document.getElementById("forecast-progress-wrap");
   const empty = document.getElementById("forecast-progress-empty");
@@ -1225,24 +1253,8 @@ function renderForecastProgress(data, histEntries) {
   const assessEl = document.getElementById("forecast-assessment");
   if (assessEl && actual != null) {
     const now = new Date();
-    const curH = now.getHours() + now.getMinutes() / 60;
-    const sunH = sunset ? parseInt(sunset.split(":")[0], 10) + parseInt(sunset.split(":")[1], 10) / 60 : 21;
-    const hoursLeft = Math.max(0, sunH - curH);
-    const expectedPct = Math.min(100, Math.max(0, curH - 6) / Math.max(1, sunH - 6) * 100);
-    let a;
-    if (hoursLeft <= 0) {
-      if (pct >= 90) a = { text: "Prognose erreicht ✅", color: "#2ed8a3" };
-      else if (pct >= 70) a = { text: "Knapp verfehlt", color: "#e8a435" };
-      else a = { text: "Deutlich unter Prognose", color: "#ff6b6b" };
-    } else if (pct >= expectedPct * 1.1) {
-      a = { text: "Auf Kurs – wird voraussichtlich übertroffen 🎉", color: "#2ed8a3" };
-    } else if (pct >= expectedPct * 0.8) {
-      a = { text: "Auf Kurs – Prognose wird vermutlich erreicht", color: "#2ed8a3" };
-    } else if (pct >= expectedPct * 0.5) {
-      a = { text: "Unter Plan – wird vermutlich nicht erreicht", color: "#e8a435" };
-    } else {
-      a = { text: "Deutlich unter Plan – Prognose wird verfehlt", color: "#ff6b6b" };
-    }
+    const [sh, sm] = sunset ? sunset.split(":").map(Number) : [21, 0];
+    const a = getForecastAssessment(actual, predicted, now.getHours(), now.getMinutes(), sh, sm);
     assessEl.textContent = a.text;
     assessEl.style.color = a.color;
   } else if (assessEl) {
@@ -3057,36 +3069,128 @@ async function saveCascadeSettings() {
   }
 }
 
-function getDeviceLocation(event) {
-  if (!navigator.geolocation) {
-    alert('Geolocation wird von diesem Browser nicht unterstützt.');
-    return;
-  }
+async function getDeviceLocation(event) {
   const btn = event.target;
   btn.textContent = '📍 Ermittle Standort...';
   btn.disabled = true;
-  navigator.geolocation.getCurrentPosition(
-    (position) => {
-      document.querySelector('[name="location.latitude"]').value = position.coords.latitude.toFixed(4);
-      document.querySelector('[name="location.longitude"]').value = position.coords.longitude.toFixed(4);
-      btn.textContent = '📍 Standort übernommen ✓';
-      setTimeout(() => { btn.textContent = '📍 Standort vom Gerät übernehmen'; btn.disabled = false; }, 2000);
-    },
-    (error) => {
-      btn.textContent = '📍 Standort vom Gerät übernehmen';
-      btn.disabled = false;
-      switch (error.code) {
-        case error.PERMISSION_DENIED:
-          alert('Standort-Zugriff wurde verweigert. Bitte in den Browser-Einstellungen erlauben.');
-          break;
-        case error.POSITION_UNAVAILABLE:
-          alert('Standort nicht verfügbar.');
-          break;
-        case error.TIMEOUT:
-          alert('Standort-Abfrage hat zu lange gedauert.');
-          break;
-      }
-    },
-    { enableHighAccuracy: true, timeout: 10000 }
-  );
+
+  // Versuch 1: Browser Geolocation (funktioniert nur über HTTPS/localhost)
+  if (navigator.geolocation && location.protocol === 'https:') {
+    try {
+      const pos = await new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true, timeout: 5000
+        });
+      });
+      setLocation(pos.coords.latitude, pos.coords.longitude, btn);
+      return;
+    } catch(e) {
+      // Fallback
+    }
+  }
+
+  // Versuch 2: IP-Geolocation (funktioniert immer)
+  try {
+    const response = await fetch('http://ip-api.com/json/?fields=lat,lon,city');
+    const data = await response.json();
+    if (data.lat && data.lon) {
+      setLocation(data.lat, data.lon, btn, data.city);
+      return;
+    }
+  } catch(e) {
+    // Nächster Fallback
+  }
+
+  // Versuch 3: ipapi.co als zweiter Fallback
+  try {
+    const response = await fetch('https://ipapi.co/json/');
+    const data = await response.json();
+    if (data.latitude && data.longitude) {
+      setLocation(data.latitude, data.longitude, btn, data.city);
+      return;
+    }
+  } catch(e) {
+    // Alle Fallbacks fehlgeschlagen
+  }
+
+  btn.textContent = '📍 Standort vom Gerät übernehmen';
+  btn.disabled = false;
+  alert('Standort konnte nicht ermittelt werden. Bitte manuell eingeben oder Google Maps nutzen.');
 }
+
+function setLocation(lat, lon, btn, city) {
+  document.querySelector('[name="location.latitude"]').value = lat.toFixed(4);
+  document.querySelector('[name="location.longitude"]').value = lon.toFixed(4);
+
+  if (city) {
+    const ortField = document.querySelector('[name="location.name"]');
+    if (ortField && !ortField.value) {
+      ortField.value = city;
+    }
+  }
+
+  btn.textContent = '📍 Standort übernommen ✓';
+  setTimeout(() => {
+    btn.textContent = '📍 Standort vom Gerät übernehmen';
+    btn.disabled = false;
+  }, 2000);
+}
+
+let locationSearchTimeout = null;
+let locationSearchResults = [];
+
+function searchLocation(query) {
+  clearTimeout(locationSearchTimeout);
+  const dropdown = document.getElementById('location-suggestions');
+
+  if (query.length < 3) {
+    dropdown.style.display = 'none';
+    return;
+  }
+
+  locationSearchTimeout = setTimeout(async () => {
+    try {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=5&addressdetails=1`,
+        { headers: { 'Accept-Language': 'de', 'User-Agent': 'PV-Controller/1.0' } }
+      );
+      locationSearchResults = await response.json();
+
+      if (locationSearchResults.length === 0) {
+        dropdown.style.display = 'none';
+        return;
+      }
+
+      dropdown.innerHTML = locationSearchResults.map((r, i) => {
+        const shortName = r.display_name.split(',').slice(0, 3).join(',');
+        return `<div onclick="selectLocation(${i})"
+          style="padding:10px 14px;cursor:pointer;font-size:13px;color:#e0e2e6;border-bottom:1px solid #3a3d45"
+          onmouseover="this.style.background='#3a3d45'"
+          onmouseout="this.style.background='transparent'"
+        >${shortName}</div>`;
+      }).join('');
+
+      dropdown.style.display = 'block';
+    } catch(e) {
+      dropdown.style.display = 'none';
+    }
+  }, 300);
+}
+
+function selectLocation(index) {
+  const r = locationSearchResults[index];
+  const addr = r.address || {};
+  const ortName = addr.city || addr.town || addr.village || addr.municipality
+                || addr.county || r.display_name.split(',')[0];
+  document.querySelector('[name="location.latitude"]').value = parseFloat(r.lat).toFixed(4);
+  document.querySelector('[name="location.longitude"]').value = parseFloat(r.lon).toFixed(4);
+  document.querySelector('[name="location.name"]').value = ortName;
+  document.getElementById('location-suggestions').style.display = 'none';
+}
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('[name="location.name"]') && !e.target.closest('#location-suggestions')) {
+    const dropdown = document.getElementById('location-suggestions');
+    if (dropdown) dropdown.style.display = 'none';
+  }
+});

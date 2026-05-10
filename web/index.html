@@ -510,9 +510,12 @@
             <legend>Standort (Wetterprognose)</legend>
             <label>Breitengrad<input type="number" step="0.0001" name="location.latitude" placeholder="z.B. 48.8764"></label>
             <label>Längengrad<input type="number" step="0.0001" name="location.longitude" placeholder="z.B. 9.2722"></label>
-            <label>Ortsname<input type="text" name="location.name" placeholder="z.B. Remseck am Neckar"></label>
+            <div style="position:relative">
+              <label>Ortsname<input type="text" name="location.name" placeholder="z.B. Remseck am Neckar" autocomplete="off" oninput="searchLocation(this.value)"></label>
+              <div id="location-suggestions" style="display:none;position:absolute;top:100%;left:0;right:0;background:#2a2d35;border:1px solid #4a4d55;border-radius:0 0 8px 8px;max-height:200px;overflow-y:auto;z-index:100;box-shadow:0 4px 12px rgba(0,0,0,0.5)"></div>
+            </div>
             <button type="button" onclick="getDeviceLocation(event)" style="width:100%;padding:10px;margin-top:8px;margin-bottom:8px;background:#1a1d23;border:1px solid #3a3d45;border-radius:8px;color:#e0e2e6;font-family:'Courier New',monospace;font-size:13px;cursor:pointer;">📍 Standort vom Gerät übernehmen</button>
-            <p class="note">Google Maps → Rechtsklick → Koordinaten kopieren. Wird für die PV-Ertrags&shy;prognose via Open-Meteo verwendet (kostenlos, kein API-Key). Der Button funktioniert nur über HTTPS oder localhost.</p>
+            <p class="note">Ermittelt den Standort automatisch (über IP, ~Stadtgenauigkeit). Für die Wetterprognose ausreichend. Alternativ: Google Maps → Rechtsklick → Koordinaten kopieren.</p>
           </fieldset>
 
           <div class="form-actions">
