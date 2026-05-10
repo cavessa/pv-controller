@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-05-10 – "Aktualisieren"-Button entfernt
+
+- **index.html**: Button `#btn-refresh` entfernt (Dashboard pollt automatisch)
+- **app.js**: Event-Listener für `#btn-refresh` entfernt
+
 ## 2026-05-10 – Bugfix: String-Leistung Chart (täglich) war leer
 
 - **app.js** `renderStringsDayChart`: `e.timestamp` → `e.ts` korrigiert; API liefert das Feld als `ts`, deshalb wurde `new Date(undefined)` aufgerufen → alle Stunden wurden als `NaN` berechnet und der Chart blieb leer

@@ -2251,7 +2251,6 @@ function activateTab(name) {
 // ---------- boot ----------
 function boot() {
   $$(".tab").forEach(t => t.addEventListener("click", () => activateTab(t.dataset.tab)));
-  $("#btn-refresh").addEventListener("click", refreshStatus);
   $("#btn-run").addEventListener("click", runOnce);
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#btn-logs-refresh").addEventListener("click", refreshLogs);
