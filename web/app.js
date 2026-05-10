@@ -3056,3 +3056,37 @@ async function saveCascadeSettings() {
     if (msgEl) { msgEl.textContent = "Fehler: " + e.message; msgEl.className = "form-msg error"; }
   }
 }
+
+function getDeviceLocation(event) {
+  if (!navigator.geolocation) {
+    alert('Geolocation wird von diesem Browser nicht unterstützt.');
+    return;
+  }
+  const btn = event.target;
+  btn.textContent = '📍 Ermittle Standort...';
+  btn.disabled = true;
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      document.querySelector('[name="location.latitude"]').value = position.coords.latitude.toFixed(4);
+      document.querySelector('[name="location.longitude"]').value = position.coords.longitude.toFixed(4);
+      btn.textContent = '📍 Standort übernommen ✓';
+      setTimeout(() => { btn.textContent = '📍 Standort vom Gerät übernehmen'; btn.disabled = false; }, 2000);
+    },
+    (error) => {
+      btn.textContent = '📍 Standort vom Gerät übernehmen';
+      btn.disabled = false;
+      switch (error.code) {
+        case error.PERMISSION_DENIED:
+          alert('Standort-Zugriff wurde verweigert. Bitte in den Browser-Einstellungen erlauben.');
+          break;
+        case error.POSITION_UNAVAILABLE:
+          alert('Standort nicht verfügbar.');
+          break;
+        case error.TIMEOUT:
+          alert('Standort-Abfrage hat zu lange gedauert.');
+          break;
+      }
+    },
+    { enableHighAccuracy: true, timeout: 10000 }
+  );
+}

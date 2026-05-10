@@ -511,7 +511,8 @@
             <label>Breitengrad<input type="number" step="0.0001" name="location.latitude" placeholder="z.B. 48.8764"></label>
             <label>Längengrad<input type="number" step="0.0001" name="location.longitude" placeholder="z.B. 9.2722"></label>
             <label>Ortsname<input type="text" name="location.name" placeholder="z.B. Remseck am Neckar"></label>
-            <p class="note">Google Maps → Rechtsklick → Koordinaten kopieren. Wird für die PV-Ertrags&shy;prognose via Open-Meteo verwendet (kostenlos, kein API-Key).</p>
+            <button type="button" onclick="getDeviceLocation(event)" style="width:100%;padding:10px;margin-top:8px;margin-bottom:8px;background:#1a1d23;border:1px solid #3a3d45;border-radius:8px;color:#e0e2e6;font-family:'Courier New',monospace;font-size:13px;cursor:pointer;">📍 Standort vom Gerät übernehmen</button>
+            <p class="note">Google Maps → Rechtsklick → Koordinaten kopieren. Wird für die PV-Ertrags&shy;prognose via Open-Meteo verwendet (kostenlos, kein API-Key). Der Button funktioniert nur über HTTPS oder localhost.</p>
           </fieldset>
 
           <div class="form-actions">

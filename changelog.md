@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-05-10 – Settings: Standort vom Gerät übernehmen
+
+- **index.html**: Button "📍 Standort vom Gerät übernehmen" in der Standort-Fieldset eingefügt; Hinweistext um HTTPS-Einschränkung ergänzt
+- **app.js**: Funktion `getDeviceLocation(event)` hinzugefügt – übernimmt GPS-Koordinaten via Browser Geolocation API in die Felder `location.latitude` / `location.longitude`
+
 ## 2026-05-10 – Heute-Card: Gestapelte Fluss-Balken-Redesign
 
 - **index.html**: `<h2>Heute</h2>` aus der Card entfernt; `renderToday` rendert jetzt Titelzeile + kWh-Wert selbst
