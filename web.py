@@ -665,7 +665,18 @@ def api_forecast(response: Response) -> dict[str, Any]:
         except Exception:
             log.warning("weather fetch_and_store failed in /api/forecast")
     from weather import calculate_forecast
-    return calculate_forecast()
+    result = calculate_forecast()
+    # Prognose für morgen sofort in heutigen DB-Eintrag schreiben,
+    # damit /api/history/forecast sie auch ohne 23:55-Cron findet.
+    tm = result.get("tomorrow")
+    if tm and tm.get("predicted_kwh") is not None:
+        try:
+            from db import upsert_daily_forecast
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            upsert_daily_forecast(today_str, tm["predicted_kwh"], tm.get("ghi_kwh_m2"))
+        except Exception:
+            log.warning("upsert_daily_forecast failed", exc_info=True)
+    return result
 
 
 @app.get("/api/history/forecast")

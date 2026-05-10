@@ -341,6 +341,75 @@ def get_forecast_accuracy_data(days: int = 30) -> list[dict]:
     return result
 
 
+def upsert_daily_forecast(
+    date_str: str, forecast_kwh: float, forecast_ghi: Optional[float]
+) -> None:
+    """Schreibt die berechnete Prognose in den pv_daily_log-Eintrag des Datums.
+
+    Legt den Eintrag an falls noch nicht vorhanden; überschreibt nur die
+    Prognose-Spalten damit Tageswerte (pv_kwh etc.) erhalten bleiben.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """INSERT INTO pv_daily_log (date, forecast_kwh, forecast_ghi)
+               VALUES (?, ?, ?)
+               ON CONFLICT(date) DO UPDATE SET
+                   forecast_kwh = excluded.forecast_kwh,
+                   forecast_ghi = excluded.forecast_ghi""",
+            (date_str, forecast_kwh, forecast_ghi),
+        )
+
+
+def backfill_historical_forecasts() -> int:
+    """Einmaliger retroaktiver Backfill: füllt forecast_kwh in pv_daily_log wo NULL.
+
+    Für jeden Tag D ohne forecast_kwh: Regression auf pv_daily_log-Daten bis D-1,
+    GHI für D+1 aus weather_log → forecast_kwh für D = Prognose für D+1.
+    Nur idempotent – überschreibt keine vorhandenen Werte.
+    Gibt Anzahl befüllter Einträge zurück.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        candidates = conn.execute(
+            "SELECT date FROM pv_daily_log WHERE forecast_kwh IS NULL ORDER BY date ASC"
+        ).fetchall()
+        count = 0
+        for (date_str,) in candidates:
+            # GHI für den Folgetag (was am Tag date_str als "morgen" vorhergesagt wurde)
+            next_day_row = conn.execute(
+                "SELECT ghi_kwh_m2 FROM weather_log WHERE date = date(?, '+1 day')",
+                (date_str,),
+            ).fetchone()
+            if not next_day_row or not next_day_row[0]:
+                continue
+            ghi_next = next_day_row[0]
+            # Regression auf Daten vor date_str (exklusiv)
+            hist = conn.execute(
+                "SELECT ghi_kwh_m2, pv_kwh FROM pv_daily_log "
+                "WHERE date < ? AND pv_kwh > 0 AND ghi_kwh_m2 > 0 "
+                "ORDER BY date DESC LIMIT 30",
+                (date_str,),
+            ).fetchall()
+            if len(hist) < 3:
+                continue
+            xs = [r[0] for r in hist]
+            ys = [r[1] for r in hist]
+            n = len(xs)
+            mx, my = sum(xs) / n, sum(ys) / n
+            cov = sum((xs[i] - mx) * (ys[i] - my) for i in range(n)) / n
+            var_x = sum((x - mx) ** 2 for x in xs) / n
+            if var_x < 1e-6:
+                continue
+            slope = cov / var_x
+            predicted = max(0.0, round(slope * ghi_next + (my - slope * mx), 1))
+            conn.execute(
+                "UPDATE pv_daily_log SET forecast_kwh = ?, forecast_ghi = ? "
+                "WHERE date = ? AND forecast_kwh IS NULL",
+                (predicted, ghi_next, date_str),
+            )
+            count += 1
+    return count
+
+
 def get_daily_for_date(date_str: str) -> Optional[dict]:
     """Einzelner Tageseintrag aus pv_daily_log."""
     with sqlite3.connect(DB_PATH) as conn:
@@ -442,6 +511,7 @@ def get_string_alerts(days: int = 30) -> list[dict]:
 
 init_db()
 init_pv_logging_tables()
+backfill_historical_forecasts()
 
 
 # ── Kaskade ──────────────────────────────────────────────────────────────────
