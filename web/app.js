@@ -97,10 +97,7 @@ function renderStatus(s) {
 
   // PV & Netz
   const h = s.heater;
-  $("#m-pv").textContent      = fmtPower(h.pv_power);
-  $("#m-grid").textContent    = fmtPower(h.main_meter_power);
-  $("#m-heater").textContent  = fmtPower(h.heater_meter_power);
-  $("#m-surplus").textContent = fmtPower(h.surplus_without_heater);
+  renderPvNetz(h, s.wallbox);
 
   // Speicher
   const heaterAktiv = (h.heater_meter_power ?? 0) > 50
@@ -547,6 +544,69 @@ async function drawHausverbrauchSparkline() {
   ctx.arc(lastPt.x, lastPt.y, 3, 0, Math.PI * 2);
   ctx.fillStyle = "#2ed8a3";
   ctx.fill();
+}
+
+function renderPvNetz(h, wb) {
+  const el = document.getElementById("pv-netz-body");
+  if (!el) return;
+
+  const pvW       = Math.max(0, Math.round(h.pv_power ?? 0));
+  const heizstabW = Math.max(0, Math.round(h.heater_meter_power ?? 0));
+  const gridW     = Math.round(h.main_meter_power ?? 0);
+  const wbSt      = wb?.status ?? {};
+  const wallboxW  = wbSt.charging === true ? Math.max(0, Math.round(wbSt.power_w ?? 0)) : 0;
+  const hausW     = Math.max(0, Math.round(lastSolaxData?.consumption_w ?? 0));
+  const isEinsp   = gridW < 0;
+  const zaehlerW  = Math.abs(gridW);
+
+  // Segment-Prozente (alle positiv, Summe ≤ 100)
+  const total = pvW || 1;
+  const heizstabPct  = Math.max(0, Math.min(100, heizstabW / total * 100));
+  const wallboxPct   = wallboxW > 50
+    ? Math.max(0, Math.min(100 - heizstabPct, wallboxW / total * 100))
+    : 0;
+  const grundlastW   = Math.max(0, hausW - heizstabW - wallboxW);
+  const grundlastPct = Math.max(0, Math.min(100 - heizstabPct - wallboxPct, grundlastW / total * 100));
+  const netzPct      = Math.max(0, 100 - heizstabPct - wallboxPct - grundlastPct);
+
+  const seg = (pct, bg, txt) => pct < 0.5 ? '' : `
+    <div style="width:${pct.toFixed(1)}%;background:${bg};display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;overflow:hidden;flex-shrink:0">
+      ${pct > 15 ? txt : ''}
+    </div>`;
+
+  const netzBg = !isEinsp && zaehlerW > 50 ? 'rgba(239,68,68,0.5)' : 'rgba(232,164,53,0.5)';
+  const pvDisp = pvW >= 1000 ? (pvW / 1000).toFixed(2) + ' kW' : pvW + ' W';
+
+  const bar = pvW > 0
+    ? seg(heizstabPct, '#2ed8a3', 'Heizstab')
+      + (wallboxPct > 0 ? seg(wallboxPct, '#f5782a', 'Wallbox') : '')
+      + seg(grundlastPct, 'rgba(46,216,163,0.4)', 'Eigenverbr.')
+      + seg(netzPct, netzBg, isEinsp ? 'Einsp.' : 'Bezug')
+    : '<div style="width:100%;background:rgba(255,255,255,0.06)"></div>';
+
+  const wbLabel = wallboxW > 50
+    ? `<span>Wallbox: ${wallboxW} W</span>` : '';
+
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <span style="font-size:12px;color:var(--text-muted)">☀ PV Erzeugung</span>
+      <span style="font-size:18px;font-weight:500;color:#e8a435">${pvDisp}</span>
+    </div>
+    <div style="height:24px;background:#1a1d23;border-radius:6px;overflow:hidden;display:flex;margin-bottom:8px">
+      ${bar}
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-bottom:14px;flex-wrap:wrap;gap:4px">
+      <span>Heizstab: ${heizstabW} W</span>
+      ${wbLabel}
+      <span>Haus: ${grundlastW} W</span>
+      <span>Netz: ${zaehlerW} W</span>
+    </div>
+    <div style="border-top:1px solid var(--line);padding-top:10px;display:flex;justify-content:space-between;font-size:12px">
+      <span style="color:var(--text-muted)">Hauptzähler</span>
+      <span style="color:${isEinsp ? 'var(--ok)' : 'var(--text)'}">
+        ${isEinsp ? '+' : ''}${zaehlerW} W ${isEinsp ? 'Einsp.' : 'Bezug'}
+      </span>
+    </div>`;
 }
 
 function renderToday(d) {
