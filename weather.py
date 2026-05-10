@@ -51,7 +51,7 @@ def fetch_weather(lat: float, lon: float, timeout: int = 10) -> Optional[dict]:
         "https://api.open-meteo.com/v1/forecast"
         f"?latitude={lat}&longitude={lon}"
         "&daily=sunshine_duration,shortwave_radiation_sum,"
-        "temperature_2m_max,temperature_2m_min,weathercode"
+        "temperature_2m_max,temperature_2m_min,weathercode,sunset"
         "&timezone=Europe/Berlin"
         "&past_days=1&forecast_days=2"
     )
@@ -81,6 +81,8 @@ def fetch_and_store(lat: float, lon: float) -> bool:
             return vals[idx] if idx < len(vals) and vals[idx] is not None else None
         sh_sec = _get("sunshine_duration")
         rad = _get("shortwave_radiation_sum")
+        sunset_raw = _get("sunset")
+        sunset_str = sunset_raw[11:16] if sunset_raw and len(sunset_raw) >= 16 else None
         db.upsert_weather(
             date_str=d_str,
             sunshine_hours=round(sh_sec / 3600.0, 2) if sh_sec is not None else None,
@@ -88,6 +90,7 @@ def fetch_and_store(lat: float, lon: float) -> bool:
             temp_max=_get("temperature_2m_max"),
             temp_min=_get("temperature_2m_min"),
             weathercode=_get("weathercode"),
+            sunset=sunset_str,
         )
     log.info("Wetterdaten gespeichert für %d Tage", len(dates))
     return True
@@ -115,6 +118,7 @@ def calculate_forecast() -> dict:
             "temp_max": today_weather.get("temp_max") if today_weather else None,
             "weathercode": today_weather.get("weathercode") if today_weather else None,
             "weather_icon": weathercode_icon(today_weather.get("weathercode") if today_weather else None),
+            "sunset": today_weather.get("sunset") if today_weather else None,
         },
         "tomorrow": None,
         "r2": None,

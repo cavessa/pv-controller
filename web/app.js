@@ -945,9 +945,13 @@ let _lastForecastData = null;
 
 async function loadForecast() {
   try {
-    const data = await api("/api/forecast");
+    const [data, histData] = await Promise.all([
+      api("/api/forecast"),
+      api("/api/history/forecast?days=7"),
+    ]);
     _lastForecastData = data;
     renderForecastCard(data);
+    renderForecastProgress(data, histData.entries || []);
   } catch {
     // non-critical – silently skip
   }
@@ -959,7 +963,6 @@ function renderForecastCard(data) {
   const badgeEl = document.getElementById("forecast-badge");
   const sunEl = document.getElementById("forecast-sun");
   const ghiEl = document.getElementById("forecast-ghi");
-  const compareEl = document.getElementById("forecast-compare");
   if (!card) return;
 
   const t = data?.tomorrow;
@@ -968,13 +971,6 @@ function renderForecastCard(data) {
   if (!t) {
     kwhEl.textContent = "–";
     badgeEl.textContent = today?.weather_icon ?? "";
-    const days = data?.data_days ?? 0;
-    if (compareEl) {
-      compareEl.className = "forecast-compare";
-      compareEl.textContent = days < 7
-        ? `Noch nicht genug Daten für eine Prognose (${days}/7 Tage)`
-        : "Keine Wetterdaten für morgen verfügbar.";
-    }
     return;
   }
 
@@ -982,12 +978,85 @@ function renderForecastCard(data) {
   badgeEl.textContent = `${t.weather_icon ?? ""} ${t.temp_max != null ? Math.round(t.temp_max) + "°C" : ""}`.trim();
   if (sunEl) sunEl.textContent = t.sunshine_hours != null ? t.sunshine_hours.toFixed(1) + " h" : "–";
   if (ghiEl) ghiEl.textContent = t.ghi_kwh_m2 != null ? t.ghi_kwh_m2.toFixed(1) + " kWh/m²" : "–";
+}
 
-  if (compareEl && today) {
-    const actual = today.actual_kwh != null ? today.actual_kwh.toFixed(1) + " kWh" : "–";
-    const predicted = today.predicted_kwh != null ? ` (Prognose war ${today.predicted_kwh.toFixed(1)} kWh)` : "";
-    compareEl.className = "forecast-compare";
-    compareEl.textContent = `Heute: ${actual}${predicted}`;
+function renderForecastProgress(data, histEntries) {
+  const wrap = document.getElementById("forecast-progress-wrap");
+  const empty = document.getElementById("forecast-progress-empty");
+  if (!wrap) return;
+
+  const today = data?.today;
+  const predicted = today?.predicted_kwh;
+  const actual = today?.actual_kwh;
+
+  if (!predicted || predicted <= 0) {
+    wrap.classList.add("hidden");
+    if (empty) empty.classList.remove("hidden");
+    return;
+  }
+  wrap.classList.remove("hidden");
+  if (empty) empty.classList.add("hidden");
+
+  const pct = actual != null ? Math.min(Math.round((actual / predicted) * 100), 150) : 0;
+  const over100 = pct >= 100;
+  const fill = document.getElementById("forecast-bar-fill");
+  const pctEl = document.getElementById("forecast-percent");
+  if (fill) {
+    fill.style.width = Math.min(pct, 100) + "%";
+    fill.className = "forecast-bar-fill" + (over100 ? " over" : "");
+  }
+  if (pctEl) {
+    pctEl.textContent = actual != null ? (over100 ? `${pct}% 🎉` : `${pct}%`) : "–";
+  }
+
+  const fpForecast = document.getElementById("fp-forecast");
+  const fpActual = document.getElementById("fp-actual");
+  const fpRemaining = document.getElementById("fp-remaining");
+  const fpSunset = document.getElementById("fp-sunset");
+
+  if (fpForecast) fpForecast.textContent = `~${predicted.toFixed(1)} kWh`;
+  if (fpActual) fpActual.textContent = actual != null ? `${actual.toFixed(1)} kWh` : "–";
+
+  const sunset = today?.sunset;
+  const sunsetHour = sunset ? parseInt(sunset.split(":")[0], 10) : 21;
+  const isEndstand = new Date().getHours() >= sunsetHour;
+
+  if (fpRemaining) {
+    if (actual == null) {
+      fpRemaining.textContent = "–";
+    } else if (isEndstand) {
+      fpRemaining.textContent = "Endstand";
+    } else {
+      const rem = Math.max(0, predicted - actual);
+      fpRemaining.textContent = rem > 0.05 ? `noch ~${rem.toFixed(1)} kWh` : "Ziel erreicht";
+    }
+  }
+  if (fpSunset) fpSunset.textContent = sunset ?? "–";
+
+  const daysEl = document.getElementById("forecast-last-days");
+  if (daysEl) {
+    const recent = histEntries
+      .filter(e => e.forecast_kwh != null && e.pv_kwh != null)
+      .slice(-3)
+      .reverse();
+    if (recent.length === 0) {
+      daysEl.innerHTML = "";
+    } else {
+      daysEl.innerHTML =
+        `<div class="forecast-last-days-title">Letzte Tage</div>` +
+        recent.map(e => {
+          const p = Math.round((e.pv_kwh / e.forecast_kwh) * 100);
+          const hit = Math.abs(e.pv_kwh - e.forecast_kwh) <= e.forecast_kwh * 0.2;
+          return `<div class="forecast-day-row">` +
+            `<span class="fdr-date">${e.date.slice(5)}</span>` +
+            `<span class="fdr-forecast">~${e.forecast_kwh.toFixed(1)}</span>` +
+            `<span class="fdr-arrow">→</span>` +
+            `<span class="fdr-actual">${e.pv_kwh.toFixed(1)} kWh</span>` +
+            `<span class="fdr-icon">${hit ? "✅" : "❌"}</span>` +
+            `<span class="fdr-pct">${p}%</span>` +
+            `</div>`;
+        }).join("");
+    }
   }
 }
 

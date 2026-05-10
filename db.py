@@ -98,7 +98,8 @@ def init_pv_logging_tables() -> None:
                 ghi_kwh_m2     REAL,
                 temp_max       REAL,
                 temp_min       REAL,
-                weathercode    INTEGER
+                weathercode    INTEGER,
+                sunset         TEXT
             )
         """)
         conn.execute("""
@@ -124,6 +125,15 @@ def init_pv_logging_tables() -> None:
             try:
                 conn.execute(
                     f"ALTER TABLE pv_daily_log ADD COLUMN {col} {definition}"
+                )
+            except sqlite3.OperationalError:
+                pass
+        for col, definition in (
+            ("sunset", "TEXT"),
+        ):
+            try:
+                conn.execute(
+                    f"ALTER TABLE weather_log ADD COLUMN {col} {definition}"
                 )
             except sqlite3.OperationalError:
                 pass
@@ -274,20 +284,21 @@ def upsert_weather(
     temp_max: Optional[float],
     temp_min: Optional[float],
     weathercode: Optional[int],
+    sunset: Optional[str] = None,
 ) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """INSERT OR REPLACE INTO weather_log
-               (date, sunshine_hours, ghi_kwh_m2, temp_max, temp_min, weathercode)
-               VALUES (?,?,?,?,?,?)""",
-            (date_str, sunshine_hours, ghi_kwh_m2, temp_max, temp_min, weathercode),
+               (date, sunshine_hours, ghi_kwh_m2, temp_max, temp_min, weathercode, sunset)
+               VALUES (?,?,?,?,?,?,?)""",
+            (date_str, sunshine_hours, ghi_kwh_m2, temp_max, temp_min, weathercode, sunset),
         )
 
 
 def get_weather(date_str: str) -> Optional[dict]:
     with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute(
-            """SELECT date, sunshine_hours, ghi_kwh_m2, temp_max, temp_min, weathercode
+            """SELECT date, sunshine_hours, ghi_kwh_m2, temp_max, temp_min, weathercode, sunset
                FROM weather_log WHERE date = ?""",
             (date_str,),
         ).fetchone()
@@ -295,7 +306,7 @@ def get_weather(date_str: str) -> Optional[dict]:
         return None
     return {
         "date": row[0], "sunshine_hours": row[1], "ghi_kwh_m2": row[2],
-        "temp_max": row[3], "temp_min": row[4], "weathercode": row[5],
+        "temp_max": row[3], "temp_min": row[4], "weathercode": row[5], "sunset": row[6],
     }
 
 

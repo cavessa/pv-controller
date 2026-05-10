@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=46">
+  <link rel="stylesheet" href="/static/styles.css?v=47">
 </head>
 <body>
   <div id="loading-overlay" style="
@@ -174,7 +174,24 @@
             <div><span>Sonnenstunden</span><b id="forecast-sun">–</b></div>
             <div><span>Globalstrahlung</span><b id="forecast-ghi">–</b></div>
           </div>
-          <div id="forecast-compare" class="forecast-compare hidden"></div>
+        </div>
+
+        <div class="card" id="forecast-progress-card">
+          <h2>Heute vs. Prognose</h2>
+          <div id="forecast-progress-wrap" class="hidden">
+            <div class="forecast-bar-container">
+              <div id="forecast-bar-fill" class="forecast-bar-fill" style="width:0%"></div>
+            </div>
+            <div id="forecast-percent" class="forecast-percent">–</div>
+            <div class="kv compact" style="margin-top:8px">
+              <div><span>Prognose heute</span><b id="fp-forecast">–</b></div>
+              <div><span>Bisher erzeugt</span><b id="fp-actual">–</b></div>
+              <div><span>Verbleibend</span><b id="fp-remaining">–</b></div>
+              <div><span>Sonnenuntergang</span><b id="fp-sunset">–</b></div>
+            </div>
+            <div id="forecast-last-days" class="forecast-last-days"></div>
+          </div>
+          <div id="forecast-progress-empty" class="forecast-compare">Noch keine Prognose-Daten vorhanden.</div>
         </div>
 
         <div class="card" id="wallbox-card">
@@ -619,6 +636,6 @@
   </footer>
   </div>
 
-  <script src="/static/app.js?v=66" defer></script>
+  <script src="/static/app.js?v=67" defer></script>
 </body>
 </html>

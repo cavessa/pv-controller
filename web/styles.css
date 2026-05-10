@@ -812,6 +812,58 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
   font-variant-numeric: tabular-nums;
 }
 
+/* -------- Forecast progress card -------- */
+.forecast-bar-container {
+  background: rgba(255,255,255,0.06);
+  border-radius: 6px;
+  height: 12px;
+  overflow: hidden;
+  margin: 10px 0 4px;
+}
+.forecast-bar-fill {
+  height: 100%;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #2ed8a3, #28c496);
+  transition: width 2s ease;
+  min-width: 0;
+}
+.forecast-bar-fill.over {
+  background: linear-gradient(90deg, #2ed8a3, #e8a435);
+}
+.forecast-percent {
+  font-size: 24px;
+  font-weight: 500;
+  color: #2ed8a3;
+  text-align: center;
+  padding: 4px 0 2px;
+  font-variant-numeric: tabular-nums;
+}
+.forecast-last-days {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.forecast-last-days-title {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+}
+.forecast-day-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  padding: 3px 0;
+}
+.fdr-date { color: var(--text-muted); min-width: 38px; }
+.fdr-forecast { color: var(--text-muted); min-width: 44px; }
+.fdr-arrow { color: var(--line); }
+.fdr-actual { font-weight: 500; min-width: 52px; }
+.fdr-icon { font-size: 12px; }
+.fdr-pct { color: var(--text-muted); font-variant-numeric: tabular-nums; margin-left: auto; }
+
 /* -------- String dashboard alert -------- */
 .string-dash-alert {
   display: none;
