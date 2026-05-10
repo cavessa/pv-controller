@@ -474,18 +474,79 @@ function renderSolax(d) {
 function renderHausverbrauch(d) {
   const valEl   = document.getElementById("hv-val");
   const todayEl = document.getElementById("hv-today");
+  const avgEl   = document.getElementById("hv-avg");
   if (!valEl || !todayEl) return;
   if (d == null) {
-    valEl.textContent   = "–";
+    valEl.innerHTML     = `–<span class="hv-unit">W</span>`;
     valEl.style.color   = "var(--text-dim)";
     todayEl.textContent = "Heute: –";
+    if (avgEl) avgEl.textContent = "Ø – kW/h";
     return;
   }
   const w = Math.round(d.consumption_w);
-  valEl.textContent = w >= 1000 ? (w / 1000).toFixed(2) + " kW" : w + " W";
+  if (w >= 1000) {
+    valEl.innerHTML = `${(w / 1000).toFixed(2)}<span class="hv-unit">kW</span>`;
+  } else {
+    valEl.innerHTML = `${w}<span class="hv-unit">W</span>`;
+  }
   valEl.style.color = w > 3000 ? "var(--warn)" : "var(--text)";
   const kwh = d.self_consumption_kwh;
   todayEl.textContent = "Heute: " + (kwh != null ? kwh.toFixed(1) + " kWh" : "–");
+  if (avgEl && kwh != null) {
+    const hours = Math.max(1, new Date().getHours());
+    avgEl.textContent = "Ø " + (kwh / hours).toFixed(2) + " kW/h";
+  }
+}
+
+async function drawHausverbrauchSparkline() {
+  const canvas = document.getElementById("hausverbrauch-sparkline");
+  if (!canvas) return;
+  const today = new Date().toISOString().slice(0, 10);
+  let entries;
+  try {
+    const res = await api(`/api/history/hourly?for_date=${today}`);
+    entries = res.entries || [];
+  } catch (e) {
+    return;
+  }
+  const values = entries.map(e => e.consumption_w || 0);
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  if (values.length < 2) return;
+  const pad = 4;
+  const max = Math.max(...values) * 1.1 || 1;
+  const step = (w - pad * 2) / (values.length - 1);
+  const pts = values.map((v, i) => ({
+    x: pad + i * step,
+    y: h - pad - (v / max) * (h - pad * 2),
+  }));
+  // Gradient fill
+  const lastPt = pts[pts.length - 1];
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, "rgba(46,216,163,0.25)");
+  grad.addColorStop(1, "rgba(46,216,163,0)");
+  ctx.beginPath();
+  pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+  ctx.lineTo(lastPt.x, h);
+  ctx.lineTo(pts[0].x, h);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+  // Line
+  ctx.beginPath();
+  ctx.strokeStyle = "#2ed8a3";
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+  ctx.stroke();
+  // Dot at current value
+  ctx.beginPath();
+  ctx.arc(lastPt.x, lastPt.y, 3, 0, Math.PI * 2);
+  ctx.fillStyle = "#2ed8a3";
+  ctx.fill();
 }
 
 function renderToday(d) {
@@ -1871,6 +1932,7 @@ async function refreshStatus() {
     if (activeTab === "prioritaeten") loadCascade();
     _checkLiveStringAlert();
     loadForecast();
+    drawHausverbrauchSparkline();
   } catch (e) {
     showError("Status-Abfrage fehlgeschlagen: " + e.message);
   }

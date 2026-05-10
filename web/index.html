@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=49">
+  <link rel="stylesheet" href="/static/styles.css?v=50">
 </head>
 <body>
   <div id="loading-overlay" style="
@@ -96,8 +96,14 @@
 
       <div class="card">
         <h2>Hausverbrauch</h2>
-        <div class="hv-val" id="hv-val">– W</div>
-        <div class="hv-today" id="hv-today">Heute: –</div>
+        <div class="hv-body">
+          <div class="hv-left">
+            <div class="hv-val" id="hv-val">–<span class="hv-unit">W</span></div>
+            <div class="hv-today" id="hv-today">Heute: –</div>
+            <div class="hv-avg" id="hv-avg">Ø – kW/h</div>
+          </div>
+          <canvas id="hausverbrauch-sparkline" width="110" height="50" class="hv-sparkline"></canvas>
+        </div>
       </div>
 
       <div class="card cascade-mini-card" id="cascade-mini">
