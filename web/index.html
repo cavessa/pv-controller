@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=47">
+  <link rel="stylesheet" href="/static/styles.css?v=48">
 </head>
 <body>
   <div id="loading-overlay" style="
@@ -179,8 +179,16 @@
         <div class="card" id="forecast-progress-card">
           <h2>Heute vs. Prognose</h2>
           <div id="forecast-progress-wrap" class="hidden">
-            <div class="forecast-bar-container">
-              <div id="forecast-bar-fill" class="forecast-bar-fill" style="width:0%"></div>
+            <div class="forecast-bar-labels">
+              <span>0 kWh</span>
+              <span>Prognose: <span id="fp-bar-forecast">–</span> kWh</span>
+            </div>
+            <div class="forecast-bar-track">
+              <div class="forecast-bar-goal"></div>
+              <div id="forecast-bar-fill" class="forecast-bar-fill" style="width:0%">
+                <span id="fp-bar-actual" class="forecast-bar-actual-label">–</span>
+              </div>
+              <span id="fp-bar-remaining" class="forecast-bar-remaining">–</span>
             </div>
             <div id="forecast-percent" class="forecast-percent">–</div>
             <div class="kv compact" style="margin-top:8px">
@@ -636,6 +644,6 @@
   </footer>
   </div>
 
-  <script src="/static/app.js?v=67" defer></script>
+  <script src="/static/app.js?v=68" defer></script>
 </body>
 </html>
