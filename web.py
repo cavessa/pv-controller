@@ -278,33 +278,8 @@ def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
 
 
 def _append_history(temp: float | None, wb_w: float | None) -> None:
-    now = datetime.now()
-    entry: dict = {"t": now.isoformat(timespec="minutes")}
-    if temp is not None:
-        entry["temp"] = round(temp, 1)
-    if wb_w is not None:
-        entry["wb_w"] = round(wb_w, 0)
-    if len(entry) == 1:
-        return
-    data: list[dict] = []
-    if TEMP_HISTORY_PATH.exists():
-        try:
-            with open(TEMP_HISTORY_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            data = []
-    if data and data[-1]["t"] == entry["t"]:
-        # merge new fields into existing minute entry
-        data[-1].update(entry)
-    else:
-        cutoff = (now - timedelta(hours=25)).isoformat(timespec="minutes")
-        data = [e for e in data if e["t"] >= cutoff]
-        data.append(entry)
-    try:
-        with open(TEMP_HISTORY_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f)
-    except Exception:
-        pass
+    from db import append_temp_history
+    append_temp_history(temp, wb_w)
 
 
 # ---- Routes: static --------------------------------------------------------
@@ -354,15 +329,36 @@ def api_run_once(response: Response) -> dict[str, Any]:
 @app.get("/api/temp-history")
 def api_temp_history(response: Response) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
-    if not TEMP_HISTORY_PATH.exists():
-        return {"entries": []}
-    try:
-        with open(TEMP_HISTORY_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        return {"entries": []}
     today = datetime.now().strftime("%Y-%m-%d")
-    return {"entries": [e for e in data if e["t"].startswith(today)]}
+    fine: list[dict] = []
+    if TEMP_HISTORY_PATH.exists():
+        try:
+            with open(TEMP_HISTORY_PATH, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            fine = [e for e in raw if e["t"].startswith(today)]
+        except Exception:
+            pass
+    # Stundendaten aus pv_hourly_log als Lückenfüller
+    try:
+        from db import get_hourly_data
+        hourly = get_hourly_data(today)
+        fine_hours = {e["t"][11:13] for e in fine}  # "HH" der bereits vorhandenen Minuten
+        for h in hourly:
+            if h.get("storage_temp_c") is None:
+                continue
+            ts = h["ts"]  # "2026-05-12 07:00"
+            hour = ts[11:13]
+            if hour in fine_hours:
+                continue  # Minutendaten vorhanden → Stundenpunkt überspringen
+            fine.append({
+                "t": ts[:10] + "T" + ts[11:16],
+                "temp": round(h["storage_temp_c"], 1),
+                "wb_w": round(h.get("wallbox_w") or 0.0, 0),
+            })
+    except Exception:
+        pass
+    fine.sort(key=lambda e: e["t"])
+    return {"entries": fine}
 
 
 @app.get("/api/config")

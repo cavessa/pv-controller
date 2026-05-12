@@ -2,12 +2,43 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
 DB_PATH = Path(__file__).resolve().parent / "pvcontroller.db"
+TEMP_HISTORY_PATH = Path(__file__).resolve().parent / "temp_history.json"
+
+
+def append_temp_history(temp: float | None, wb_w: float | None) -> None:
+    now = datetime.now()
+    entry: dict = {"t": now.isoformat(timespec="minutes")}
+    if temp is not None:
+        entry["temp"] = round(temp, 1)
+    if wb_w is not None:
+        entry["wb_w"] = round(wb_w, 0)
+    if len(entry) == 1:
+        return
+    data: list[dict] = []
+    if TEMP_HISTORY_PATH.exists():
+        try:
+            with open(TEMP_HISTORY_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = []
+    if data and data[-1]["t"] == entry["t"]:
+        data[-1].update(entry)
+    else:
+        cutoff = (now - timedelta(hours=25)).isoformat(timespec="minutes")
+        data = [e for e in data if e["t"] >= cutoff]
+        data.append(entry)
+    try:
+        with open(TEMP_HISTORY_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
 
 
 def init_db() -> None:

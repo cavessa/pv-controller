@@ -68,6 +68,12 @@ def main(argv: list[str] | None = None) -> int:
         result = Controller(config).run()
         from pv_logger import maybe_log
         maybe_log(result)
+        try:
+            from db import append_temp_history
+            wb_w = result.wallbox_status.power_w if result.wallbox_status else 0.0
+            append_temp_history(result.readings.storage_temp_c, wb_w)
+        except Exception:
+            log.warning("append_temp_history fehlgeschlagen", exc_info=True)
         return 0
     except Exception:
         log.exception("Unerwarteter Fehler im Controller-Lauf")

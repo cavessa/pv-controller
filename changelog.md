@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-05-12 – Temperaturchart: Cron-Lauf schreibt jetzt auch temp_history.json
+
+- **db.py**: Funktion `append_temp_history` aus `web.py` hierhin verschoben, damit sie ohne FastAPI-Import nutzbar ist
+- **web.py** `_append_history`: delegiert jetzt an `db.append_temp_history`
+- **main.py**: ruft nach jedem Controller-Lauf `append_temp_history` auf — damit wird `temp_history.json` jede Minute per Cron befüllt, unabhängig davon ob jemand das Dashboard geöffnet hat
+
+## 2026-05-12 – Temperaturchart: Stundendaten als Fallback wenn Minutendaten fehlen
+
+- **web.py** `api_temp_history`: Wenn `temp_history.json` für eine Stunde keine Minutendaten enthält (z. B. nach Dienst-Neustart), werden fehlende Stunden aus `pv_hourly_log` (`storage_temp_c`, `wallbox_w`) ergänzt. Der Chart zeigt damit auch nach einem Neustart den vollen Tagesverlauf.
+
 ## 2026-05-10 – "Aktualisieren"-Button entfernt
 
 - **index.html**: Button `#btn-refresh` entfernt (Dashboard pollt automatisch)
