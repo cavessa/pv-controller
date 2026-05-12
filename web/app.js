@@ -1164,8 +1164,10 @@ function getForecastAssessment(actualKwh, forecastKwh, currentHour, currentMinut
   const fractionElapsed = Math.min(1, sunHoursElapsed / totalSunHours);
   const fractionExpected = (1 - Math.cos(Math.PI * fractionElapsed)) / 2;
 
-  // Zu früh für eine sinnvolle Einschätzung (< 5 % der Tagesenergie erwartet)
-  if (fractionExpected < 0.05) {
+  // Morgens (< 15 % der Tagesenergie erwartet, ca. bis 09:45): Hochrechnung wäre zu unzuverlässig.
+  // Wenn bereits Produktion vorhanden → Auf Kurs, sonst Hinweis dass der Tag gerade beginnt.
+  if (fractionExpected < 0.15) {
+    if (actualKwh > 0) return { text: 'Auf Kurs – Prognose wird vermutlich erreicht', color: '#2ed8a3' };
     return { text: 'Tag hat gerade begonnen', color: '#aaa' };
   }
 
