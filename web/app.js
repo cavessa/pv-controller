@@ -1156,16 +1156,26 @@ function getForecastAssessment(actualKwh, forecastKwh, currentHour, currentMinut
     return { text: 'Deutlich unter Prognose (' + Math.round(percent) + '%)', color: '#ff6b6b' };
   }
 
-  const neededPerHour = remaining / hoursLeft;
+  // Glockenkurven-Modell: PV-Ertrag folgt ~Halbsinus von Sonnenaufgang bis -untergang.
+  // fractionExpected = Anteil der Tagesenergie der bis jetzt erwartet wird.
   const sunriseApprox = 6;
-  const sunHoursElapsed = Math.max(1, now - sunriseApprox);
-  const avgPerHour = actualKwh / sunHoursElapsed;
-  const expectedRemaining = avgPerHour * hoursLeft * 0.5;
+  const totalSunHours = Math.max(1, sunset - sunriseApprox);
+  const sunHoursElapsed = Math.max(0, now - sunriseApprox);
+  const fractionElapsed = Math.min(1, sunHoursElapsed / totalSunHours);
+  const fractionExpected = (1 - Math.cos(Math.PI * fractionElapsed)) / 2;
 
-  if (actualKwh + expectedRemaining >= forecastKwh * 0.9) {
+  // Zu früh für eine sinnvolle Einschätzung (< 5 % der Tagesenergie erwartet)
+  if (fractionExpected < 0.05) {
+    return { text: 'Tag hat gerade begonnen', color: '#aaa' };
+  }
+
+  // Hochrechnung: wenn aktuelle Produktion dem Kurvenanteil entspricht → Gesamtschätzung
+  const estimatedTotal = actualKwh / fractionExpected;
+
+  if (estimatedTotal >= forecastKwh * 0.9) {
     return { text: 'Auf Kurs – Prognose wird vermutlich erreicht', color: '#2ed8a3' };
   }
-  if (actualKwh + expectedRemaining >= forecastKwh * 0.7) {
+  if (estimatedTotal >= forecastKwh * 0.7) {
     return { text: 'Knapp – noch ' + remaining.toFixed(1) + ' kWh in ' + hoursLeft.toFixed(1) + 'h', color: '#e8a435' };
   }
   return { text: 'Wird nicht mehr erreicht – noch ' + remaining.toFixed(1) + ' kWh in ' + hoursLeft.toFixed(1) + 'h nötig', color: '#ff6b6b' };

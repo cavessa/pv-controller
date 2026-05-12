@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-05-12 – Prognose-Einschätzung: Glockenkurven-Modell statt linearem Durchschnitt
+
+- **app.js** `getForecastAssessment`: Frühmorgens ist `avgPerHour` niedrig (normale Morgen-Sonne), der alte `* 0.5`-Abschlag führte fälschlicherweise zu "Wird nicht mehr erreicht"
+- Neu: Halbsinus-Modell (`(1 − cos(π · t)) / 2`) schätzt welcher Anteil der Tagesenergie bis jetzt erwartet wird; Hochrechnung auf Gesamtjahrestag ergibt realistische Einschätzung
+- Zusätzlich: Guard "Tag hat gerade begonnen" wenn < 5 % der erwarteten Tagesenergie erreicht sein sollten
+
 ## 2026-05-12 – Temperaturchart: Cron-Lauf schreibt jetzt auch temp_history.json
 
 - **db.py**: Funktion `append_temp_history` aus `web.py` hierhin verschoben, damit sie ohne FastAPI-Import nutzbar ist
