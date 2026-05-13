@@ -1,13 +1,12 @@
 """Kaskaden-Service: PV-Überschuss-Prioritätskaskade.
 
-Entscheidet basierend auf dem Brutto-PV-Überschuss (feed_in_w + aktuelle
-Heizstab/Wallbox-Leistung), welche Geräte (geordnet nach priority) ein- oder
-ausgeschaltet werden sollen.
+Entscheidet basierend auf dem Brutto-PV-Überschuss, welche Geräte (geordnet
+nach priority) ein- oder ausgeschaltet werden sollen.
 
-Brutto-Überschuss = feed_in_w (Solax Data[34]) + gemessene Leistung aller
-kaskaden-gesteuerten Festlasten (Heizstab 3EM, Wallbox go-e).  Damit sieht die
-Kaskade den vollen PV-Überschuss unabhängig davon, welche Lasten aktuell laufen,
-und kann die Prioritätsreihenfolge korrekt durchsetzen.
+Brutto-Überschuss = Hauptzähler (Shelly 3EM, invertiert) + gemessene Leistung
+aller kaskaden-gesteuerten Festlasten (Heizstab 3EM; Wallbox go-e nur wenn
+im Eco-Modus lmo=4, nicht im Basic-Modus).  Der Hauptzähler ist die einzig
+zuverlässige Quelle: er sieht alle Lasten inkl. Wallbox im Basic-Modus.
 
 Für heizstab/wallbox setzt die Kaskade das is_on-Flag in der DB; der Controller
 liest es als Freigabe.  Die Temperatur-Sicherheitslogik des Heizstabs und der
@@ -52,6 +51,9 @@ class CascadeService:
         self.heater_meter = Shelly3EMClient(
             config.shelly.heater_meter_url, timeout, name="heater_meter"
         )
+        self.main_meter = Shelly3EMClient(
+            config.shelly.main_meter_url, timeout, name="main_meter"
+        )
         self.goe: Optional[GoeClient] = None
         if config.wallbox.enabled and config.wallbox.url:
             self.goe = GoeClient(config.wallbox.url, config.wallbox.request_timeout_seconds)
@@ -68,17 +70,29 @@ class CascadeService:
 
         self._poll_shelly_devices()
         devices = [d for d in get_cascade_devices() if d["enabled"]]
-        raw_feed_in = self._get_raw_feed_in_w()
+
+        # Primärquelle: Hauptzähler (sieht alle Lasten inkl. Wallbox im Basic-Modus).
+        # Fallback auf Solax wenn Hauptzähler nicht erreichbar.
+        main_feed_in = self._get_main_meter_feed_in_w()
+        if main_feed_in is None:
+            log.warning("Kaskade: Hauptzähler nicht verfügbar, Fallback zu Solax")
+            raw_feed_in = self._get_raw_feed_in_w()
+            feed_in_source = "Solax"
+        else:
+            raw_feed_in = main_feed_in
+            feed_in_source = "Hauptzähler"
+
         controlled_loads_w, actual_device_w = self._get_controlled_loads_w(devices)
-        # Brutto-Überschuss = Netzeinspeisung + was Heizstab/Wallbox gerade verbrauchen.
-        # Damit sieht die Kaskade den vollen PV-Überschuss und kann Prioritäten
-        # korrekt durchsetzen, unabhängig davon welche Lasten bereits laufen.
+        # Brutto-Überschuss = Einspeisung + kaskaden-gesteuerte Festlasten.
+        # Nur Lasten addieren die die Kaskade selbst steuert (Heizstab; Wallbox nur
+        # im Eco-Modus). Wallbox im Basic-Modus wird vom Hauptzähler bereits erfasst
+        # und darf nicht doppelt angerechnet werden.
         gross_feed_in = raw_feed_in + int(controlled_loads_w)
         surplus = max(0, gross_feed_in)
 
         log.info(
-            "Kaskade: feed_in=%d W + Festlasten=%.0f W → Brutto=%d W",
-            raw_feed_in, controlled_loads_w, gross_feed_in,
+            "Kaskade: %s feed_in=%d W + Festlasten=%.0f W → Brutto=%d W",
+            feed_in_source, raw_feed_in, controlled_loads_w, gross_feed_in,
         )
 
         if not settings["allow_grid_draw"] and gross_feed_in < -50:
@@ -301,8 +315,21 @@ class CascadeService:
 
     # ── Hilfsmethoden ────────────────────────────────────────────────────────
 
+    def _get_main_meter_feed_in_w(self) -> Optional[int]:
+        """Hauptzähler als Einspeisung: positiv = Einspeisung, negativ = Bezug.
+        Gibt None zurück bei Lesefehler (dann Fallback auf Solax).
+        """
+        try:
+            val = self.main_meter.get_total_power_w()
+            if val is not None:
+                # Shelly 3EM: negativ = Einspeisung → invertieren für feed-in-Konvention
+                return int(-val)
+        except Exception:
+            log.warning("Kaskade: Hauptzähler-Lesefehler", exc_info=True)
+        return None
+
     def _get_raw_feed_in_w(self) -> int:
-        """Roher feed_in_w aus Solax Data[34]; negativ bei Netzbezug."""
+        """Fallback: feed_in_w aus Solax Data[34]; negativ bei Netzbezug."""
         try:
             data = self.solax.get_realtime_data()
             if data is not None:
@@ -348,11 +375,22 @@ class CascadeService:
             wallbox_actual: float | None = None
             try:
                 raw = self.goe.get_status()
-                nrg = raw.get("nrg")
-                if isinstance(nrg, list) and len(nrg) >= 12 and isinstance(nrg[11], (int, float)):
-                    wallbox_actual = max(0.0, float(nrg[11]))
-                    total += wallbox_actual
-                    log.debug("Kaskade: Wallbox-Ist %.0f W", wallbox_actual)
+                lmo = raw.get("lmo")
+                if lmo != 4:
+                    # Basic-Modus (lmo=3): Wallbox nicht kaskaden-gesteuert.
+                    # Der Hauptzähler erfasst ihren Verbrauch bereits; hier nicht
+                    # addieren, sonst wird der Überschuss fälschlich aufgeblasen.
+                    log.debug(
+                        "Kaskade: Wallbox im Basic-Modus (lmo=%s) – "
+                        "nicht als Kaskadenlast gerechnet", lmo,
+                    )
+                    wallbox_actual = 0.0
+                else:
+                    nrg = raw.get("nrg")
+                    if isinstance(nrg, list) and len(nrg) >= 12 and isinstance(nrg[11], (int, float)):
+                        wallbox_actual = max(0.0, float(nrg[11]))
+                        total += wallbox_actual
+                        log.debug("Kaskade: Wallbox-Ist %.0f W (Eco-Modus)", wallbox_actual)
             except (GoeError, Exception):
                 log.warning("Kaskade: Wallbox-Meter-Lesefehler – nutze DB-Wert", exc_info=True)
                 for d in devices:
