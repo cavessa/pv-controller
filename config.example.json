@@ -49,5 +49,10 @@
   "auth_password": "",
   "latitude": 0.0,
   "longitude": 0.0,
-  "location_name": ""
+  "location_name": "",
+  "summer_mode": {
+    "enabled": false,
+    "min_temp": 45,
+    "target_temp": 52
+  }
 }

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -93,6 +93,20 @@ class WallboxConfig:
 
 
 @dataclass
+class SummerModeConfig:
+    enabled: bool = False
+    min_temp: float = 45.0
+    target_temp: float = 52.0
+
+    def __post_init__(self) -> None:
+        if self.min_temp >= self.target_temp:
+            raise ValueError(
+                f"summer_mode.min_temp must be < target_temp "
+                f"(got min={self.min_temp}, target={self.target_temp})"
+            )
+
+
+@dataclass
 class Config:
     solax: SolaxConfig
     shelly: ShellyConfig
@@ -100,6 +114,7 @@ class Config:
     runtime: RuntimeConfig
     simulation: SimulationConfig
     wallbox: WallboxConfig
+    summer_mode: SummerModeConfig = field(default_factory=SummerModeConfig)
 
 
 def load_config(path: str | Path) -> Config:
@@ -118,4 +133,8 @@ def load_config(path: str | Path) -> Config:
         ),
         simulation=SimulationConfig(**raw.get("simulation", {})),
         wallbox=WallboxConfig(**raw.get("wallbox", {})),
+        summer_mode=SummerModeConfig(**{
+            k: v for k, v in raw.get("summer_mode", {}).items()
+            if k != "max_phases"
+        }),
     )
