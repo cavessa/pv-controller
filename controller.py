@@ -276,6 +276,65 @@ class Controller:
             ),
         )
 
+    def _check_summer_mode(
+        self,
+        readings: Readings,
+        temp_status: Optional[TempStatus],
+    ) -> tuple[bool, bool, str]:
+        """Prüft ob Sommermodus Netz-Heizung starten, fortführen oder stoppen soll.
+
+        Gibt (heating_needed, stop_needed, reason) zurück.
+        """
+        sm = self.cfg.summer_mode
+        if not sm.enabled:
+            return False, False, ""
+
+        temp = readings.storage_temp_c
+        if temp is None:
+            return False, False, ""
+
+        # Sicherheits-Obergrenze hat absoluten Vorrang
+        if temp_status is TempStatus.AT_OR_ABOVE_MAX:
+            return False, False, ""
+
+        # Deutlicher PV-Überschuss (Einspeisung > 200 W): PV übernimmt, kein Netzbezug nötig
+        main_meter = readings.main_meter_power_w
+        significant_pv = main_meter is not None and main_meter < -200
+
+        any_phase_on = any(
+            x is True for x in (readings.ph1_on, readings.ph2_on, readings.ph3_on)
+        )
+
+        if temp >= sm.target_temp and any_phase_on and not significant_pv:
+            reason = (
+                f"Sommermodus: Zieltemperatur {sm.target_temp:.0f} °C erreicht "
+                f"({temp:.1f} °C) – Heizstab aus"
+            )
+            log.info("SOMMERMODUS: %s", reason)
+            return False, True, reason
+
+        if significant_pv:
+            # PV liefert Überschuss; Kaskade/normale Logik übernimmt
+            return False, False, ""
+
+        if temp < sm.min_temp:
+            reason = (
+                f"Sommermodus: Speicher {temp:.1f} °C < Minimum {sm.min_temp:.0f} °C "
+                f"– alle 3 Phasen aus Netz"
+            )
+            log.info("SOMMERMODUS: %s", reason)
+            return True, False, reason
+
+        if temp < sm.target_temp and any_phase_on:
+            reason = (
+                f"Sommermodus: Heize bis {sm.target_temp:.0f} °C "
+                f"(aktuell {temp:.1f} °C)"
+            )
+            log.info("SOMMERMODUS: %s", reason)
+            return True, False, reason
+
+        return False, False, ""
+
     def _execute(self, decision: PhaseDecision, plug: ShellyPlugClient) -> None:
         if decision.action == PhaseAction.UNCHANGED:
             return
@@ -330,17 +389,23 @@ class Controller:
             if delta_ms >= 0:
                 charge_duration_s = delta_ms / 1000.0
 
+        lmo = raw.get("lmo")
+        # lmo=4 means eco/PV surplus mode; lmo=3 is Standard/Basic mode.
+        # fup only reflects whether eco mode is currently allowing a charge, not whether
+        # eco mode is selected at all — so lmo is the reliable indicator.
+        pv_surplus_active = lmo == 4
+
         return WallboxStatus(
-            pv_surplus_active=bool(raw.get("fup", False)),
+            pv_surplus_active=pv_surplus_active,
             force_state=raw.get("frc"),
             allowed=raw.get("alw"),
             car_state=raw.get("car"),
             amp=raw.get("amp"),
-            access_control_state=raw.get("acs"),
             power_w=power_w,
             energy_session_wh=_num(raw.get("wh")),
             energy_total_wh=_num(raw.get("eto")),
             charge_duration_s=charge_duration_s,
+            logic_mode=int(lmo) if isinstance(lmo, (int, float)) else None,
         )
 
     def _decide_wallbox(
@@ -377,17 +442,17 @@ class Controller:
 
         status = self._parse_wallbox_status(raw)
         log.info(
-            "Wallbox-Status: fup=%s frc=%s alw=%s car=%s amp=%s acs=%s",
+            "Wallbox-Status: lmo=%s(eco=%s) frc=%s alw=%s car=%s amp=%s",
+            status.logic_mode,
             str(status.pv_surplus_active).lower(),
             status.force_state,
             str(status.allowed).lower() if status.allowed is not None else "n/a",
             status.car_state,
             status.amp,
-            status.access_control_state,
         )
 
         if cfg.only_control_when_pv_surplus_active and not status.pv_surplus_active:
-            return status, WallboxDecision(
+            decision = WallboxDecision(
                 action=WallboxAction.SKIPPED,
                 target_force_state=None,
                 reason=(
@@ -395,6 +460,11 @@ class Controller:
                     "Manual/normal charging will not be touched."
                 ),
             )
+            if status.car_state == 1:
+                decision.target_logic_mode = 4
+                decision.target_amp = 7
+                decision.reason += " Auto-restore: car unplugged, switching to Eco mode and resetting amp to 7A."
+            return status, decision
 
         if storage_temp_c is None:
             return status, WallboxDecision(
@@ -504,62 +574,55 @@ class Controller:
                     decision.execution_error = str(e)
                     log.error("go-e set frc=%d failed: %s", target, e)
 
-        self._execute_unlock(decision)
-
-    def _execute_unlock(self, decision: WallboxDecision) -> None:
-        target = decision.target_access_state
+    def _execute_amp(self, decision: WallboxDecision) -> None:
+        target = decision.target_amp
         if target is None:
             return
-        if target not in (0, 1):
-            decision.access_execution_error = (
-                f"refusing to set accessState={target} (only 0 or 1 allowed)"
-            )
-            log.error(decision.access_execution_error)
-            return
         if self._read_only:
-            log.info(
-                "READ-ONLY: would set go-e accessState to %d (no switching).", target
-            )
+            log.info("READ-ONLY: would set go-e amp to %d.", target)
             return
         if not self.cfg.runtime.enabled:
-            log.info(
-                "Controller disabled (runtime.enabled=false): not setting go-e "
-                "accessState to %d.",
-                target,
-            )
+            log.info("Controller disabled: not setting go-e amp to %d.", target)
             return
         if self.cfg.runtime.dry_run:
-            log.info("DRY-RUN: would set go-e accessState to %d.", target)
+            log.info("DRY-RUN: would set go-e amp to %d.", target)
             return
         if self.goe is None:
-            decision.access_execution_error = "wallbox client not initialised"
-            log.error(decision.access_execution_error)
+            decision.amp_execution_error = "wallbox client not initialised"
+            log.error(decision.amp_execution_error)
             return
         try:
-            self.goe.set_access_state(target)
-            decision.access_executed = True
-            log.info("go-e accessState set to %d.", target)
-        except (GoeError, ValueError) as e:
-            decision.access_execution_error = str(e)
-            log.error("go-e set acs=%d failed: %s", target, e)
+            self.goe.set_amp(target)
+            decision.amp_executed = True
+            log.info("go-e amp set to %d.", target)
+        except GoeError as e:
+            decision.amp_execution_error = str(e)
+            log.error("go-e set amp=%d failed: %s", target, e)
 
-    @staticmethod
-    def _maybe_set_unlock(
-        decision: WallboxDecision, status: Optional[WallboxStatus]
-    ) -> None:
-        """Falls die Wallbox laden darf (frc-Ziel=0 bzw. bereits frc=0) und der
-        go-e auf manuelle Freigabe wartet (acs=1), zusätzlich acs=0 setzen."""
-        if status is None or status.access_control_state != 1:
+    def _execute_lmo(self, decision: WallboxDecision) -> None:
+        target = decision.target_logic_mode
+        if target is None:
             return
-        target_frc = (
-            decision.target_force_state
-            if decision.target_force_state is not None
-            else status.force_state
-        )
-        if target_frc != 0:
+        if self._read_only:
+            log.info("READ-ONLY: would set go-e lmo to %d.", target)
             return
-        decision.target_access_state = 0
-        decision.reason += " Auto-Unlock: setting acs=0 to release wallbox for charging."
+        if not self.cfg.runtime.enabled:
+            log.info("Controller disabled: not setting go-e lmo to %d.", target)
+            return
+        if self.cfg.runtime.dry_run:
+            log.info("DRY-RUN: would set go-e lmo to %d.", target)
+            return
+        if self.goe is None:
+            decision.logic_mode_execution_error = "wallbox client not initialised"
+            log.error(decision.logic_mode_execution_error)
+            return
+        try:
+            self.goe.set_logic_mode(target)
+            decision.logic_mode_executed = True
+            log.info("go-e lmo set to %d.", target)
+        except GoeError as e:
+            decision.logic_mode_execution_error = str(e)
+            log.error("go-e set lmo=%d failed: %s", target, e)
 
     # ---- Hauptlauf -----------------------------------------------------
 
@@ -632,6 +695,10 @@ class Controller:
 
         global _consecutive_errors
 
+        sm_heating = False
+        sm_stop = False
+        sm_reason = ""
+
         decisions: list[PhaseDecision] = []
         if readings.errors or temp_status is None:
             _consecutive_errors += 1
@@ -699,18 +766,36 @@ class Controller:
                 ),
             ]
             cascade_heizstab = get_cascade_permission("heizstab")
-            for p in phases:
-                d = self._decide_phase(p, readings, temp_status)
-                if cascade_heizstab is False:
-                    # Kaskade hat Heizstab abgeschaltet:
-                    # - laufende Phase aktiv ausschalten
-                    # - Einschalten blockieren
-                    if d.action is PhaseAction.TURN_ON:
-                        d.action = PhaseAction.UNCHANGED
-                        d.reason += " [Kaskade: Einschalten blockiert]"
-                    elif d.action is PhaseAction.UNCHANGED and p.current_state:
-                        d.action = PhaseAction.TURN_OFF
-                        d.reason += " [Kaskade: Ausschalten erzwungen]"
+
+            # Sommermodus: Prüfung VOR den Phasen-Entscheidungen
+            sm_heating, sm_stop, sm_reason = self._check_summer_mode(readings, temp_status)
+
+            for i, p in enumerate(phases):
+                in_summer_heating = sm_heating
+                in_summer_stop = sm_stop
+
+                if in_summer_stop and readings.main_meter_power_w is not None \
+                        and readings.main_meter_power_w >= -200:
+                    # Zieltemperatur erreicht, kein PV-Überschuss → Netz-Heizung beenden
+                    action = PhaseAction.TURN_OFF if p.current_state else PhaseAction.UNCHANGED
+                    d = PhaseDecision(p.name, p.current_state, action, sm_reason)
+                elif in_summer_heating:
+                    # Sommermodus: Phase aus Netz einschalten (überstimmt Kaskade-Sperre)
+                    action = PhaseAction.UNCHANGED if p.current_state else PhaseAction.TURN_ON
+                    d = PhaseDecision(p.name, p.current_state, action, sm_reason)
+                else:
+                    d = self._decide_phase(p, readings, temp_status)
+                    if cascade_heizstab is False:
+                        # Kaskade hat Heizstab abgeschaltet:
+                        # - laufende Phase aktiv ausschalten
+                        # - Einschalten blockieren
+                        if d.action is PhaseAction.TURN_ON:
+                            d.action = PhaseAction.UNCHANGED
+                            d.reason += " [Kaskade: Einschalten blockiert]"
+                        elif d.action is PhaseAction.UNCHANGED and p.current_state:
+                            d.action = PhaseAction.TURN_OFF
+                            d.reason += " [Kaskade: Ausschalten erzwungen]"
+
                 self._execute(d, p.plug)
                 decisions.append(d)
                 if d.executed and d.action in (PhaseAction.TURN_ON, PhaseAction.TURN_OFF):
@@ -731,6 +816,13 @@ class Controller:
 
         wallbox_status, wallbox_decision = self._handle_wallbox(readings)
 
+        # Sommermodus-Status für das Result ermitteln (aus den ausgeführten Decisions)
+        _sm_heating_result = False
+        _sm_reason_result = None
+        if self.cfg.summer_mode.enabled and sm_heating:
+            _sm_heating_result = True
+            _sm_reason_result = sm_reason
+
         result = ControllerResult(
             timestamp=now,
             controller_active=True,
@@ -745,6 +837,8 @@ class Controller:
             summary="ok",
             fail_safe_active=bool(readings.errors or temp_status is None)
                 and _consecutive_errors >= _FAIL_SAFE_THRESHOLD,
+            summer_mode_heating=_sm_heating_result,
+            summer_mode_reason=_sm_reason_result,
         )
         log.info("=== PV-Controller Ende ===")
         return result
@@ -790,21 +884,18 @@ class Controller:
                 decision.target_force_state = 1
                 decision.reason = "[Kaskade pausiert] " + decision.reason
 
-        self._maybe_set_unlock(decision, status)
         self._execute_wallbox(decision)
+        self._execute_lmo(decision)
+        self._execute_amp(decision)
         log.info(
-            "Wallbox Decision: action=%s target_force_state=%s target_access_state=%s",
+            "Wallbox Decision: action=%s target_force_state=%s target_lmo=%s",
             decision.action.value,
             decision.target_force_state,
-            decision.target_access_state,
+            decision.target_logic_mode,
         )
         err = "" if not decision.execution_error else f" [ERR: {decision.execution_error}]"
-        acs_err = (
-            ""
-            if not decision.access_execution_error
-            else f" [ACS-ERR: {decision.access_execution_error}]"
-        )
-        log.info("Reason: %s%s%s", decision.reason, err, acs_err)
+        lmo_err = "" if not decision.logic_mode_execution_error else f" [LMO-ERR: {decision.logic_mode_execution_error}]"
+        log.info("Reason: %s%s%s", decision.reason, err, lmo_err)
         return status, decision
 
     # ---- Logging-Helfer ------------------------------------------------

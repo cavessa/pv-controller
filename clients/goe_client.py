@@ -9,7 +9,7 @@ import requests
 
 log = logging.getLogger(__name__)
 
-STATUS_FILTER = "fup,frc,alw,car,amp,acs,nrg,wh,eto,cdi,rbt"
+STATUS_FILTER = "fup,frc,alw,car,amp,nrg,wh,eto,cdi,rbt,lmo"
 
 
 class GoeError(Exception):
@@ -37,6 +37,22 @@ class GoeClient:
             raise GoeError(f"go-e status returned unexpected payload: {data!r}")
         return data
 
+    def set_amp(self, value: int) -> None:
+        url = f"{self.base_url}/api/set"
+        try:
+            r = requests.get(url, params={"amp": value}, timeout=self.timeout)
+            r.raise_for_status()
+        except requests.RequestException as e:
+            raise GoeError(f"go-e set amp={value} failed: {e}") from e
+
+    def set_logic_mode(self, value: int) -> None:
+        url = f"{self.base_url}/api/set"
+        try:
+            r = requests.get(url, params={"lmo": value}, timeout=self.timeout)
+            r.raise_for_status()
+        except requests.RequestException as e:
+            raise GoeError(f"go-e set lmo={value} failed: {e}") from e
+
     def set_force_state(self, value: int) -> None:
         if value not in (0, 1):
             raise ValueError(
@@ -50,14 +66,3 @@ class GoeClient:
         except requests.RequestException as e:
             raise GoeError(f"go-e set frc={value} failed: {e}") from e
 
-    def set_access_state(self, value: int) -> None:
-        if value not in (0, 1):
-            raise ValueError(
-                f"set_access_state only accepts 0 or 1, got {value!r}"
-            )
-        url = f"{self.base_url}/api/set"
-        try:
-            r = requests.get(url, params={"acs": value}, timeout=self.timeout)
-            r.raise_for_status()
-        except requests.RequestException as e:
-            raise GoeError(f"go-e set acs={value} failed: {e}") from e

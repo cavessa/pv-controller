@@ -6,6 +6,8 @@ let logTimer = null;
 let lastConfig = null;
 let phaseLogs = [];
 let lastSolaxData = null;
+let pvPeakToday = 0;
+let pvPeakTime = '';
 
 // ── Verlauf sub-tab state ─────────────────────────────
 let _vsec        = "tag";
@@ -85,6 +87,18 @@ function renderStatus(s) {
   $("#pill-wb").textContent = "Wallbox: " + (s.wallbox.enabled ? "aktiv" : "aus");
   $("#pill-wb").className = "pill " + (s.wallbox.enabled ? "ok" : "warn");
 
+  const sm = s.summer_mode ?? {};
+  const pillSummer = $("#pill-summer");
+  if (pillSummer) {
+    if (sm.enabled) {
+      pillSummer.classList.remove("hidden");
+      pillSummer.textContent = sm.heating ? "Sommermodus: Netz-Heizung" : "Sommermodus: aktiv";
+      pillSummer.className = "pill " + (sm.heating ? "warn" : "subtle");
+    } else {
+      pillSummer.classList.add("hidden");
+    }
+  }
+
   $("#pill-time").textContent = "aktualisiert " + fmtTime(s.timestamp);
 
   // summary
@@ -130,6 +144,23 @@ function renderStatus(s) {
 
   // active card glow
   storageDot.closest?.(".card")?.classList.toggle("active-storage", storageHeating);
+
+  // Sommermodus-Hinweis in Speicher-Card
+  const summerHint = $("#summer-mode-hint");
+  if (summerHint) {
+    if (sm.enabled) {
+      summerHint.classList.remove("hidden");
+      if (sm.heating) {
+        summerHint.textContent =
+          `Sommermodus: Netz-Heizung aktiv – Ziel ${sm.target_temp ?? "–"} °C`;
+      } else {
+        summerHint.textContent =
+          `Sommermodus: Netz-Heizung ab ${sm.min_temp ?? "–"} °C, Ziel ${sm.target_temp ?? "–"} °C`;
+      }
+    } else {
+      summerHint.classList.add("hidden");
+    }
+  }
 
   // Phasen — drei Dots
   const phEl = $("#phases");
@@ -203,14 +234,28 @@ function renderStatus(s) {
     ce.classList.add("hidden");
   }
 
+  const lmoLabel = wbStatus.lmo === 3 ? "Basic" : wbStatus.lmo === 4 ? "Eco" : (wbStatus.lmo ?? "–");
   $("#wallbox-kv").innerHTML = `
-    <div><span>Eco/PV (fup)</span><b>${wbStatus.fup === true ? "ja" : wbStatus.fup === false ? "nein" : "–"}</b></div>
+    <div><span>Modus (lmo)</span><b>${lmoLabel}</b></div>
     <div><span>forceState (frc)</span><b>${wbStatus.frc ?? "–"}</b></div>
     <div><span>allowed (alw)</span><b>${wbStatus.alw === true ? "ja" : wbStatus.alw === false ? "nein" : "–"}</b></div>
-    <div><span>access (acs)</span><b>${wbStatus.acs === 0 ? "frei" : wbStatus.acs === 1 ? "wartet" : (wbStatus.acs ?? "–")}</b></div>
     <div><span>car</span><b>${wbStatus.car ?? "–"}</b></div>
     <div><span>amp</span><b>${wbStatus.amp ?? "–"} A</b></div>
   `;
+  const btnBasic = $("#btn-wb-basic");
+  const btnEco   = $("#btn-wb-eco");
+  if (btnBasic) {
+    const on = wbStatus.lmo === 3;
+    btnBasic.style.background  = on ? "#2ed8a3" : "transparent";
+    btnBasic.style.color       = on ? "#1a1d23" : "#555";
+    btnBasic.style.fontWeight  = on ? "500" : "";
+  }
+  if (btnEco) {
+    const on = wbStatus.lmo === 4;
+    btnEco.style.background = on ? "#e8a435" : "transparent";
+    btnEco.style.color      = on ? "#1a1d23" : "#555";
+    btnEco.style.fontWeight = on ? "500" : "";
+  }
   const wbDecEl = $("#wallbox-decision");
   if (!wb.enabled) {
     wbDecEl.innerHTML = `<b>Wallbox in Config deaktiviert.</b>`;
@@ -436,6 +481,19 @@ function renderSolax(d) {
   if (totalEl) {
     totalEl.textContent = Math.round(d.pv_total_w) + " W";
     totalEl.style.color = d.pv_total_w > 50 ? "var(--c-pv)" : "var(--text-dim)";
+  }
+
+  // Peak tracking & midnight reset
+  const nowH = new Date().getHours();
+  if (nowH === 0 && pvPeakToday > 0) { pvPeakToday = 0; pvPeakTime = ''; }
+  const pvW = Math.round(d.pv_total_w);
+  if (pvW > pvPeakToday) {
+    pvPeakToday = pvW;
+    pvPeakTime = new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+  }
+  const peakEl = document.getElementById('pv-peak-display');
+  if (peakEl) {
+    peakEl.textContent = pvPeakToday > 0 ? `Tageshoch: ${pvPeakToday} W um ${pvPeakTime}` : 'Tageshoch: –';
   }
 
   if (stringsEl) {
@@ -2132,6 +2190,9 @@ async function loadSettings() {
     setFormValue(f, "location.latitude",  lastConfig.latitude  ?? "");
     setFormValue(f, "location.longitude", lastConfig.longitude ?? "");
     setFormValue(f, "location.name",      lastConfig.location_name ?? "");
+    setFormValue(f, "summer_mode.enabled",    lastConfig.summer_mode?.enabled    ?? false);
+    setFormValue(f, "summer_mode.min_temp",   lastConfig.summer_mode?.min_temp   ?? 45);
+    setFormValue(f, "summer_mode.target_temp",lastConfig.summer_mode?.target_temp ?? 52);
   } catch (e) {
     showError("Konnte Settings nicht laden: " + e.message);
   }
@@ -2205,6 +2266,11 @@ async function saveSettings(e) {
       longitude: numField("location.longitude"),
       name:      strField("location.name"),
     },
+    summer_mode: {
+      enabled:     boolField("summer_mode.enabled"),
+      min_temp:    numField("summer_mode.min_temp"),
+      target_temp: numField("summer_mode.target_temp"),
+    },
   };
   // undefined entfernen
   for (const sec of Object.keys(patch)) {
@@ -2258,6 +2324,20 @@ function activateTab(name) {
   if (name === "settings")     { loadSettings(); loadCascadeSettings(); }
   if (name === "logs")         refreshLogs();
   if (name === "prioritaeten") loadCascade();
+}
+
+// ---------- Wallbox Modus ----------
+async function setWallboxMode(mode) {
+  const btnBasic = $("#btn-wb-basic");
+  const btnEco   = $("#btn-wb-eco");
+  [btnBasic, btnEco].forEach(b => { if (b) b.disabled = true; });
+  try {
+    await api(`/api/wallbox/set-mode?mode=${mode}`, { method: "POST" });
+  } catch (e) {
+    alert("Fehler beim Umschalten: " + (e.message ?? e));
+  } finally {
+    [btnBasic, btnEco].forEach(b => { if (b) b.disabled = false; });
+  }
 }
 
 // ---------- boot ----------

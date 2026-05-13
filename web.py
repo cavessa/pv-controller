@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from clients.goe_client import GoeClient, GoeError
 from config import Config, load_config
 from controller import ControllerMode, run_controller
 from db import (
@@ -128,11 +129,11 @@ def _wallbox_status_to_dict(s: Optional[WallboxStatus]) -> Optional[dict[str, An
         return None
     return {
         "fup": s.pv_surplus_active,
+        "lmo": s.logic_mode,
         "frc": s.force_state,
         "alw": s.allowed,
         "car": s.car_state,
         "amp": s.amp,
-        "acs": s.access_control_state,
         "power_w": s.power_w,
         "charging": s.car_state == 2,
         "energy_session_wh": s.energy_session_wh,
@@ -152,9 +153,12 @@ def _wallbox_decision_to_dict(
         "reason": d.reason,
         "executed": d.executed,
         "execution_error": d.execution_error,
-        "target_access_state": d.target_access_state,
-        "access_executed": d.access_executed,
-        "access_execution_error": d.access_execution_error,
+        "target_logic_mode": d.target_logic_mode,
+        "logic_mode_executed": d.logic_mode_executed,
+        "logic_mode_execution_error": d.logic_mode_execution_error,
+        "target_amp": d.target_amp,
+        "amp_executed": d.amp_executed,
+        "amp_execution_error": d.amp_execution_error,
     }
 
 
@@ -195,7 +199,16 @@ def _summary(result: ControllerResult, cfg: Config) -> dict[str, str]:
             "severity": "error",
         }
 
-    if result.temp_status is TempStatus.AT_OR_ABOVE_MAX:
+    if result.summer_mode_heating:
+        sm = cfg.summer_mode
+        state = "Netzbezug-Heizung"
+        reason = (
+            result.summer_mode_reason
+            or f"Sommermodus: Heizstab aus Netz "
+               f"(Minimum {sm.min_temp:.0f} °C, Ziel {sm.target_temp:.0f} °C)."
+        )
+        severity = "warn"
+    elif result.temp_status is TempStatus.AT_OR_ABOVE_MAX:
         state = "Speicher voll"
         reason = (
             f"Speicher {temp:.1f} °C ≥ {cfg.heater.storage_max_temp:.0f} °C. "
@@ -269,6 +282,13 @@ def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
             "only_control_when_pv_surplus_active": cfg.wallbox.only_control_when_pv_surplus_active,
             "status": _wallbox_status_to_dict(result.wallbox_status),
             "decision": _wallbox_decision_to_dict(result.wallbox_decision),
+        },
+        "summer_mode": {
+            "enabled": cfg.summer_mode.enabled,
+            "min_temp": cfg.summer_mode.min_temp,
+            "target_temp": cfg.summer_mode.target_temp,
+            "heating": result.summer_mode_heating,
+            "reason": result.summer_mode_reason,
         },
         "summary": _summary(result, cfg),
     }
@@ -393,6 +413,7 @@ _ALLOWED_SHELLY_KEYS = {
 }
 _ALLOWED_AUTH_KEYS = {"enabled", "user", "password"}
 _ALLOWED_LOCATION_KEYS = {"latitude", "longitude", "name"}
+_ALLOWED_SUMMER_MODE_KEYS = {"enabled", "min_temp", "target_temp"}
 
 
 class ConfigUpdate(BaseModel):
@@ -403,6 +424,7 @@ class ConfigUpdate(BaseModel):
     shelly: dict[str, Any] | None = None
     auth: dict[str, Any] | None = None
     location: dict[str, Any] | None = None
+    summer_mode: dict[str, Any] | None = None
 
 
 def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str, Any]:
@@ -508,6 +530,21 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
                 raise HTTPException(400, "location.name must be a string")
             new_cfg["location_name"] = v
 
+    if patch.summer_mode:
+        bad = set(patch.summer_mode) - _ALLOWED_SUMMER_MODE_KEYS
+        if bad:
+            raise HTTPException(400, f"summer_mode keys not allowed: {sorted(bad)}")
+        if "summer_mode" not in new_cfg:
+            new_cfg["summer_mode"] = {}
+        for k, v in patch.summer_mode.items():
+            if k == "enabled":
+                if not isinstance(v, bool):
+                    raise HTTPException(400, "summer_mode.enabled must be boolean")
+            elif k in {"min_temp", "target_temp"}:
+                if not isinstance(v, (int, float)) or isinstance(v, bool):
+                    raise HTTPException(400, f"summer_mode.{k} must be a number")
+            new_cfg["summer_mode"][k] = v
+
     # Final-Validierung über die echten dataclasses (wirft ValueError -> 400):
     try:
         load_config_from_dict(new_cfg)
@@ -525,6 +562,7 @@ def load_config_from_dict(raw: dict[str, Any]) -> Config:
         ShellyConfig,
         SimulationConfig,
         SolaxConfig,
+        SummerModeConfig,
         WallboxConfig,
     )
 
@@ -540,6 +578,10 @@ def load_config_from_dict(raw: dict[str, Any]) -> Config:
         ),
         simulation=SimulationConfig(**raw.get("simulation", {})),
         wallbox=WallboxConfig(**raw.get("wallbox", {})),
+        summer_mode=SummerModeConfig(**{
+            k: v for k, v in raw.get("summer_mode", {}).items()
+            if k != "max_phases"
+        }),
     )
 
 
@@ -997,3 +1039,17 @@ def cascade_settings_put(body: _CascadeSettingsUpdate) -> dict[str, Any]:
         raise HTTPException(400, "min_surplus_watts muss >= 0 sein")
     kwargs = {k: v for k, v in body.model_dump().items() if v is not None}
     return update_cascade_settings(**kwargs)
+
+
+@app.post("/api/wallbox/set-mode")
+def wallbox_set_mode(mode: str = Query(..., pattern="^(basic|eco)$")) -> dict[str, Any]:
+    cfg = _load_cfg()
+    url = cfg.wallbox.url if cfg.wallbox else None
+    if not url:
+        raise HTTPException(400, "Wallbox nicht konfiguriert")
+    lmo = 3 if mode == "basic" else 4
+    try:
+        GoeClient(url).set_logic_mode(lmo)
+    except GoeError as e:
+        raise HTTPException(502, f"go-e Fehler: {e}")
+    return {"ok": True, "lmo": lmo, "mode": mode}

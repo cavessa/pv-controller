@@ -1,5 +1,76 @@
 # Changelog
 
+## 2026-05-13 – Wallbox: Stromstärke auf 7A zurücksetzen beim Abstecken
+
+Wenn das Auto abgesteckt wird (`car=1`), setzt der Controller `amp=7A` (zusammen mit dem Eco-Restore).
+
+## 2026-05-13 – Wallbox: Basic/Eco-Button im Dashboard
+
+Unter der Wallbox-Card gibt es jetzt zwei Buttons ("Basic" / "Eco") zum direkten Umschalten des Lademodus. Der aktive Modus wird hervorgehoben. Außerdem zeigt "Technische Details" jetzt den Modus (lmo) statt des entfernten acs-Felds.
+
+## 2026-05-13 – Wallbox: Auto-Restore Eco-Modus beim Abstecken
+
+Wenn das Auto abgesteckt wird (`car=1`) und die Wallbox im Basic-Modus läuft (`lmo=3`), setzt der Controller automatisch `lmo=4` (Eco). Beim nächsten Einstecken steht die Wallbox dann wieder im PV-Überschussmodus.
+
+## 2026-05-13 – Wallbox: Zugangskontrolle (acs) entfernt
+
+Auto-Unlock-Logik (`_maybe_set_unlock`, `_execute_unlock`) und alle acs-bezogenen Felder aus Controller, Models, Client und Web entfernt. Die go-e Wallbox läuft dauerhaft im Basic-Modus ohne Zugangskontrolle.
+
+## 2026-05-13 – Wallbox: lmo-Wert für Eco-Modus korrigiert
+
+`lmo=3` ist Standard/Basic-Modus (nicht Eco). Eco/PV-Überschuss ist `lmo=4`. Bugfix: Controller greift jetzt nur noch bei `lmo=4` ein.
+
+- **clients/goe_client.py**: `lmo` in STATUS_FILTER ergänzt
+- **models.py**: `WallboxStatus.logic_mode` Feld hinzugefügt
+- **controller.py**: `pv_surplus_active` basiert jetzt auf `lmo == 3`; Log zeigt `lmo` und eco-Flag
+
+## 2026-05-12 – PV Erzeugung: Tageshoch anzeigen
+
+Unter dem aktuellen PV-Wert in der Card "PV Erzeugung" wird jetzt das bisherige Tageshoch angezeigt ("Tageshoch: 10823 W um 12:34"). Der Peak-Wert wird im Frontend pro Polling-Zyklus aktualisiert und bei Mitternacht zurückgesetzt. Nachts (PV = 0 und kein Peak erfasst) erscheint "Tageshoch: –".
+
+- **web/app.js**: Globale Vars `pvPeakToday` / `pvPeakTime`; Peak-Tracking und Mitternachts-Reset in `renderSolax`; `pv-peak-display`-Element wird befüllt
+- **web/index.html**: `<div id="pv-peak-display">` unter `pv-live-total` eingefügt
+
+## 2026-05-12 – Sommermodus: Max-Phasen-Einstellung entfernt
+
+Netz-Heizung nutzt immer alle 3 Phasen (~4,5 kW) damit das Wasser so schnell wie möglich warm wird. Das Feld "Max. Phasen bei Netzbezug" aus Settings-UI, Config und API entfernt. Alte `config.json` mit `max_phases`-Feld laden weiterhin fehlerfrei (Feld wird ignoriert).
+
+- **config.py** `SummerModeConfig`: `max_phases` entfernt; `load_config` filtert altes Feld heraus
+- **controller.py** `_check_summer_mode` + `run()`: `i < max_phases` → alle 3 Phasen
+- **web.py**: `max_phases` aus `_ALLOWED_SUMMER_MODE_KEYS`, Serialisierung und Validierung entfernt
+- **web/index.html**: Dropdown + Hinweistext entfernt
+- **web/app.js**: Feld aus `loadSettings` und `saveSettings` entfernt
+
+## 2026-05-12 – Sommermodus: Heizstab als Backup aus dem Netz
+
+Im Sommer (Ölheizung aus) kann der Heizstab jetzt die Warmwasserbereitung vollständig übernehmen – primär per PV-Überschuss, bei Bedarf aus dem Netz.
+
+### Neue Einstellungen (`config.json` / Settings-UI)
+- **`summer_mode.enabled`** – Schalter für den Sommermodus (Default: `false`)
+- **`summer_mode.min_temp`** – Unter dieser Temperatur startet die Netz-Heizung (Default: 45 °C)
+- **`summer_mode.target_temp`** – Bis hierhin heizen wenn aus Netz (Default: 52 °C)
+- **`summer_mode.max_phases`** – Maximale Phasen beim Netzbezug: 1 (~1,5 kW), 2 (~3 kW), 3 (~4,5 kW) (Default: 1)
+
+### Logik (`controller.py`, `config.py`, `models.py`)
+- `SummerModeConfig` Dataclass mit Validierung (min_temp < target_temp, max_phases ∈ {1,2,3})
+- `Controller._check_summer_mode()`: Prüft vor den Phasen-Entscheidungen ob Netz-Heizung nötig ist
+  - Heizt wenn `temp < min_temp` und kein PV-Überschuss (Einspeisung ≤ 200 W)
+  - Heizt weiter wenn `min_temp ≤ temp < target_temp` und Phasen bereits an
+  - Stoppt wenn `temp ≥ target_temp` und Phasen an ohne PV
+  - Wird von `temp_status AT_OR_ABOVE_MAX` und signifikantem PV-Überschuss overruled
+- Sommermodus überstimmt die Kaskaden-Sperre (Kaskade verwaltet PV-Verteilung; Sommermodus ist Notfall-Backup)
+- `ControllerResult` um `summer_mode_heating` und `summer_mode_reason` erweitert
+
+### API (`web.py`)
+- `/api/status` liefert jetzt `summer_mode`-Objekt mit `enabled`, `min_temp`, `target_temp`, `max_phases`, `heating`, `reason`
+- `_summary()`: Wenn Netz-Heizung aktiv → `state="Netzbezug-Heizung"`, `severity="warn"`
+- `/api/config` PUT: `summer_mode`-Sektion vollständig konfigurierbar
+
+### Dashboard (`web/index.html`, `web/app.js`)
+- Neues Badge `[Sommermodus: aktiv]` / `[Sommermodus: Netz-Heizung]` in der Toolbar (orange)
+- Hinweis-Box in der Speicher-Card (zeigt Mindest- und Zieltemperatur, hebt Netz-Heizung hervor)
+- Settings-Tab: neue Sektion "Sommermodus" zwischen Heizstab & Speicher und Wallbox
+
 ## 2026-05-12 – Prognose-Einschätzung: Glockenkurven-Modell statt linearem Durchschnitt
 
 - **app.js** `getForecastAssessment`: Frühmorgens ist `avgPerHour` niedrig (normale Morgen-Sonne), der alte `* 0.5`-Abschlag führte fälschlicherweise zu "Wird nicht mehr erreicht"

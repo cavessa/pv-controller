@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=50">
+  <link rel="stylesheet" href="/static/styles.css?v=52">
 </head>
 <body>
   <div id="loading-overlay" style="
@@ -66,6 +66,7 @@
         <div class="status-pills" id="status-pills">
           <span class="pill" id="pill-enabled">Automatik …</span>
           <span class="pill" id="pill-wb">Wallbox …</span>
+          <span class="pill hidden" id="pill-summer">Sommermodus …</span>
         </div>
         <div class="actions">
         </div>
@@ -130,6 +131,7 @@
           <div><span>Resume-Temperatur</span><b id="m-temp-resume">–</b></div>
           <div><span>Status</span><b id="m-temp-status" class="badge">–</b></div>
         </div>
+        <div id="summer-mode-hint" class="hidden" style="margin-top:8px;padding:6px 10px;background:rgba(232,164,53,0.12);border:1px solid rgba(232,164,53,0.35);border-radius:6px;font-size:12px;color:#e8a435;"></div>
         <div id="temp-chart-wrap" class="temp-chart-wrap"></div>
       </div>
 
@@ -139,6 +141,7 @@
         <div class="card">
           <h2>PV Erzeugung</h2>
           <div class="pv-live-total" id="pv-live-total">– W</div>
+          <div id="pv-peak-display" style="font-size:12px;color:#6a6d75;text-align:center;margin-top:4px">Tageshoch: –</div>
           <div id="string-dash-alert" class="string-dash-alert hidden"></div>
           <div id="pv-live-strings"></div>
           <div class="kv compact" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
@@ -227,6 +230,11 @@
             <div class="decision-mini" id="wallbox-decision"></div>
           </details>
           <div id="wb-chart-wrap" class="temp-chart-wrap"></div>
+          <div style="font-size:11px;letter-spacing:2px;color:#8a8d95;text-transform:uppercase;margin-top:12px;margin-bottom:6px">Lademodus</div>
+          <div style="display:flex;background:#1a1d23;border-radius:8px;padding:2px;border:1px solid #2a2d35">
+            <div id="btn-wb-basic" onclick="setWallboxMode('basic')" style="flex:1;text-align:center;padding:8px;border-radius:6px;font-size:12px;font-family:'Courier New',monospace;cursor:pointer;transition:all 0.2s ease">Basic</div>
+            <div id="btn-wb-eco"   onclick="setWallboxMode('eco')"   style="flex:1;text-align:center;padding:8px;border-radius:6px;font-size:12px;font-family:'Courier New',monospace;cursor:pointer;transition:all 0.2s ease">Eco / PV</div>
+          </div>
         </div>
       </div><!-- .grid -->
       </div><!-- .dashboard-right -->
@@ -486,6 +494,20 @@
           </fieldset>
 
           <fieldset>
+            <legend>Sommermodus (Ölheizung aus)</legend>
+            <label class="check"><input type="checkbox" name="summer_mode.enabled"> Sommermodus aktiv (Ölheizung komplett aus)</label>
+            <p class="note" style="margin-top:4px">Wenn aktiviert, übernimmt der Heizstab die komplette Warmwasserbereitung. Fällt die Speichertemperatur unter das Minimum, wird aus dem Netz nachgeheizt.</p>
+            <label>Mindesttemperatur (°C)
+              <input type="number" step="0.5" name="summer_mode.min_temp" placeholder="45">
+              <small class="field-hint">Unter diesem Wert startet Netz-Heizung.</small>
+            </label>
+            <label>Zieltemperatur (°C)
+              <input type="number" step="0.5" name="summer_mode.target_temp" placeholder="52">
+              <small class="field-hint">Bis hierhin heizen wenn aus Netz.</small>
+            </label>
+          </fieldset>
+
+          <fieldset>
             <legend>Wallbox (go-e)</legend>
             <label class="check"><input type="checkbox" name="wallbox.enabled"> Wallbox aktiv</label>
             <label>URL<input type="text" name="wallbox.url" placeholder="http://192.168.x.x"></label>
@@ -647,6 +669,6 @@
   </footer>
   </div>
 
-  <script src="/static/app.js?v=20260512b" defer></script>
+  <script src="/static/app.js?v=20260513b" defer></script>
 </body>
 </html>

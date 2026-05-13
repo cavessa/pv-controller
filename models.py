@@ -84,11 +84,11 @@ class WallboxStatus:
     allowed: Optional[bool] = None
     car_state: Optional[int] = None
     amp: Optional[int] = None
-    access_control_state: Optional[int] = None
     power_w: Optional[float] = None
     energy_session_wh: Optional[float] = None
     energy_total_wh: Optional[float] = None
     charge_duration_s: Optional[float] = None
+    logic_mode: Optional[int] = None  # go-e lmo: 3=eco/PV, 4=next-trip, other=standard
 
 
 @dataclass
@@ -98,9 +98,12 @@ class WallboxDecision:
     reason: str
     executed: bool = False
     execution_error: Optional[str] = None
-    target_access_state: Optional[int] = None
-    access_executed: bool = False
-    access_execution_error: Optional[str] = None
+    target_logic_mode: Optional[int] = None
+    logic_mode_executed: bool = False
+    logic_mode_execution_error: Optional[str] = None
+    target_amp: Optional[int] = None
+    amp_executed: bool = False
+    amp_execution_error: Optional[str] = None
 
 
 @dataclass
@@ -117,3 +120,5 @@ class ControllerResult:
     wallbox_decision: Optional[WallboxDecision] = None
     summary: str = ""
     fail_safe_active: bool = False  # True erst nach _FAIL_SAFE_THRESHOLD konsekutiven Fehlern
+    summer_mode_heating: bool = False  # Heizstab läuft gerade wegen Sommermodus aus Netz
+    summer_mode_reason: Optional[str] = None
