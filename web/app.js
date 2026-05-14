@@ -17,6 +17,13 @@ let _vYear       = new Date().getFullYear();
 let _vStringsDate = new Date().toISOString().slice(0, 10);
 let _cachedNormalRatio = null;
 
+// ── Netz sub-tab state ────────────────────────────────
+let _vNetzSub     = "tag";
+let _vNetzTagDate = new Date().toISOString().slice(0, 10);
+let _vNetzWeekEnd = new Date().toISOString().slice(0, 10);
+let _vNetzMonth   = new Date().toISOString().slice(0, 7);
+let _vNetzYear    = new Date().getFullYear();
+
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -1012,7 +1019,7 @@ function _fmtMonth(ym) {
 
 function showVerlaufSection(name) {
   _vsec = name;
-  $$(".verlauf-nav-btn").forEach(b => b.classList.toggle("active", b.dataset.vsec === name));
+  $$(".verlauf-nav-btn[data-vsec]").forEach(b => b.classList.toggle("active", b.dataset.vsec === name));
   $$(".verlauf-section").forEach(s => s.classList.toggle("hidden", s.id !== "verlauf-" + name));
   _loadCurrentVerlauf();
 }
@@ -1025,9 +1032,17 @@ function _loadCurrentVerlauf() {
   if (_vsec === "strings") loadVerlaufStrings(_vStringsDate);
   if (_vsec === "wetter")   loadVerlaufWetter();
   if (_vsec === "prognose") loadVerlaufPrognose();
+  if (_vsec === "netz")    _loadCurrentNetz();
 }
 
 async function loadVerlauf() {
+  try {
+    const cfg = lastConfig || await api("/api/config").catch(() => null);
+    const hasMainMeter = !!(cfg?.shelly?.main_meter_url?.trim());
+    const netzBtn = document.getElementById("verlauf-netz-btn");
+    if (netzBtn) netzBtn.style.display = hasMainMeter ? "" : "none";
+    if (_vsec === "netz" && !hasMainMeter) showVerlaufSection("tag");
+  } catch {}
   try {
     const [cascadeLog, cascadeDevs] = await Promise.all([
       api("/api/cascade/log?limit=200").catch(() => ({ entries: [] })),
@@ -1365,6 +1380,277 @@ function renderForecastProgress(data, histEntries) {
         }).join("");
     }
   }
+}
+
+// ── Netz sub-tab ─────────────────────────────────────────────────────────────
+
+function _isoWeekNum(dateStr) {
+  const d = new Date(dateStr + "T12:00:00");
+  const jan4 = new Date(d.getFullYear(), 0, 4);
+  const startW1 = new Date(jan4.getTime() - ((jan4.getDay() || 7) - 1) * 86400000);
+  return Math.max(1, Math.round((d - startW1) / 604800000) + 1);
+}
+
+function showNetzSection(name) {
+  _vNetzSub = name;
+  $$(".netz-nav-btn").forEach(b => b.classList.toggle("active", b.dataset.nsec === name));
+  $$(".netz-section").forEach(s => s.classList.toggle("hidden", s.id !== "netz-" + name));
+  _loadCurrentNetz();
+}
+
+function _loadCurrentNetz() {
+  if (_vNetzSub === "tag")   loadVerlaufNetzTag(_vNetzTagDate);
+  if (_vNetzSub === "woche") loadVerlaufNetzWoche(_vNetzWeekEnd);
+  if (_vNetzSub === "monat") loadVerlaufNetzMonat(_vNetzMonth);
+  if (_vNetzSub === "jahr")  loadVerlaufNetzJahr(_vNetzYear);
+}
+
+async function loadVerlaufNetzTag(dateStr) {
+  _vNetzTagDate = dateStr;
+  const today = new Date().toISOString().slice(0, 10);
+  const labelEl = document.getElementById("netz-tag-label");
+  if (labelEl) labelEl.textContent = dateStr === today ? "Heute" : dateStr;
+  const nextBtn = document.getElementById("netz-tag-next");
+  if (nextBtn) nextBtn.disabled = dateStr >= today;
+  try {
+    const url = dateStr === today
+      ? "/api/history/grid/today"
+      : `/api/history/grid/day/${dateStr}`;
+    const data = await api(url);
+    renderNetzTagChart(data.entries || []);
+    const totalEins = (data.entries || []).reduce((s, e) => s + (e.einspeisung_w || 0), 0) / 1000;
+    const totalBez  = (data.entries || []).reduce((s, e) => s + (e.bezug_w || 0), 0) / 1000;
+    renderNetzKpis("netz-tag-kpis", totalEins, totalBez);
+  } catch (e) {
+    showError("Netz Tagesverlauf konnte nicht geladen werden: " + e.message);
+  }
+}
+
+async function loadVerlaufNetzWoche(endDate) {
+  _vNetzWeekEnd = endDate;
+  const today = new Date().toISOString().slice(0, 10);
+  const kw = _isoWeekNum(endDate);
+  const labelEl = document.getElementById("netz-woche-label");
+  if (labelEl) labelEl.textContent = `KW ${kw}`;
+  const nextBtn = document.getElementById("netz-woche-next");
+  if (nextBtn) nextBtn.disabled = endDate >= today;
+  try {
+    const data = await api(`/api/history/grid/week?end_date=${endDate}`);
+    renderNetzWocheChart(data.entries || []);
+    const totalEins = (data.entries || []).reduce((s, e) => s + (e.einspeisung_kwh || 0), 0);
+    const totalBez  = (data.entries || []).reduce((s, e) => s + (e.bezug_kwh || 0), 0);
+    renderNetzKpis("netz-woche-kpis", totalEins, totalBez);
+  } catch (e) {
+    showError("Netz Wochenverlauf konnte nicht geladen werden: " + e.message);
+  }
+}
+
+async function loadVerlaufNetzMonat(monthStr) {
+  _vNetzMonth = monthStr;
+  const thisMonth = new Date().toISOString().slice(0, 7);
+  const labelEl = document.getElementById("netz-monat-label");
+  if (labelEl) labelEl.textContent = _fmtMonth(monthStr);
+  const nextBtn = document.getElementById("netz-monat-next");
+  if (nextBtn) nextBtn.disabled = monthStr >= thisMonth;
+  try {
+    const data = await api(`/api/history/grid/month/${monthStr}`);
+    renderNetzMonatChart(data.entries || []);
+    const totalEins = (data.entries || []).reduce((s, e) => s + (e.einspeisung_kwh || 0), 0);
+    const totalBez  = (data.entries || []).reduce((s, e) => s + (e.bezug_kwh || 0), 0);
+    renderNetzKpis("netz-monat-kpis", totalEins, totalBez);
+  } catch (e) {
+    showError("Netz Monatsverlauf konnte nicht geladen werden: " + e.message);
+  }
+}
+
+async function loadVerlaufNetzJahr(year) {
+  _vNetzYear = year;
+  const thisYear = new Date().getFullYear();
+  const labelEl = document.getElementById("netz-jahr-label");
+  if (labelEl) labelEl.textContent = String(year);
+  const nextBtn = document.getElementById("netz-jahr-next");
+  if (nextBtn) nextBtn.disabled = year >= thisYear;
+  try {
+    const data = await api(`/api/history/grid/year/${year}`);
+    renderNetzJahrChart(data.entries || []);
+    const totalEins = (data.entries || []).reduce((s, e) => s + (e.einspeisung_kwh || 0), 0);
+    const totalBez  = (data.entries || []).reduce((s, e) => s + (e.bezug_kwh || 0), 0);
+    renderNetzKpis("netz-jahr-kpis", totalEins, totalBez);
+  } catch (e) {
+    showError("Netz Jahresübersicht konnte nicht geladen werden: " + e.message);
+  }
+}
+
+function renderNetzKpis(containerId, einspeisung, bezug) {
+  const wrap = document.getElementById(containerId);
+  if (!wrap) return;
+  const saldo = einspeisung - bezug;
+  const saldoColor = saldo >= 0 ? "#2ed8a3" : "#ff6b6b";
+  const saldoStr = (saldo >= 0 ? "+" : "") + saldo.toFixed(1);
+  wrap.innerHTML = `
+    <div style="display:flex; gap:8px; margin-top:14px">
+      <div style="flex:1; background:#1a1d23; border-radius:8px; padding:10px; text-align:center">
+        <div style="font-size:18px; font-weight:500; color:#2ed8a3">${einspeisung.toFixed(1)} kWh</div>
+        <div style="font-size:10px; color:#6a6d75; margin-top:2px">Einspeisung</div>
+      </div>
+      <div style="flex:1; background:#1a1d23; border-radius:8px; padding:10px; text-align:center">
+        <div style="font-size:18px; font-weight:500; color:#e8a435">${bezug.toFixed(1)} kWh</div>
+        <div style="font-size:10px; color:#6a6d75; margin-top:2px">Bezug</div>
+      </div>
+      <div style="flex:1; background:#1a1d23; border-radius:8px; padding:10px; text-align:center">
+        <div style="font-size:18px; font-weight:500; color:${saldoColor}">${saldoStr} kWh</div>
+        <div style="font-size:10px; color:#6a6d75; margin-top:2px">Saldo</div>
+      </div>
+    </div>`;
+}
+
+function renderNetzTagChart(entries) {
+  const wrap = document.getElementById("chart-netz-tag-wrap");
+  if (!wrap) return;
+  if (!entries || !entries.length) {
+    wrap.innerHTML = '<div class="chart-empty">Noch keine Stundendaten vorhanden.</div>';
+    return;
+  }
+  const VW = 480, VH = 130;
+  const pad = { t: 10, r: 8, b: 22, l: 52 };
+  const cw = VW - pad.l - pad.r, ch = VH - pad.t - pad.b;
+
+  const pts = entries.map(e => {
+    const h = parseInt((e.ts || "").split(" ")[1]?.split(":")[0] || "0", 10);
+    return { h, eins: e.einspeisung_w || 0, bez: e.bezug_w || 0 };
+  }).sort((a, b) => a.h - b.h);
+
+  const maxUp   = Math.max(...pts.map(p => p.eins), 100);
+  const maxDown = Math.max(...pts.map(p => p.bez), 100);
+  const total   = maxUp + maxDown;
+  const zeroY   = pad.t + (maxUp / total) * ch;
+  const barHalf = Math.max(3, cw / 24 * 0.35);
+
+  const syUp   = v => zeroY - (v / maxUp) * (zeroY - pad.t);
+  const syDown = v => zeroY + (v / maxDown) * ((pad.t + ch) - zeroY);
+  const sx     = h => pad.l + (h / 23) * cw;
+
+  let elems = `<line x1="${pad.l}" y1="${zeroY.toFixed(1)}" x2="${(pad.l+cw).toFixed(1)}" y2="${zeroY.toFixed(1)}" stroke="rgba(255,255,255,0.25)" stroke-width="1"/>`;
+  elems += `<text x="${pad.l-4}" y="${zeroY.toFixed(1)}" text-anchor="end" dominant-baseline="middle" font-size="8" fill="#a0a3ab">0</text>`;
+
+  const stepUp = niceStep(maxUp, 2);
+  for (let yv = stepUp; yv <= maxUp + 1; yv += stepUp) {
+    const ypx = syUp(yv).toFixed(1);
+    elems += `<line x1="${pad.l}" y1="${ypx}" x2="${(pad.l+cw).toFixed(1)}" y2="${ypx}" class="grid-line"/>`;
+    const lbl = yv >= 1000 ? (yv/1000).toFixed(1)+"k" : yv;
+    elems += `<text x="${pad.l-4}" y="${ypx}" text-anchor="end" dominant-baseline="middle" fill="#a0a3ab">${lbl}</text>`;
+  }
+  const stepDown = niceStep(maxDown, 2);
+  for (let yv = stepDown; yv <= maxDown + 1; yv += stepDown) {
+    const ypx = syDown(yv).toFixed(1);
+    elems += `<line x1="${pad.l}" y1="${ypx}" x2="${(pad.l+cw).toFixed(1)}" y2="${ypx}" class="grid-line"/>`;
+    const lbl = yv >= 1000 ? "-"+(yv/1000).toFixed(1)+"k" : "-"+yv;
+    elems += `<text x="${pad.l-4}" y="${ypx}" text-anchor="end" dominant-baseline="middle" fill="#a0a3ab">${lbl}</text>`;
+  }
+  for (let h = 0; h <= 23; h += 3) {
+    const xv = sx(h).toFixed(1);
+    elems += `<line x1="${xv}" y1="${pad.t}" x2="${xv}" y2="${(pad.t+ch).toFixed(1)}" class="grid-line"/>`;
+    elems += `<text x="${xv}" y="${VH-2}" text-anchor="middle" fill="#a0a3ab" font-size="8">${h}h</text>`;
+  }
+
+  let bars = "";
+  pts.forEach(p => {
+    const cx = sx(p.h);
+    if (p.eins > 0) {
+      const top = syUp(p.eins);
+      bars += `<rect x="${(cx-barHalf).toFixed(1)}" y="${top.toFixed(1)}" width="${(barHalf*2).toFixed(1)}" height="${(zeroY-top).toFixed(1)}" rx="1" fill="#2ed8a3"/>`;
+    }
+    if (p.bez > 0) {
+      const bot = syDown(p.bez);
+      bars += `<rect x="${(cx-barHalf).toFixed(1)}" y="${zeroY.toFixed(1)}" width="${(barHalf*2).toFixed(1)}" height="${(bot-zeroY).toFixed(1)}" rx="1" fill="rgba(232,164,53,0.75)"/>`;
+    }
+  });
+
+  wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">
+    <g>${elems}</g>${bars}
+  </svg>`;
+}
+
+function _renderNetzBidirChart(wrapId, entries, xLabelFn) {
+  const wrap = document.getElementById(wrapId);
+  if (!wrap) return;
+  if (!entries || !entries.length) {
+    wrap.innerHTML = '<div class="chart-empty">Noch keine Netz-Daten vorhanden.</div>';
+    return;
+  }
+  const VW = 480, VH = 130;
+  const pad = { t: 10, r: 8, b: 22, l: 52 };
+  const cw = VW - pad.l - pad.r, ch = VH - pad.t - pad.b;
+  const n = entries.length;
+
+  const einsVals = entries.map(e => +(e.einspeisung_kwh || 0));
+  const bezVals  = entries.map(e => +(e.bezug_kwh || 0));
+  const maxUp    = Math.max(...einsVals, 0.1);
+  const maxDown  = Math.max(...bezVals, 0.1);
+  const total    = maxUp + maxDown;
+  const zeroY    = pad.t + (maxUp / total) * ch;
+
+  const syUp   = v => zeroY - (v / maxUp) * (zeroY - pad.t);
+  const syDown = v => zeroY + (v / maxDown) * ((pad.t + ch) - zeroY);
+  const barGap = cw / n;
+  const barW   = Math.max(2, barGap * 0.65);
+  const x0     = i => pad.l + i * barGap + (barGap - barW) / 2;
+
+  let elems = `<line x1="${pad.l}" y1="${zeroY.toFixed(1)}" x2="${(pad.l+cw).toFixed(1)}" y2="${zeroY.toFixed(1)}" stroke="rgba(255,255,255,0.25)" stroke-width="1"/>`;
+  elems += `<text x="${pad.l-4}" y="${zeroY.toFixed(1)}" text-anchor="end" dominant-baseline="middle" font-size="8" fill="#a0a3ab">0</text>`;
+
+  const stepUp = niceStep(maxUp, 2);
+  for (let yv = stepUp; yv <= maxUp + 0.01; yv += stepUp) {
+    const ypx = syUp(yv).toFixed(1);
+    elems += `<line x1="${pad.l}" y1="${ypx}" x2="${(pad.l+cw).toFixed(1)}" y2="${ypx}" class="grid-line"/>`;
+    elems += `<text x="${pad.l-4}" y="${ypx}" text-anchor="end" dominant-baseline="middle" fill="#a0a3ab">${yv >= 100 ? yv.toFixed(0) : yv.toFixed(1)}</text>`;
+  }
+  const stepDown = niceStep(maxDown, 2);
+  for (let yv = stepDown; yv <= maxDown + 0.01; yv += stepDown) {
+    const ypx = syDown(yv).toFixed(1);
+    elems += `<line x1="${pad.l}" y1="${ypx}" x2="${(pad.l+cw).toFixed(1)}" y2="${ypx}" class="grid-line"/>`;
+    const lbl = yv >= 100 ? `-${yv.toFixed(0)}` : `-${yv.toFixed(1)}`;
+    elems += `<text x="${pad.l-4}" y="${ypx}" text-anchor="end" dominant-baseline="middle" fill="#a0a3ab">${lbl}</text>`;
+  }
+
+  let bars = "";
+  entries.forEach((d, i) => {
+    const x = x0(i);
+    const einsV = einsVals[i], bezV = bezVals[i];
+    if (einsV > 0) {
+      const top = syUp(einsV);
+      bars += `<rect x="${x.toFixed(1)}" y="${top.toFixed(1)}" width="${barW.toFixed(1)}" height="${(zeroY-top).toFixed(1)}" rx="1" fill="#2ed8a3"/>`;
+    }
+    if (bezV > 0) {
+      const bot = syDown(bezV);
+      bars += `<rect x="${x.toFixed(1)}" y="${zeroY.toFixed(1)}" width="${barW.toFixed(1)}" height="${(bot-zeroY).toFixed(1)}" rx="1" fill="rgba(232,164,53,0.75)"/>`;
+    }
+    const lbl = xLabelFn(d, i, entries.length);
+    if (lbl) bars += `<text x="${(x+barW/2).toFixed(1)}" y="${VH-3}" text-anchor="middle" fill="#a0a3ab" font-size="8">${lbl}</text>`;
+  });
+
+  wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">
+    <g>${elems}</g>${bars}
+  </svg>`;
+}
+
+function renderNetzWocheChart(entries) {
+  const WD = ["So","Mo","Di","Mi","Do","Fr","Sa"];
+  _renderNetzBidirChart("chart-netz-woche-wrap", entries,
+    d => WD[new Date(d.date + "T12:00:00").getDay()]);
+}
+
+function renderNetzMonatChart(entries) {
+  _renderNetzBidirChart("chart-netz-monat-wrap", entries, (d, i, total) => {
+    const day = parseInt((d.date || "").split("-")[2] || "0");
+    return (i === 0 || day % 5 === 0 || i === total - 1) ? `${day}.` : "";
+  });
+}
+
+function renderNetzJahrChart(entries) {
+  const MONATE = ["Jan","Feb","Mär","Apr","Mai","Jun","Jul","Aug","Sep","Okt","Nov","Dez"];
+  _renderNetzBidirChart("chart-netz-jahr-wrap", entries,
+    d => MONATE[parseInt((d.month || "").split("-")[1] || "1") - 1] ?? "");
 }
 
 // ── Strings sub-tab ──────────────────────────────────────────────────────────
@@ -2372,7 +2658,7 @@ function boot() {
   $("#shelly-add-form")?.addEventListener("submit", _submitShellyAdd);
 
   // Verlauf sub-navigation
-  $$(".verlauf-nav-btn").forEach(b => b.addEventListener("click", () => showVerlaufSection(b.dataset.vsec)));
+  $$(".verlauf-nav-btn[data-vsec]").forEach(b => b.addEventListener("click", () => showVerlaufSection(b.dataset.vsec)));
 
   // Tag navigation
   document.getElementById("verlauf-tag-prev")?.addEventListener("click", () => {
@@ -2407,6 +2693,46 @@ function boot() {
   document.getElementById("verlauf-strings-next")?.addEventListener("click", () => {
     const today = new Date().toISOString().slice(0, 10);
     if (_vStringsDate < today) loadVerlaufStrings(_dateAddDays(_vStringsDate, 1));
+  });
+
+  // Netz sub-navigation
+  $$(".netz-nav-btn").forEach(b => b.addEventListener("click", () => showNetzSection(b.dataset.nsec)));
+
+  // Netz Tag navigation
+  document.getElementById("netz-tag-prev")?.addEventListener("click", () => {
+    loadVerlaufNetzTag(_dateAddDays(_vNetzTagDate, -1));
+  });
+  document.getElementById("netz-tag-next")?.addEventListener("click", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    if (_vNetzTagDate < today) loadVerlaufNetzTag(_dateAddDays(_vNetzTagDate, 1));
+  });
+
+  // Netz Woche navigation
+  document.getElementById("netz-woche-prev")?.addEventListener("click", () => {
+    loadVerlaufNetzWoche(_dateAddDays(_vNetzWeekEnd, -7));
+  });
+  document.getElementById("netz-woche-next")?.addEventListener("click", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const next = _dateAddDays(_vNetzWeekEnd, 7);
+    if (next <= today) loadVerlaufNetzWoche(next);
+    else loadVerlaufNetzWoche(today);
+  });
+
+  // Netz Monat navigation
+  document.getElementById("netz-monat-prev")?.addEventListener("click", () => {
+    loadVerlaufNetzMonat(_monthAdd(_vNetzMonth, -1));
+  });
+  document.getElementById("netz-monat-next")?.addEventListener("click", () => {
+    const thisMonth = new Date().toISOString().slice(0, 7);
+    if (_vNetzMonth < thisMonth) loadVerlaufNetzMonat(_monthAdd(_vNetzMonth, 1));
+  });
+
+  // Netz Jahr navigation
+  document.getElementById("netz-jahr-prev")?.addEventListener("click", () => {
+    loadVerlaufNetzJahr(_vNetzYear - 1);
+  });
+  document.getElementById("netz-jahr-next")?.addEventListener("click", () => {
+    if (_vNetzYear < new Date().getFullYear()) loadVerlaufNetzJahr(_vNetzYear + 1);
   });
 
   refreshStatus().finally(hideLoadingOverlay);

@@ -1,5 +1,46 @@
 # Changelog
 
+## 2026-05-14 – Tab-Leiste: nur horizontal scrollbar
+
+`overflow-y: hidden` und `white-space: nowrap` zur bestehenden `.tabs`-Regel hinzugefügt.
+Tabs bleiben in einer Zeile und scrollen nur seitwärts, nicht vertikal.
+
+---
+
+## 2026-05-14 – Bugfix: Netz Sub-Tabs Woche/Monat/Jahr zeigten leere Seite
+
+**Problem:** Klick auf Woche/Monat/Jahr im Netz-Sub-Tab rief `showVerlaufSection(undefined)` auf,
+weil die Sub-Tab-Buttons die Klasse `verlauf-nav-btn` tragen und vom globalen Click-Handler
+erfasst wurden. Das versteckte den gesamten `verlauf-netz`-Container bevor der Chart gerendert wurde.
+
+**Fix:** Selector in `boot()` auf `.verlauf-nav-btn[data-vsec]` eingeschränkt –
+identisch mit der bestehenden Guard in `showVerlaufSection` selbst.
+
+---
+
+## 2026-05-14 – Verlauf: Netz-Tab (Einspeisung vs. Bezug)
+
+Neuer Sub-Tab **NETZ** im Verlauf, nur sichtbar wenn `shelly.main_meter_url` konfiguriert ist.
+
+**Features:**
+- Vier Ansichten: Tag (stündlich), Woche (7 Tage), Monat, Jahr
+- Bi-direktionale SVG-Balkendiagramme: Einspeisung (grün, nach oben) / Bezug (orange, nach unten)
+- Navigation mit Pfeilen (Tag/Woche/Monat/Jahr)
+- KPI-Boxen: Einspeisung kWh, Bezug kWh, Saldo (grün=netto Einspeisung, rot=netto Bezug)
+
+**Datenquellen:**
+- Stündlich: `feed_in_w` aus `pv_hourly_log` (positiv=Einspeisung, negativ=Bezug)
+- Täglich/monatlich: `feed_out_kwh` / `feed_in_kwh` aus `pv_daily_log`
+
+**Neue API-Endpunkte:**
+- `GET /api/history/grid/today`
+- `GET /api/history/grid/day/:date`
+- `GET /api/history/grid/week?end_date=...`
+- `GET /api/history/grid/month/:YYYY-MM`
+- `GET /api/history/grid/year/:YYYY`
+
+**Neue DB-Funktion:** `get_grid_week_data(end_date)` für navigierbare Wochenansicht.
+
 ## 2026-05-13 – Kaskade: Überschuss aus Hauptzähler; Wallbox im Basic-Modus ignoriert
 
 **Problem:** Die Kaskade hat das eBike-Shelly eingeschaltet obwohl die Wallbox im Basic-Modus 4,86 kW zog und der Haushalt 4,37 kW aus dem Netz bezog. Ursache: `_get_controlled_loads_w` addierte die Wallbox-Leistung zum Feed-in zurück, auch wenn die Wallbox nicht kaskaden-gesteuert war (lmo=3 / Basic). Das ergab einen falschen Brutto-Überschuss von +490 W.

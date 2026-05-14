@@ -1058,6 +1058,7 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 
 /* -------- Verlauf section visibility -------- */
 .verlauf-section.hidden { display: none; }
+.netz-section.hidden { display: none; }
 
 /* -------- Verlauf tab stagger -------- */
 #tab-verlauf .card:nth-child(1) { animation-delay: 0.04s; }
@@ -1108,7 +1109,7 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 /* ═══════════════════ Prioritäten Tab ═══════════════════ */
 
 /* Scrollable tabs on narrow screens */
-.tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.tabs { overflow-x: auto; overflow-y: hidden; white-space: nowrap; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
 .tabs::-webkit-scrollbar { display: none; }
 
 /* Surplus bar */
