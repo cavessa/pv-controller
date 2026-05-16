@@ -299,6 +299,33 @@ def get_monthly_totals(year: int) -> list[dict]:
     ]
 
 
+def get_grid_week_data(end_date: Optional[str] = None) -> dict:
+    """Tägliche Netz-Daten (Einspeisung/Bezug) für 7 Tage bis end_date (Standard: heute)."""
+    from datetime import date, timedelta
+    end = date.fromisoformat(end_date) if end_date else date.today()
+    start = end - timedelta(days=6)
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """SELECT date, feed_out_kwh, feed_in_kwh
+               FROM pv_daily_log
+               WHERE date >= ? AND date <= ?
+               ORDER BY date ASC""",
+            (start.isoformat(), end.isoformat()),
+        ).fetchall()
+    return {
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "entries": [
+            {
+                "date": r[0],
+                "einspeisung_kwh": round(r[1] or 0, 2),
+                "bezug_kwh": round(r[2] or 0, 2),
+            }
+            for r in rows
+        ],
+    }
+
+
 def cleanup_old_hourly(keep_days: int = 90) -> None:
     """Löscht stündliche Einträge älter als keep_days Tage."""
     with sqlite3.connect(DB_PATH) as conn:
@@ -375,7 +402,8 @@ def get_forecast_accuracy_data(days: int = 30) -> list[dict]:
         else:
             diff = round(actual - fc, 2)
             diff_pct = round((actual - fc) / fc * 100) if fc > 0 else None
-            hit = abs(diff_pct) <= 20 if diff_pct is not None else None
+            today = datetime.now().date().isoformat()
+            hit = (abs(diff_pct) <= 25 if diff_pct is not None else None) if date_str != today else None
             result.append({"date": date_str, "forecast_kwh": round(fc, 1),
                            "actual_kwh": round(actual, 1), "diff_kwh": diff,
                            "diff_percent": diff_pct, "hit": hit})
@@ -568,7 +596,7 @@ _CASCADE_COLS = (
     "power_watts, priority, enabled, min_on_minutes, min_off_minutes, "
     "hysteresis_watts, is_on, turned_on_at, turned_off_at, "
     "manual_override_action, manual_override_until, created_at, updated_at, "
-    "consecutive_errors, last_status_power_w, last_status_ok"
+    "consecutive_errors, last_status_power_w, last_status_ok, retry_after"
 )
 
 
@@ -596,13 +624,15 @@ def init_cascade_tables() -> None:
                 updated_at             TEXT DEFAULT (datetime('now')),
                 consecutive_errors     INTEGER DEFAULT 0,
                 last_status_power_w    REAL,
-                last_status_ok         INTEGER DEFAULT 1
+                last_status_ok         INTEGER DEFAULT 1,
+                retry_after            TEXT
             )
         """)
         for col, definition in (
             ("consecutive_errors",  "INTEGER DEFAULT 0"),
             ("last_status_power_w", "REAL"),
             ("last_status_ok",      "INTEGER DEFAULT 1"),
+            ("retry_after",         "TEXT"),
         ):
             try:
                 conn.execute(
@@ -814,6 +844,43 @@ def reset_cascade_device_errors(device_id: str) -> None:
         conn.execute(
             "UPDATE cascade_devices "
             "SET consecutive_errors = 0, last_status_ok = 1, updated_at = ? WHERE id = ?",
+            (datetime.now().isoformat(timespec="seconds"), device_id),
+        )
+
+
+def set_cascade_device_retry_after(device_id: str, retry_after: datetime) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "UPDATE cascade_devices SET retry_after = ?, updated_at = ? WHERE id = ?",
+            (
+                retry_after.isoformat(timespec="seconds"),
+                datetime.now().isoformat(timespec="seconds"),
+                device_id,
+            ),
+        )
+
+
+def get_cascade_devices_due_for_retry() -> list[dict]:
+    """Gibt auto-deaktivierte Geräte zurück, deren retry_after in der Vergangenheit liegt."""
+    now = datetime.now().isoformat(timespec="seconds")
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            f"SELECT {_CASCADE_COLS} FROM cascade_devices "
+            "WHERE enabled = 0 AND retry_after IS NOT NULL AND retry_after <= ? "
+            "ORDER BY priority ASC",
+            (now,),
+        ).fetchall()
+    return [_row_to_device(r) for r in rows]
+
+
+def auto_reenable_cascade_device(device_id: str) -> None:
+    """Reaktiviert ein auto-deaktiviertes Gerät und setzt Fehlerzähler zurück."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "UPDATE cascade_devices "
+            "SET enabled = 1, consecutive_errors = 0, last_status_ok = 1, "
+            "    retry_after = NULL, updated_at = ? "
+            "WHERE id = ?",
             (datetime.now().isoformat(timespec="seconds"), device_id),
         )
 

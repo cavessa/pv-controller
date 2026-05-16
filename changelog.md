@@ -1,5 +1,42 @@
 # Changelog
 
+## 2026-05-16 – Prognose-Trefferquote: heutiger Tag + Schwellwert
+
+**Problem 1:** Der laufende Tag wurde in der Prognose-Tabelle und im "Letzte Tage"-Widget mit ✅/❌ bewertet, obwohl der Tagesertrag noch nicht final ist.
+
+**Problem 2:** Schwellwert ±20% war zu streng für Wetterprognosen.
+
+**Fix:**
+- Backend (`db.py`): Heutiger Tag bekommt `hit = None` statt True/False. Schwellwert `<= 20` → `<= 25`.
+- Frontend "Letzte Tage"-Widget (`app.js`): Heute zeigt ⏳ (grau) statt ✅/❌; Label "Heute" statt Datum.
+- Frontend Prognose-Tabelle: `hit === null` → ⏳, kein roter Zeilenhintergrund für heute.
+- KPI-Label: "Treffer ±20%" → "Treffer ±25%".
+
+---
+
+## 2026-05-16 – Kaskade: Automatischer Retry nach Auto-Deaktivierung
+
+**Problem:** Wenn ein Shelly-Gerät (z.B. eBike) 5 aufeinanderfolgende Kommunikationsfehler produzierte, wurde es dauerhaft deaktiviert (`enabled=0`) ohne je wieder automatisch reaktiviert zu werden.
+
+**Fix:**
+- Neue DB-Spalte `retry_after` in `cascade_devices` (mit Migration für bestehende Tabellen).
+- `_auto_disable` setzt jetzt `retry_after = now + 1 Stunde` (konfigurierbar via `_AUTO_RETRY_HOURS`).
+- `_poll_shelly_devices` prüft zu Beginn jedes Zyklus ob Geräte fällig sind und reaktiviert sie automatisch (Fehlerzähler zurückgesetzt, Aktion `auto_reenabled` ins Log).
+- Bestehendes blockiertes eBike (`shelly_test`) sofort per `auto_reenable_cascade_device` reaktiviert.
+
+---
+
+## 2026-05-14 – Heizstab Phase 3: Lesefehler nicht mehr fatal
+
+**Problem:** Konnte `ph3_state` nicht gelesen werden, wurde der Fehler in `readings.errors` eingetragen.
+Das löste den globalen Fail-safe aus und blockierte PH1/PH2 ebenfalls.
+
+**Fix:** `ph3_state`-Lesefehler wird nur noch als Warning geloggt, nicht mehr in `errors` eingetragen.
+Phase 3 bleibt bei unbekanntem Zustand UNCHANGED (`_decide_phase` gibt bereits UNCHANGED zurück wenn `cur is None`).
+PH1 und PH2 laufen weiter normal.
+
+---
+
 ## 2026-05-14 – Tab-Leiste: nur horizontal scrollbar
 
 `overflow-y: hidden` und `white-space: nowrap` zur bestehenden `.tabs`-Regel hinzugefügt.

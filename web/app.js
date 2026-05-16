@@ -1364,18 +1364,22 @@ function renderForecastProgress(data, histEntries) {
         `<div class="forecast-last-days-title">Letzte Tage</div>` +
         recent.map(e => {
           const diff = Math.round((e.pv_kwh - e.forecast_kwh) / e.forecast_kwh * 100);
-          const hit = Math.abs(diff) <= 20;
+          const isToday = e.date === todayStr;
+          const hit = !isToday && Math.abs(diff) <= 25;
           const sign = diff >= 0 ? "+" : "";
           let dateLabel;
           if (e.date === yStr) dateLabel = "Gestern";
           else if (e.date === dbStr) dateLabel = "Vorgestern";
+          else if (isToday) dateLabel = "Heute";
           else dateLabel = e.date.slice(5).replace("-", ".");
+          const icon  = isToday ? "⏳" : (hit ? "✅" : "❌");
+          const color = isToday ? "#8a8d95" : (hit ? "#2ed8a3" : "#ff6b6b");
           return `<div class="forecast-day-row">` +
             `<span class="fdr-date">${dateLabel}</span>` +
             `<span class="fdr-actual">${e.pv_kwh.toFixed(1)} kWh</span>` +
             `<span class="fdr-forecast">(${e.forecast_kwh.toFixed(1)})</span>` +
-            `<span class="fdr-icon">${hit ? "✅" : "❌"}</span>` +
-            `<span class="fdr-pct" style="color:${hit ? "#2ed8a3" : "#ff6b6b"}">${sign}${diff}%</span>` +
+            `<span class="fdr-icon">${icon}</span>` +
+            `<span class="fdr-pct" style="color:${color}">${sign}${diff}%</span>` +
             `</div>`;
         }).join("");
     }
@@ -1892,7 +1896,7 @@ function renderPrognoseKPIs(entries) {
   }
 
   el.innerHTML = [
-    { label: "Treffer ±20%",  val: hitRate !== null ? `${hitRate}%` : "–",              sub: hitRate !== null ? `(${hits}/${valid.length})` : "" },
+    { label: "Treffer ±25%",  val: hitRate !== null ? `${hitRate}%` : "–",              sub: hitRate !== null ? `(${hits}/${valid.length})` : "" },
     { label: "Ø Abweichung",  val: avgAbsKwh !== null ? `${avgAbsKwh.toFixed(1)} kWh` : "–", sub: avgAbsPct !== null ? `(${avgAbsPct.toFixed(0)}%)` : "" },
     { label: "Tendenz",       val: tendenz,                                               sub: tendenzSub },
   ].map(k => `<div class="verlauf-kpi">
@@ -1971,9 +1975,9 @@ function renderPrognoseTable(entries) {
     const day   = `${parts[2]}.${parts[1]}.`;
     const sign  = e.diff_kwh >= 0 ? "+" : "";
     const color = e.diff_kwh >= 0 ? "var(--ok)" : "var(--error)";
-    const icon  = e.hit ? "✅" : "❌";
+    const icon  = e.hit === null ? "⏳" : (e.hit ? "✅" : "❌");
     const pct   = e.diff_percent !== null ? ` (${sign}${e.diff_percent}%)` : "";
-    const bg    = e.hit ? "" : ' style="background:rgba(248,113,113,0.08)"';
+    const bg    = (e.hit === false) ? ' style="background:rgba(248,113,113,0.08)"' : "";
     return `<tr${bg}>
       <td>${day}</td>
       <td>${e.forecast_kwh} kWh</td>

@@ -252,6 +252,7 @@
         <button class="verlauf-nav-btn" data-vsec="strings">Strings</button>
         <button class="verlauf-nav-btn" data-vsec="wetter">Wetter</button>
         <button class="verlauf-nav-btn" data-vsec="prognose">Prognose</button>
+        <button class="verlauf-nav-btn" data-vsec="netz" id="verlauf-netz-btn" style="display:none">Netz</button>
       </div>
 
       <!-- ── Tag ── -->
@@ -395,6 +396,104 @@
             <div class="chart-empty">Lade…</div>
           </div>
           <p class="note" style="margin-top:8px">Punkte = historische Tage · Linie = Trendlinie · ★ = Prognose morgen</p>
+        </div>
+      </div>
+
+      <!-- ── Netz ── -->
+      <div id="verlauf-netz" class="verlauf-section hidden">
+        <div class="verlauf-subnav netz-subnav" style="padding-top:6px">
+          <button class="verlauf-nav-btn netz-nav-btn active" data-nsec="tag">Tag</button>
+          <button class="verlauf-nav-btn netz-nav-btn" data-nsec="woche">Woche</button>
+          <button class="verlauf-nav-btn netz-nav-btn" data-nsec="monat">Monat</button>
+          <button class="verlauf-nav-btn netz-nav-btn" data-nsec="jahr">Jahr</button>
+        </div>
+
+        <!-- Netz → Tag -->
+        <div id="netz-tag" class="netz-section">
+          <div class="verlauf-date-nav">
+            <button class="btn verlauf-btn-sm" id="netz-tag-prev">&#8249;</button>
+            <span id="netz-tag-label">Heute</span>
+            <button class="btn verlauf-btn-sm" id="netz-tag-next" disabled>&#8250;</button>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>Netz Tagesverlauf</h2>
+              <div class="chart-legend-inline">
+                <span style="color:#2ed8a3">&#9646; Einsp.</span>
+                <span style="color:rgba(232,164,53,0.9)">&#9646; Bezug</span>
+              </div>
+            </div>
+            <div id="chart-netz-tag-wrap" class="temp-chart-wrap">
+              <div class="chart-empty">Lade…</div>
+            </div>
+          </div>
+          <div id="netz-tag-kpis"></div>
+        </div>
+
+        <!-- Netz → Woche -->
+        <div id="netz-woche" class="netz-section hidden">
+          <div class="verlauf-date-nav">
+            <button class="btn verlauf-btn-sm" id="netz-woche-prev">&#8249;</button>
+            <span id="netz-woche-label">–</span>
+            <button class="btn verlauf-btn-sm" id="netz-woche-next">&#8250;</button>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>Netz Wochenverlauf</h2>
+              <div class="chart-legend-inline">
+                <span style="color:#2ed8a3">&#9646; Einsp.</span>
+                <span style="color:rgba(232,164,53,0.9)">&#9646; Bezug</span>
+              </div>
+            </div>
+            <div id="chart-netz-woche-wrap" class="temp-chart-wrap">
+              <div class="chart-empty">Lade…</div>
+            </div>
+          </div>
+          <div id="netz-woche-kpis"></div>
+        </div>
+
+        <!-- Netz → Monat -->
+        <div id="netz-monat" class="netz-section hidden">
+          <div class="verlauf-date-nav">
+            <button class="btn verlauf-btn-sm" id="netz-monat-prev">&#8249;</button>
+            <span id="netz-monat-label">–</span>
+            <button class="btn verlauf-btn-sm" id="netz-monat-next">&#8250;</button>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>Netz Monatsverlauf</h2>
+              <div class="chart-legend-inline">
+                <span style="color:#2ed8a3">&#9646; Einsp.</span>
+                <span style="color:rgba(232,164,53,0.9)">&#9646; Bezug</span>
+              </div>
+            </div>
+            <div id="chart-netz-monat-wrap" class="temp-chart-wrap">
+              <div class="chart-empty">Lade…</div>
+            </div>
+          </div>
+          <div id="netz-monat-kpis"></div>
+        </div>
+
+        <!-- Netz → Jahr -->
+        <div id="netz-jahr" class="netz-section hidden">
+          <div class="verlauf-date-nav">
+            <button class="btn verlauf-btn-sm" id="netz-jahr-prev">&#8249;</button>
+            <span id="netz-jahr-label">–</span>
+            <button class="btn verlauf-btn-sm" id="netz-jahr-next">&#8250;</button>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>Netz Jahresübersicht</h2>
+              <div class="chart-legend-inline">
+                <span style="color:#2ed8a3">&#9646; Einsp.</span>
+                <span style="color:rgba(232,164,53,0.9)">&#9646; Bezug</span>
+              </div>
+            </div>
+            <div id="chart-netz-jahr-wrap" class="temp-chart-wrap">
+              <div class="chart-empty">Lade…</div>
+            </div>
+          </div>
+          <div id="netz-jahr-kpis"></div>
         </div>
       </div>
 

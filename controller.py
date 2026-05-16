@@ -138,7 +138,7 @@ class Controller:
             r.errors.append("ph2_state")
         r.ph3_on = self.ph3.get_relay_state()
         if r.ph3_on is None:
-            r.errors.append("ph3_state")
+            log.warning("ph3_state Lesefehler – Phase 3 bleibt unverändert, System läuft weiter.")
 
         return r
 

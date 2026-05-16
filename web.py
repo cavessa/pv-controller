@@ -747,6 +747,100 @@ def api_strings_alerts(
     return {"entries": get_string_alerts(days)}
 
 
+@app.get("/api/history/grid/today")
+def api_grid_today(response: Response) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    today = datetime.now().strftime("%Y-%m-%d")
+    from db import get_hourly_data
+    entries = get_hourly_data(today)
+    return {
+        "date": today,
+        "entries": [
+            {
+                "ts": e["ts"],
+                "einspeisung_w": max(0, e.get("feed_in_w") or 0),
+                "bezug_w": max(0, -(e.get("feed_in_w") or 0)),
+            }
+            for e in entries
+        ],
+    }
+
+
+@app.get("/api/history/grid/day/{date_str}")
+def api_grid_day(date_str: str, response: Response) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    import re as _re
+    if not _re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
+        raise HTTPException(status_code=400, detail="Format muss YYYY-MM-DD sein")
+    from db import get_hourly_data
+    entries = get_hourly_data(date_str)
+    return {
+        "date": date_str,
+        "entries": [
+            {
+                "ts": e["ts"],
+                "einspeisung_w": max(0, e.get("feed_in_w") or 0),
+                "bezug_w": max(0, -(e.get("feed_in_w") or 0)),
+            }
+            for e in entries
+        ],
+    }
+
+
+@app.get("/api/history/grid/week")
+def api_grid_week(
+    response: Response,
+    end_date: Optional[str] = Query(default=None),
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    import re as _re
+    if end_date is not None and not _re.match(r"^\d{4}-\d{2}-\d{2}$", end_date):
+        raise HTTPException(status_code=400, detail="Format muss YYYY-MM-DD sein")
+    from db import get_grid_week_data
+    return get_grid_week_data(end_date)
+
+
+@app.get("/api/history/grid/month/{year_month}")
+def api_grid_month(year_month: str, response: Response) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    import re as _re
+    if not _re.match(r"^\d{4}-\d{2}$", year_month):
+        raise HTTPException(status_code=400, detail="Format muss YYYY-MM sein")
+    from db import get_daily_for_month
+    entries = get_daily_for_month(year_month)
+    return {
+        "month": year_month,
+        "entries": [
+            {
+                "date": e["date"],
+                "einspeisung_kwh": round(e.get("feed_out_kwh") or 0, 2),
+                "bezug_kwh": round(e.get("feed_in_kwh") or 0, 2),
+            }
+            for e in entries
+        ],
+    }
+
+
+@app.get("/api/history/grid/year/{year}")
+def api_grid_year(year: int, response: Response) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    if year < 2020 or year > 2100:
+        raise HTTPException(status_code=400, detail="Ungültiges Jahr")
+    from db import get_monthly_totals
+    entries = get_monthly_totals(year)
+    return {
+        "year": year,
+        "entries": [
+            {
+                "month": e["month"],
+                "einspeisung_kwh": round(e.get("feed_out_kwh") or 0, 2),
+                "bezug_kwh": round(e.get("feed_in_kwh") or 0, 2),
+            }
+            for e in entries
+        ],
+    }
+
+
 @app.get("/api/logs")
 def api_logs(lines: int = Query(default=200, ge=1, le=1000)) -> dict[str, Any]:
     cfg = _load_cfg()

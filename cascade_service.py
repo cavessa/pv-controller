@@ -25,19 +25,23 @@ from clients.shelly_client import Shelly3EMClient
 from clients.solax_client import SolaxClient
 from config import Config
 from db import (
+    auto_reenable_cascade_device,
     clear_cascade_override,
     get_cascade_device,
     get_cascade_devices,
+    get_cascade_devices_due_for_retry,
     get_cascade_settings,
     increment_cascade_device_errors,
     log_cascade_action,
     reset_cascade_device_errors,
+    set_cascade_device_retry_after,
     update_cascade_device,
     update_cascade_device_live_status,
     update_cascade_device_state,
 )
 
 _MAX_ERRORS = 5
+_AUTO_RETRY_HOURS = 1
 
 log = logging.getLogger(__name__)
 
@@ -240,6 +244,15 @@ class CascadeService:
 
     def _poll_shelly_devices(self) -> None:
         """Liest aktuellen Status aller aktiven Shelly-Geräte und speichert ihn."""
+        for device in get_cascade_devices_due_for_retry():
+            auto_reenable_cascade_device(device["id"])
+            log.info(
+                "Kaskade: %s nach %d h automatisch reaktiviert (Retry)",
+                device["name"],
+                _AUTO_RETRY_HOURS,
+            )
+            log_cascade_action(0, device["id"], "auto_reenabled", "Automatischer Retry", 0)
+
         shelly_devices = [
             d for d in get_cascade_devices()
             if d["enabled"] and d["type"] in ("shelly_gen1", "shelly_gen2")
@@ -270,9 +283,14 @@ class CascadeService:
                     self._auto_disable(device)
 
     def _auto_disable(self, device: dict) -> None:
-        """Deaktiviert ein Gerät nach zu vielen Fehlern."""
+        """Deaktiviert ein Gerät nach zu vielen Fehlern; plant automatischen Retry."""
+        retry_at = datetime.now() + timedelta(hours=_AUTO_RETRY_HOURS)
         update_cascade_device(device["id"], enabled=False)
-        reason = f"Automatisch deaktiviert nach {_MAX_ERRORS} aufeinanderfolgenden Fehlern"
+        set_cascade_device_retry_after(device["id"], retry_at)
+        reason = (
+            f"Automatisch deaktiviert nach {_MAX_ERRORS} aufeinanderfolgenden Fehlern "
+            f"(Retry um {retry_at.strftime('%H:%M')} Uhr)"
+        )
         log_cascade_action(0, device["id"], "auto_disabled", reason, 0)
         log.error("Kaskade: %s — %s", device["name"], reason)
 
