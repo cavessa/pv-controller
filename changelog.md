@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-05-23 – Cron: flock-Schutz für solaxbb_local.py gegen Zombie-Prozesse
+
+**Problem:** `solaxbb_local.py` lief 3× pro Minute per Cron ohne Schutz gegen Akkumulierung. Bei hängendem Prozess häuften sich Dutzende Instanzen an (zuletzt 62 gleichzeitig). Da das Solax Pocket-WiFi-Modul nur eine HTTP-Verbindung gleichzeitig verarbeitet, blockierten diese Zombies den pvcontroller → `pv_power = null` → Dashboard zeigte "n/a" statt PV-Leistung.
+
+**Fix (Crontab):**
+- Alle 3 aktiven `solaxbb_local.py`-Einträge mit `/usr/bin/flock -n <lockfile>` abgesichert.
+- Jeder Eintrag hat eine eigene Lock-Datei (`/tmp/solax_local.lock`, `…5.lock`, `…30.lock`).
+- Mit `-n` (non-blocking): Läuft bereits eine Instanz, wird der neue Aufruf sofort beendet statt zu warten.
+
+---
+
+## 2026-05-20 – Prognose: Bugfixes isEndstand + Letzte-Tage-Sektion + stabile Prognose-Basis
+
+**Probleme:**
+1. `isEndstand` prüfte nur die Stunde des Sonnenuntergangs (z. B. ab 20:00 statt 20:59) → "Endstand" erschien bis zu 59 Minuten zu früh.
+2. "Letzte Tage"-Sektion war immer leer: JS verwendete `e.pv_kwh`, aber die API liefert `e.actual_kwh`.
+3. "Prognose erreicht ✅" konnte bei 94% angezeigt bleiben, weil `predicted_kwh` live aus der Regression neu berechnet wird und schwanken kann.
+
+**Fix (`web/app.js`):**
+- `isEndstand`: exakter Minutenvergleich statt nur Stunden-Vergleich.
+- "Letzte Tage": `e.pv_kwh` → `e.actual_kwh` (API-Schlüssel korrigiert).
+- `renderForecastProgress`: Gespeicherte Prognose vom Vortag (`histEntries[heute].forecast_kwh`) als Nenner bevorzugen — stabil, kein Schwanken durch Regression. Fallback auf `today.predicted_kwh`.
+
+---
+
+## 2026-05-20 – Prognose-Tagesabschluss: Schwelle für "erreicht" auf 97% angehoben
+
+**Problem:** Bei Tagesende (< 15 min bis Sonnenuntergang) wurde "Prognose erreicht ✅" bereits ab 90% angezeigt, obwohl z. B. 94% nicht wirklich "erreicht" ist.
+
+**Fix:**
+- `web/app.js`: Schwelle für "Prognose erreicht ✅" von 90% auf 97% angehoben.
+- Schwelle für "Knapp verfehlt" von 70% auf 80% angehoben (80–96% gilt jetzt als knapp verfehlt).
+
+---
+
 ## 2026-05-16 – Prognose-Trefferquote: heutiger Tag + Schwellwert
 
 **Problem 1:** Der laufende Tag wurde in der Prognose-Tabelle und im "Letzte Tage"-Widget mit ✅/❌ bewertet, obwohl der Tagesertrag noch nicht final ist.

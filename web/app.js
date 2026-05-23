@@ -1224,8 +1224,8 @@ function getForecastAssessment(actualKwh, forecastKwh, currentHour, currentMinut
   const remaining = forecastKwh - actualKwh;
 
   if (hoursLeft <= 0.25) {
-    if (percent >= 90) return { text: 'Prognose erreicht ✅', color: '#2ed8a3' };
-    if (percent >= 70) return { text: 'Knapp verfehlt (' + Math.round(percent) + '%)', color: '#e8a435' };
+    if (percent >= 97) return { text: 'Prognose erreicht ✅', color: '#2ed8a3' };
+    if (percent >= 80) return { text: 'Knapp verfehlt (' + Math.round(percent) + '%)', color: '#e8a435' };
     return { text: 'Deutlich unter Prognose (' + Math.round(percent) + '%)', color: '#ff6b6b' };
   }
 
@@ -1262,8 +1262,11 @@ function renderForecastProgress(data, histEntries) {
   if (!wrap) return;
 
   const today = data?.today;
-  const predicted = today?.predicted_kwh;
   const actual = today?.actual_kwh;
+  // Gespeicherte Prognose vom Vortag bevorzugen (stabil, keine Schwankungen durch Regressionsänderungen)
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayHist = histEntries.find(e => e.date === todayStr);
+  const predicted = (todayHist?.forecast_kwh ?? today?.predicted_kwh);
 
   if (!predicted || predicted <= 0) {
     wrap.classList.add("hidden");
@@ -1306,8 +1309,9 @@ function renderForecastProgress(data, histEntries) {
   if (fpActual) fpActual.textContent = actual != null ? `${actual.toFixed(1)} kWh` : "–";
 
   const sunset = today?.sunset;
-  const sunsetHour = sunset ? parseInt(sunset.split(":")[0], 10) : 21;
-  const isEndstand = new Date().getHours() >= sunsetHour;
+  const [sunsetH, sunsetM] = sunset ? sunset.split(":").map(Number) : [21, 0];
+  const _nowD = new Date();
+  const isEndstand = (_nowD.getHours() * 60 + _nowD.getMinutes()) >= (sunsetH * 60 + sunsetM);
 
   let remainingText = "–";
   if (actual != null) {
@@ -1349,13 +1353,12 @@ function renderForecastProgress(data, histEntries) {
   const daysEl = document.getElementById("forecast-last-days");
   if (daysEl) {
     const recent = histEntries
-      .filter(e => e.forecast_kwh != null && e.pv_kwh != null)
+      .filter(e => e.forecast_kwh != null && e.actual_kwh != null)
       .slice(-3)
       .reverse();
     if (recent.length === 0) {
       daysEl.innerHTML = "";
     } else {
-      const todayStr = new Date().toISOString().slice(0, 10);
       const yd = new Date(); yd.setDate(yd.getDate() - 1);
       const db = new Date(); db.setDate(db.getDate() - 2);
       const yStr = yd.toISOString().slice(0, 10);
@@ -1363,7 +1366,7 @@ function renderForecastProgress(data, histEntries) {
       daysEl.innerHTML =
         `<div class="forecast-last-days-title">Letzte Tage</div>` +
         recent.map(e => {
-          const diff = Math.round((e.pv_kwh - e.forecast_kwh) / e.forecast_kwh * 100);
+          const diff = Math.round((e.actual_kwh - e.forecast_kwh) / e.forecast_kwh * 100);
           const isToday = e.date === todayStr;
           const hit = !isToday && Math.abs(diff) <= 25;
           const sign = diff >= 0 ? "+" : "";
@@ -1376,7 +1379,7 @@ function renderForecastProgress(data, histEntries) {
           const color = isToday ? "#8a8d95" : (hit ? "#2ed8a3" : "#ff6b6b");
           return `<div class="forecast-day-row">` +
             `<span class="fdr-date">${dateLabel}</span>` +
-            `<span class="fdr-actual">${e.pv_kwh.toFixed(1)} kWh</span>` +
+            `<span class="fdr-actual">${e.actual_kwh.toFixed(1)} kWh</span>` +
             `<span class="fdr-forecast">(${e.forecast_kwh.toFixed(1)})</span>` +
             `<span class="fdr-icon">${icon}</span>` +
             `<span class="fdr-pct" style="color:${color}">${sign}${diff}%</span>` +
