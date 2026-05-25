@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-05-25 – Prognose-Treffer: Nur noch Ertrag ≥ Prognose gilt als Treffer
+
+**Änderung:** Die Treffer-Logik für Prognose-Vergleiche wurde verschärft. Bisher galt ein Tag als Treffer wenn die Abweichung ≤ ±25% war. Jetzt gilt nur noch `actual_kwh >= forecast_kwh` als Treffer – d.h. nur wenn der tatsächliche Ertrag die Prognose erreicht oder übertrifft.
+
+- `db.py`: `hit = (actual >= fc)` statt `abs(diff_pct) <= 25`
+- `app.js` Dashboard "Letzte Tage": `hit = e.actual_kwh >= e.forecast_kwh` statt `Math.abs(diff) <= 25`
+- `app.js` Verlauf → Prognose KPI-Label: "Treffer ±25%" → "Treffer"
+- `index.html`: Cache-Buster für `app.js` auf `v=20260525` erhöht
+
 ## 2026-05-25 – Temperatur-Chart: NaN-Crash durch fehlende temp-Felder behoben
 
 **Problem:** `renderTempChart` in `app.js` baute das `pts`-Array aus ALLEN Einträgen von `/api/temp-history`, einschließlich solcher ohne `temp`-Feld (Einträge, bei denen nur `wb_w` gesetzt war, z. B. `{'t':'2026-05-25T07:03','wb_w':0.0}`). Das führte zu `undefined`-Werten im Array → `Math.min(...allTemps)` und `Math.max(...allTemps)` gaben `NaN` zurück → alle y-Koordinaten wurden `NaN` → die SVG-Kurve wurde nicht gerendert. Nur die Max-Linie (abhängig von einem festen `maxTemp`-Wert) und die Zeitachsen-Labels (nur x-abhängig) waren sichtbar.

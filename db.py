@@ -403,7 +403,7 @@ def get_forecast_accuracy_data(days: int = 30) -> list[dict]:
             diff = round(actual - fc, 2)
             diff_pct = round((actual - fc) / fc * 100) if fc > 0 else None
             today = datetime.now().date().isoformat()
-            hit = (abs(diff_pct) <= 25 if diff_pct is not None else None) if date_str != today else None
+            hit = (actual >= fc) if date_str != today else None
             result.append({"date": date_str, "forecast_kwh": round(fc, 1),
                            "actual_kwh": round(actual, 1), "diff_kwh": diff,
                            "diff_percent": diff_pct, "hit": hit})

@@ -1368,7 +1368,7 @@ function renderForecastProgress(data, histEntries) {
         recent.map(e => {
           const diff = Math.round((e.actual_kwh - e.forecast_kwh) / e.forecast_kwh * 100);
           const isToday = e.date === todayStr;
-          const hit = !isToday && Math.abs(diff) <= 25;
+          const hit = !isToday && e.actual_kwh >= e.forecast_kwh;
           const sign = diff >= 0 ? "+" : "";
           let dateLabel;
           if (e.date === yStr) dateLabel = "Gestern";
@@ -1899,7 +1899,7 @@ function renderPrognoseKPIs(entries) {
   }
 
   el.innerHTML = [
-    { label: "Treffer ±25%",  val: hitRate !== null ? `${hitRate}%` : "–",              sub: hitRate !== null ? `(${hits}/${valid.length})` : "" },
+    { label: "Treffer",       val: hitRate !== null ? `${hitRate}%` : "–",              sub: hitRate !== null ? `(${hits}/${valid.length})` : "" },
     { label: "Ø Abweichung",  val: avgAbsKwh !== null ? `${avgAbsKwh.toFixed(1)} kWh` : "–", sub: avgAbsPct !== null ? `(${avgAbsPct.toFixed(0)}%)` : "" },
     { label: "Tendenz",       val: tendenz,                                               sub: tendenzSub },
   ].map(k => `<div class="verlauf-kpi">
