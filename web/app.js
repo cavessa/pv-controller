@@ -2126,7 +2126,13 @@ function xTickLabel(m) {
 
 function renderTempChart(entries, maxTemp) {
   const wrap = $("#temp-chart-wrap");
-  if (!entries || entries.length < 2) {
+  const pts = (entries || [])
+    .filter(e => e.temp != null)
+    .map(e => {
+      const d = new Date(e.t);
+      return { x: d.getHours() * 60 + d.getMinutes(), y: e.temp };
+    }).sort((a, b) => a.x - b.x);
+  if (pts.length < 2) {
     wrap.innerHTML = '<div class="chart-empty">Noch keine Verlaufsdaten für heute.</div>';
     return;
   }
@@ -2135,11 +2141,6 @@ function renderTempChart(entries, maxTemp) {
   const pad = { t: 6, r: 6, b: 20, l: 34 };
   const cw = VW - pad.l - pad.r;
   const ch = VH - pad.t - pad.b;
-
-  const pts = entries.map(e => {
-    const d = new Date(e.t);
-    return { x: d.getHours() * 60 + d.getMinutes(), y: e.temp };
-  }).sort((a, b) => a.x - b.x);
 
   const now = new Date();
   const nowMin = now.getHours() * 60 + now.getMinutes();

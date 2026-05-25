@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-05-25 – Temperatur-Chart: NaN-Crash durch fehlende temp-Felder behoben
+
+**Problem:** `renderTempChart` in `app.js` baute das `pts`-Array aus ALLEN Einträgen von `/api/temp-history`, einschließlich solcher ohne `temp`-Feld (Einträge, bei denen nur `wb_w` gesetzt war, z. B. `{'t':'2026-05-25T07:03','wb_w':0.0}`). Das führte zu `undefined`-Werten im Array → `Math.min(...allTemps)` und `Math.max(...allTemps)` gaben `NaN` zurück → alle y-Koordinaten wurden `NaN` → die SVG-Kurve wurde nicht gerendert. Nur die Max-Linie (abhängig von einem festen `maxTemp`-Wert) und die Zeitachsen-Labels (nur x-abhängig) waren sichtbar.
+
+**Fix (`web/app.js`):**
+- `.filter(e => e.temp != null)` vor dem `.map()` eingefügt
+- `entries.length < 2`-Check auf `pts.length < 2` verschoben (greift jetzt nach dem Filter)
+
 ## 2026-05-23 – Cron: flock-Schutz für solaxbb_local.py gegen Zombie-Prozesse
 
 **Problem:** `solaxbb_local.py` lief 3× pro Minute per Cron ohne Schutz gegen Akkumulierung. Bei hängendem Prozess häuften sich Dutzende Instanzen an (zuletzt 62 gleichzeitig). Da das Solax Pocket-WiFi-Modul nur eine HTTP-Verbindung gleichzeitig verarbeitet, blockierten diese Zombies den pvcontroller → `pv_power = null` → Dashboard zeigte "n/a" statt PV-Leistung.
