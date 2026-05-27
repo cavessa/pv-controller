@@ -140,6 +140,18 @@ class Controller:
         if r.ph3_on is None:
             log.warning("ph3_state Lesefehler – Phase 3 bleibt unverändert, System läuft weiter.")
 
+        # Fallback: heater_meter nicht erreichbar → aus Phasenzuständen schätzen.
+        # Jede Phase hat phase_power_w (1500 W). Kein Fehler → System läuft weiter.
+        if r.heater_meter_power_w is None:
+            phases_on = sum(1 for ph in (r.ph1_on, r.ph2_on, r.ph3_on) if ph is True)
+            r.heater_meter_power_w = float(phases_on * self.cfg.heater.phase_power_w)
+            log.warning(
+                "heater_meter nicht erreichbar – schätze %d W aus %d aktiven Phasen",
+                r.heater_meter_power_w,
+                phases_on,
+            )
+            r.errors = [e for e in r.errors if e != "heater_meter"]
+
         return r
 
     # ---- Temperatur ----------------------------------------------------

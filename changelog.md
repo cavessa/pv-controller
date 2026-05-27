@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-05-27 – heater_meter-Ausfall: Schätzung aus Phasenzuständen statt Fail-safe
+
+**Problem:** Wenn der Shelly 3EM für die Heizstab-Messung (heater_meter, 192.168.2.21) nicht erreichbar war, ging das System in Fail-safe (UNCHANGED für alle Phasen) – obwohl zum Schalten kein Messwert benötigt wird.
+
+**Lösung:** Wenn `heater_meter` nicht antwortet, wird der Verbrauch aus den bekannten Phasenzuständen geschätzt (je aktive Phase × 1500 W aus `heater.phase_power_w`). Kein Fehler mehr → System schaltet normal weiter. Ein `WARNING`-Log zeigt an, dass der Schätzwert verwendet wird.
+
+- `controller.py` `_read_all()`: Fallback-Schätzung nach dem Lesen der Phasenzustände; "heater_meter" wird aus `r.errors` entfernt wenn Schätzwert vorhanden.
+
 ## 2026-05-25 – Prognose-Treffer: Nur noch Ertrag ≥ Prognose gilt als Treffer
 
 **Änderung:** Die Treffer-Logik für Prognose-Vergleiche wurde verschärft. Bisher galt ein Tag als Treffer wenn die Abweichung ≤ ±25% war. Jetzt gilt nur noch `actual_kwh >= forecast_kwh` als Treffer – d.h. nur wenn der tatsächliche Ertrag die Prognose erreicht oder übertrifft.
