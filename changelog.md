@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-07-21 – Wallbox pausiert nur noch, wenn Heizstab aktiv läuft (statt "alle 3 Phasen an")
+
+**Idee (User):** go-e im Eco-Modus (lmo=4) lädt selbst nur bei PV-Überschuss. Ist der Heizstab komplett aus, gibt es keinen Verteilungskonflikt – der Controller muss die Wallbox dann nicht extra pausieren, go-e regelt das Überschussladen selbst.
+
+**Vorher:** Die Wallbox wurde immer pausiert, sobald nicht *alle 3* Heizstab-Phasen an waren – auch wenn der Heizstab komplett inaktiv war (0 Phasen, z. B. nachts oder bei zu wenig PV für auch nur PH1). Das war strenger als nötig und sorgte für unnötige Pause-Befehle ohne echten Nutzen.
+
+**Lösung:** `_decide_wallbox()` unterscheidet jetzt 5 Heizstab-Zustände statt nur "alle Phasen an oder nicht":
+- `full` (alle 3 Phasen an) → Wallbox frei (wie bisher)
+- `idle` (0 Phasen an) → **neu:** Wallbox frei, kein Verteilungskonflikt
+- `partial` (läuft, will noch mehr Phasen) → Wallbox pausiert, Speicher priorisiert (wie bisher "nicht alle Phasen an")
+- `unknown` (PH1/PH2 nicht lesbar) → Wallbox pausiert, fail-safe (wie bisher)
+- `grace` (Wechsel zu partial/unknown, aber noch innerhalb der 90s-Schonfrist) → Wallbox bleibt frei
+
+- `controller.py` `_decide_wallbox()`: Parameter `all_phases_on: Optional[bool]` durch `heater_state: str` ersetzt; neuer "idle"-Zweig gibt die Wallbox frei.
+- `controller.py` `_handle_wallbox()`: berechnet `heater_state` aus PH1/PH2/PH3 statt nur `all_phases_on`.
+- `controller.py` `_debounce_heater_state()` (vorher `_debounce_all_phases_on()`): debounced nur noch den Übergang zu `partial`/`unknown`, `full`/`idle` werden weiterhin sofort übernommen.
+
 ## 2026-07-21 – Wallbox-Pause um 90s verzögert (Debounce gegen kurze PV-Einbrüche)
 
 **Problem:** Auch nach dem Fix von heute Vormittag (Wallbox-Leistung aus Überschuss herausrechnen, siehe unten) stoppte die Wallbox weiterhin häufig, z. B. 4 Minuten nachdem der User in der go-e-App manuell "Eco fortsetzen" geklickt hatte. Ursache diesmal: Die Wallbox-Freigabe hängt an "alle 3 Heizstab-Phasen an". Ein einzelner kurzer PV-Einbruch (z. B. 1 Messwert durch eine vorbeiziehende Wolke) reicht, damit PH2 ausgeht – und der Controller pausiert die Wallbox dann sofort, auch wenn die PV-Leistung eine Minute später schon wieder da ist.

@@ -473,11 +473,20 @@ class Controller:
     def _decide_wallbox(
         self,
         storage_temp_c: Optional[float],
-        all_phases_on: Optional[bool],
+        heater_state: str,
         temp_status: Optional["TempStatus"],
         status: Optional[WallboxStatus],
         read_error: Optional[str],
     ) -> tuple[Optional[WallboxStatus], WallboxDecision]:
+        """heater_state (nach Debounce) ∈:
+        - "full":    alle 3 Heizstab-Phasen an -> Überschuss über Volllast in Wallbox
+        - "idle":    Heizstab komplett aus -> kein Verteilungskonflikt, Wallbox frei
+        - "grace":   Heizstab-Wachstum unterbrochen, aber noch innerhalb der
+                     90s-Schonfrist -> wie zuletzt (frei) behandeln
+        - "partial": Heizstab läuft, will aber noch mehr Phasen zuschalten ->
+                     Speicher priorisiert, Wallbox pausiert
+        - "unknown": PH1/PH2-Status nicht lesbar -> fail-safe, Wallbox pausiert
+        """
         cfg = self.cfg.wallbox
 
         if not cfg.enabled:
@@ -563,7 +572,7 @@ class Controller:
             )
 
         # Alle 3 Phasen AN: Überschuss über Heizstab-Volllast geht in die Wallbox
-        if all_phases_on is True:
+        if heater_state == "full":
             if status.force_state != 0:
                 return status, WallboxDecision(
                     action=WallboxAction.RELEASE,
@@ -583,9 +592,54 @@ class Controller:
                 ),
             )
 
-        # Nicht alle Phasen AN (oder Phasen-Status unbekannt): Speicher hat Priorität
+        # Heizstab komplett aus: kein Verteilungskonflikt, go-e-Eco-Modus (lmo=4)
+        # übernimmt das Überschussladen selbst.
+        if heater_state == "idle":
+            if status.force_state != 0:
+                return status, WallboxDecision(
+                    action=WallboxAction.RELEASE,
+                    target_force_state=0,
+                    reason=(
+                        f"Heizstab inaktiv (0 Phasen an) – kein Verteilungskonflikt, "
+                        f"Wallbox-Eco-Modus übernimmt Überschussladen "
+                        f"(Speicher {storage_temp_c:.1f} °C)."
+                    ),
+                )
+            return status, WallboxDecision(
+                action=WallboxAction.UNCHANGED,
+                target_force_state=0,
+                reason=(
+                    f"Heizstab inaktiv – Wallbox bereits im Eco-Modus freigegeben "
+                    f"(Speicher {storage_temp_c:.1f} °C)."
+                ),
+            )
+
+        # Innerhalb der 90s-Schonfrist nach einem kurzen Einbruch: wie zuletzt freigeben
+        if heater_state == "grace":
+            if status.force_state != 0:
+                return status, WallboxDecision(
+                    action=WallboxAction.RELEASE,
+                    target_force_state=0,
+                    reason=(
+                        f"Heizstab-Wachstum kurz unterbrochen – innerhalb "
+                        f"{_WALLBOX_PAUSE_DEBOUNCE_S:.0f}s-Schonfrist, Wallbox bleibt "
+                        f"freigegeben (Speicher {storage_temp_c:.1f} °C)."
+                    ),
+                )
+            return status, WallboxDecision(
+                action=WallboxAction.UNCHANGED,
+                target_force_state=0,
+                reason=(
+                    f"Heizstab-Wachstum kurz unterbrochen – innerhalb Schonfrist, "
+                    f"Wallbox bleibt freigegeben (Speicher {storage_temp_c:.1f} °C)."
+                ),
+            )
+
+        # "partial" (Heizstab läuft, will noch mehr Phasen) oder "unknown"
+        # (PH1/PH2 nicht lesbar): Speicher hat Priorität
         phases_info = (
-            "Phasen-Status unbekannt" if all_phases_on is None else "Nicht alle Phasen aktiv"
+            "Phasen-Status unbekannt" if heater_state == "unknown"
+            else "Heizstab läuft, will noch weitere Phasen zuschalten"
         )
         if status.force_state != 1:
             return status, WallboxDecision(
@@ -923,27 +977,27 @@ class Controller:
         log.info("=== PV-Controller Ende ===")
         return result
 
-    def _debounce_all_phases_on(
-        self, raw: Optional[bool], now: datetime
-    ) -> Optional[bool]:
-        """Verzögert "nicht alle Phasen an" um _WALLBOX_PAUSE_DEBOUNCE_S, bevor es
-        an die Wallbox-Entscheidung weitergereicht wird (persistiert in der DB,
-        da jeder Cron-Lauf ein frischer Prozess ist). "alle Phasen an" (True)
-        wird dagegen immer sofort übernommen."""
+    def _debounce_heater_state(self, raw_state: str, now: datetime) -> str:
+        """raw_state ∈ {full, idle, partial, unknown}. "full" und "idle" geben die
+        Wallbox sofort frei (kein Verteilungskonflikt bzw. Heizstab schon
+        gesättigt). "partial"/"unknown" würden pausieren – das wird um
+        _WALLBOX_PAUSE_DEBOUNCE_S verzögert (in der DB persistiert, da jeder
+        Cron-Lauf ein frischer Prozess ist), damit ein kurzer PV-Einbruch eine
+        laufende Ladung nicht sofort abbricht."""
         not_all_since = get_wallbox_not_all_phases_since()
-        if raw is True:
+        if raw_state in ("full", "idle"):
             if not_all_since is not None:
                 set_wallbox_not_all_phases_since(None)
-            return True
+            return raw_state
 
         if not_all_since is None:
             set_wallbox_not_all_phases_since(now)
-            return True  # Schonfrist beginnt: noch wie "alle Phasen an" behandeln
+            return "grace"  # Schonfrist beginnt: noch wie bisher freigeben
 
         if (now - not_all_since).total_seconds() < _WALLBOX_PAUSE_DEBOUNCE_S:
-            return True  # noch innerhalb der Schonfrist
+            return "grace"  # noch innerhalb der Schonfrist
 
-        return raw  # Schonfrist vorbei: echten Wert (False/None) durchreichen
+        return raw_state  # Schonfrist vorbei: echten Zustand (partial/unknown) durchreichen
 
     def _handle_wallbox(
         self,
@@ -958,30 +1012,40 @@ class Controller:
             str(self.cfg.wallbox.enabled).lower(),
             self.cfg.wallbox.url or "n/a",
         )
-        # Alle 3 Phasen AN → Speicher läuft auf Volllast, Überschuss darüber in Wallbox
-        # PH3-Status "unbekannt" (z.B. Shelly nicht erreichbar) blockiert die Wallbox
-        # NICHT: PH3 wird ohnehin nicht geschaltet, daher zählt für dieses Gate nur
-        # PH1+PH2. Ist PH3 bestätigt AUS, ist es weiterhin nicht "alle Phasen an".
+        # Heizstab-Zustand für die Wallbox-Priorität ermitteln:
+        # - "full":    alle 3 Phasen an -> Überschuss über Volllast in Wallbox
+        # - "idle":    keine Phase an -> kein Verteilungskonflikt, Wallbox frei
+        #              (go-e-Eco-Modus übernimmt Überschussladen selbst)
+        # - "partial": läuft, will aber noch mehr Phasen zuschalten -> Speicher
+        #              priorisiert, Wallbox wartet
+        # - "unknown": PH1/PH2 nicht lesbar -> fail-safe, Wallbox wartet
+        # PH3-Status "unbekannt" (z.B. Shelly nicht erreichbar) blockiert "full"
+        # NICHT: PH3 wird ohnehin nicht geschaltet, daher zählt dafür nur PH1+PH2.
+        # Ist PH3 bestätigt AUS, ist es weiterhin nicht "full". "idle" prüft nur
+        # PH1+PH2 (PH3 kann laut Einschalt-Schwellenwerten nicht an sein, wenn
+        # PH1+PH2 aus sind).
         ph1, ph2, ph3 = readings.ph1_on, readings.ph2_on, readings.ph3_on
-        all_phases_on_raw: Optional[bool]
+        heater_state_raw: str
         if ph1 is None or ph2 is None:
-            all_phases_on_raw = None
-        elif ph1 is False or ph2 is False:
-            all_phases_on_raw = False
+            heater_state_raw = "unknown"
+        elif ph1 is False and ph2 is False:
+            heater_state_raw = "idle"
+        elif ph1 is True and ph2 is True and ph3 is not False:
+            heater_state_raw = "full"
         else:
-            all_phases_on_raw = False if ph3 is False else True
-        all_phases_on = self._debounce_all_phases_on(all_phases_on_raw, now)
+            heater_state_raw = "partial"
+        heater_state = self._debounce_heater_state(heater_state_raw, now)
         log.info(
-            "Heizstab-Phasen: PH1=%s PH2=%s PH3=%s → all_phases_on=%s (debounced=%s)",
+            "Heizstab-Phasen: PH1=%s PH2=%s PH3=%s → heater_state=%s (debounced=%s)",
             "AN" if readings.ph1_on else "AUS" if readings.ph1_on is False else "?",
             "AN" if readings.ph2_on else "AUS" if readings.ph2_on is False else "?",
             "AN" if readings.ph3_on else "AUS" if readings.ph3_on is False else "?",
-            all_phases_on_raw,
-            all_phases_on,
+            heater_state_raw,
+            heater_state,
         )
         status, decision = self._decide_wallbox(
             readings.storage_temp_c,
-            all_phases_on,
+            heater_state,
             temp_status,
             wallbox_status,
             wallbox_read_error,
