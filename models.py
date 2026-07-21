@@ -44,6 +44,7 @@ class Readings:
     ph1_on: Optional[bool] = None
     ph2_on: Optional[bool] = None
     ph3_on: Optional[bool] = None
+    wallbox_power_w: Optional[float] = None
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -51,6 +52,25 @@ class Readings:
         if self.main_meter_power_w is None or self.heater_meter_power_w is None:
             return None
         return self.main_meter_power_w - self.heater_meter_power_w
+
+    @property
+    def true_surplus_w(self) -> Optional[float]:
+        """PV-Überschuss unabhängig von Heizstab UND Wallbox.
+
+        Beide sind steuerbare Lasten, die vom Controller selbst ein-/ausgeschaltet
+        werden. Würde man die Wallbox-Leistung nicht herausrechnen, sieht die
+        Heizstab-Logik (inkl. Sommermodus) den eigenen Wallbox-Ladestrom als
+        "kein PV-Überschuss mehr" an, schaltet den Heizstab ab, was die Wallbox
+        pausiert, wodurch der Überschuss wieder auftaucht und der Heizstab erneut
+        einschaltet – ein Endloskreis (Wallbox-Leistung unbekannt → wie 0 W).
+        """
+        if self.main_meter_power_w is None or self.heater_meter_power_w is None:
+            return None
+        return (
+            self.main_meter_power_w
+            - self.heater_meter_power_w
+            - (self.wallbox_power_w or 0.0)
+        )
 
     def is_complete(self) -> bool:
         return all(

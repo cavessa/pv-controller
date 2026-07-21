@@ -32,7 +32,12 @@ from clients.shelly_client import (
     ShellyStorageTempClient,
 )
 from config import Config
-from db import get_cascade_permission, log_phase_change
+from db import (
+    get_cascade_permission,
+    get_wallbox_not_all_phases_since,
+    log_phase_change,
+    set_wallbox_not_all_phases_since,
+)
 from models import (
     ControllerResult,
     PhaseAction,
@@ -51,6 +56,12 @@ log = logging.getLogger(__name__)
 # um sporadische Timeouts des Pocket-WiFi-Loggers zu tolerieren.
 _consecutive_errors: int = 0
 _FAIL_SAFE_THRESHOLD: int = 2
+
+# Schonfrist, bevor "nicht alle 3 Heizstab-Phasen an" tatsächlich die Wallbox
+# pausiert. Verhindert, dass ein einzelner kurzer PV-Einbruch (z. B. eine
+# vorbeiziehende Wolke, 1 Cron-Messwert) eine laufende Ladung sofort stoppt.
+# Freigeben (wieder alle Phasen an) passiert weiterhin ohne Verzögerung.
+_WALLBOX_PAUSE_DEBOUNCE_S: float = 90.0
 
 
 class ControllerMode(str, Enum):
@@ -191,7 +202,7 @@ class Controller:
         cur = phase.current_state
         temp = readings.storage_temp_c
         pv = readings.pv_power_w
-        surplus = readings.surplus_without_heater_w
+        surplus = readings.true_surplus_w
         h = self.cfg.heater
 
         def reason(tail: str) -> str:
@@ -309,9 +320,13 @@ class Controller:
         if temp_status is TempStatus.AT_OR_ABOVE_MAX:
             return False, False, ""
 
-        # Deutlicher PV-Überschuss (Einspeisung > 200 W): PV übernimmt, kein Netzbezug nötig
-        main_meter = readings.main_meter_power_w
-        significant_pv = main_meter is not None and main_meter < -200
+        # Deutlicher PV-Überschuss: Heizstab UND Wallbox laufen auf PV-Energie, kein
+        # Netzbezug nötig. true_surplus_w zeigt den wahren Überschuss unabhängig davon
+        # ob Heizstab oder Wallbox gerade laufen (sonst hält sich die Wallbox-Ladeleistung
+        # selbst für "kein Überschuss" und schaltet den Heizstab ab -> Wallbox pausiert
+        # -> Überschuss taucht wieder auf -> Heizstab an -> Wallbox wieder frei -> Flattern).
+        surplus = readings.true_surplus_w
+        significant_pv = surplus is not None and surplus < -200
 
         any_phase_on = any(
             x is True for x in (readings.ph1_on, readings.ph2_on, readings.ph3_on)
@@ -420,37 +435,28 @@ class Controller:
             logic_mode=int(lmo) if isinstance(lmo, (int, float)) else None,
         )
 
-    def _decide_wallbox(
-        self,
-        storage_temp_c: Optional[float],
-        all_phases_on: Optional[bool],
-    ) -> tuple[Optional[WallboxStatus], WallboxDecision]:
+    def _read_wallbox_status(self) -> tuple[Optional[WallboxStatus], Optional[str]]:
+        """Liest den go-e Status einmal pro Lauf.
+
+        Wird sowohl für die Wallbox-Entscheidung als auch für den PV-Überschuss
+        der Heizstab-/Sommermodus-Logik gebraucht (readings.wallbox_power_w),
+        damit beide auf demselben Snapshot arbeiten statt zwei leicht
+        unterschiedliche go-e-Reads im selben Durchlauf zu machen.
+
+        Rückgabe: (status, error_reason). (None, None) wenn Wallbox deaktiviert
+        oder Client nicht initialisiert; (None, reason) bei Lesefehler.
+        """
         cfg = self.cfg.wallbox
-
         if not cfg.enabled:
-            log.info("Wallbox disabled in config. Skipping wallbox control.")
-            return None, WallboxDecision(
-                action=WallboxAction.SKIPPED,
-                target_force_state=None,
-                reason="Wallbox disabled in config.",
-            )
-
+            return None, None
         if self.goe is None:
-            return None, WallboxDecision(
-                action=WallboxAction.ERROR,
-                target_force_state=None,
-                reason="Wallbox client not initialised. fail_safe=no_change.",
-            )
+            return None, "Wallbox client not initialised."
 
         try:
             raw = self.goe.get_status()
         except GoeError as e:
             log.error("go-e read failed: %s", e)
-            return None, WallboxDecision(
-                action=WallboxAction.ERROR,
-                target_force_state=None,
-                reason="Could not read go-e status. fail_safe=no_change.",
-            )
+            return None, "Could not read go-e status."
 
         status = self._parse_wallbox_status(raw)
         log.info(
@@ -462,6 +468,33 @@ class Controller:
             status.car_state,
             status.amp,
         )
+        return status, None
+
+    def _decide_wallbox(
+        self,
+        storage_temp_c: Optional[float],
+        all_phases_on: Optional[bool],
+        temp_status: Optional["TempStatus"],
+        status: Optional[WallboxStatus],
+        read_error: Optional[str],
+    ) -> tuple[Optional[WallboxStatus], WallboxDecision]:
+        cfg = self.cfg.wallbox
+
+        if not cfg.enabled:
+            log.info("Wallbox disabled in config. Skipping wallbox control.")
+            return None, WallboxDecision(
+                action=WallboxAction.SKIPPED,
+                target_force_state=None,
+                reason="Wallbox disabled in config.",
+            )
+
+        if status is None:
+            reason = read_error or "Wallbox client not initialised."
+            return None, WallboxDecision(
+                action=WallboxAction.ERROR,
+                target_force_state=None,
+                reason=f"{reason} fail_safe=no_change.",
+            )
 
         if cfg.only_control_when_pv_surplus_active and not status.pv_surplus_active:
             decision = WallboxDecision(
@@ -504,6 +537,28 @@ class Controller:
                 reason=(
                     f"Speicher voll ({storage_temp_c:.1f} °C >= "
                     f"{release_above:.1f} °C) – Wallbox bereits freigegeben."
+                ),
+            )
+
+        # Hysterese-Band: Heizstab aktiviert keine neuen Phasen → Wallbox darf Überschuss laden
+        if temp_status is TempStatus.HYSTERESIS_BAND:
+            if status.force_state != 0:
+                return status, WallboxDecision(
+                    action=WallboxAction.RELEASE,
+                    target_force_state=0,
+                    reason=(
+                        f"Heizstab in Hysterese ({storage_temp_c:.1f} °C, "
+                        f"Band {self.cfg.heater.heat_resume_temp:.0f}–"
+                        f"{self.cfg.heater.storage_max_temp:.0f} °C) – "
+                        f"keine neuen Phasen aktiviert, Wallbox freigegeben."
+                    ),
+                )
+            return status, WallboxDecision(
+                action=WallboxAction.UNCHANGED,
+                target_force_state=0,
+                reason=(
+                    f"Heizstab in Hysterese ({storage_temp_c:.1f} °C) – "
+                    f"Wallbox bereits freigegeben."
                 ),
             )
 
@@ -699,6 +754,18 @@ class Controller:
 
         readings = self._read_all()
 
+        # Wallbox-Status einmal pro Lauf lesen (nicht simuliert): wird für die
+        # Wallbox-Entscheidung UND für den PV-Überschuss der Heizstab-Logik
+        # gebraucht (readings.wallbox_power_w), damit Heizstab und Wallbox sich
+        # nicht gegenseitig über den Hauptzähler ein-/ausschalten.
+        wallbox_status: Optional[WallboxStatus] = None
+        wallbox_read_error: Optional[str] = None
+        if not self.cfg.simulation.enabled:
+            wallbox_status, wallbox_read_error = self._read_wallbox_status()
+            readings.wallbox_power_w = (
+                wallbox_status.power_w if wallbox_status is not None else None
+            )
+
         temp_status: Optional[TempStatus] = None
         if readings.storage_temp_c is not None:
             temp_status = self._classify_temp(readings.storage_temp_c)
@@ -786,8 +853,7 @@ class Controller:
                 in_summer_heating = sm_heating
                 in_summer_stop = sm_stop
 
-                if in_summer_stop and readings.main_meter_power_w is not None \
-                        and readings.main_meter_power_w >= -200:
+                if in_summer_stop:
                     # Zieltemperatur erreicht, kein PV-Überschuss → Netz-Heizung beenden
                     action = PhaseAction.TURN_OFF if p.current_state else PhaseAction.UNCHANGED
                     d = PhaseDecision(p.name, p.current_state, action, sm_reason)
@@ -826,7 +892,9 @@ class Controller:
             err = "" if not d.execution_error else f" [ERR: {d.execution_error}]"
             log.info("Reason: %s%s", d.reason, err)
 
-        wallbox_status, wallbox_decision = self._handle_wallbox(readings)
+        wallbox_status, wallbox_decision = self._handle_wallbox(
+            readings, temp_status, wallbox_status, wallbox_read_error, now
+        )
 
         # Sommermodus-Status für das Result ermitteln (aus den ausgeführten Decisions)
         _sm_heating_result = False
@@ -855,8 +923,35 @@ class Controller:
         log.info("=== PV-Controller Ende ===")
         return result
 
+    def _debounce_all_phases_on(
+        self, raw: Optional[bool], now: datetime
+    ) -> Optional[bool]:
+        """Verzögert "nicht alle Phasen an" um _WALLBOX_PAUSE_DEBOUNCE_S, bevor es
+        an die Wallbox-Entscheidung weitergereicht wird (persistiert in der DB,
+        da jeder Cron-Lauf ein frischer Prozess ist). "alle Phasen an" (True)
+        wird dagegen immer sofort übernommen."""
+        not_all_since = get_wallbox_not_all_phases_since()
+        if raw is True:
+            if not_all_since is not None:
+                set_wallbox_not_all_phases_since(None)
+            return True
+
+        if not_all_since is None:
+            set_wallbox_not_all_phases_since(now)
+            return True  # Schonfrist beginnt: noch wie "alle Phasen an" behandeln
+
+        if (now - not_all_since).total_seconds() < _WALLBOX_PAUSE_DEBOUNCE_S:
+            return True  # noch innerhalb der Schonfrist
+
+        return raw  # Schonfrist vorbei: echten Wert (False/None) durchreichen
+
     def _handle_wallbox(
-        self, readings: Readings
+        self,
+        readings: Readings,
+        temp_status: Optional[TempStatus],
+        wallbox_status: Optional[WallboxStatus],
+        wallbox_read_error: Optional[str],
+        now: datetime,
     ) -> tuple[Optional[WallboxStatus], WallboxDecision]:
         log.info(
             "Wallbox: enabled=%s url=%s",
@@ -864,20 +959,33 @@ class Controller:
             self.cfg.wallbox.url or "n/a",
         )
         # Alle 3 Phasen AN → Speicher läuft auf Volllast, Überschuss darüber in Wallbox
-        ph = (readings.ph1_on, readings.ph2_on, readings.ph3_on)
-        all_phases_on: Optional[bool] = (
-            True if all(p is True for p in ph)
-            else None if any(p is None for p in ph)
-            else False
-        )
+        # PH3-Status "unbekannt" (z.B. Shelly nicht erreichbar) blockiert die Wallbox
+        # NICHT: PH3 wird ohnehin nicht geschaltet, daher zählt für dieses Gate nur
+        # PH1+PH2. Ist PH3 bestätigt AUS, ist es weiterhin nicht "alle Phasen an".
+        ph1, ph2, ph3 = readings.ph1_on, readings.ph2_on, readings.ph3_on
+        all_phases_on_raw: Optional[bool]
+        if ph1 is None or ph2 is None:
+            all_phases_on_raw = None
+        elif ph1 is False or ph2 is False:
+            all_phases_on_raw = False
+        else:
+            all_phases_on_raw = False if ph3 is False else True
+        all_phases_on = self._debounce_all_phases_on(all_phases_on_raw, now)
         log.info(
-            "Heizstab-Phasen: PH1=%s PH2=%s PH3=%s → all_phases_on=%s",
+            "Heizstab-Phasen: PH1=%s PH2=%s PH3=%s → all_phases_on=%s (debounced=%s)",
             "AN" if readings.ph1_on else "AUS" if readings.ph1_on is False else "?",
             "AN" if readings.ph2_on else "AUS" if readings.ph2_on is False else "?",
             "AN" if readings.ph3_on else "AUS" if readings.ph3_on is False else "?",
+            all_phases_on_raw,
             all_phases_on,
         )
-        status, decision = self._decide_wallbox(readings.storage_temp_c, all_phases_on)
+        status, decision = self._decide_wallbox(
+            readings.storage_temp_c,
+            all_phases_on,
+            temp_status,
+            wallbox_status,
+            wallbox_read_error,
+        )
 
         # Kaskaden-Gate: Kaskade kann nur blockieren, nicht das Temp-Gate überstimmen.
         # Das Temp-Gate (pause_below_storage_temp) ist autoritativ für "Speicher priorisiert".
@@ -921,9 +1029,14 @@ class Controller:
         log.info("PV-Leistung:        %s", fmt(r.pv_power_w, " W"))
         log.info("Hauptzähler:        %s", fmt(r.main_meter_power_w, " W"))
         log.info("Heizstab 3EM:       %s", fmt(r.heater_meter_power_w, " W"))
+        log.info("Wallbox-Leistung:   %s", fmt(r.wallbox_power_w, " W"))
         log.info(
             "Überschuss o. Heizstab: %s",
             fmt(r.surplus_without_heater_w, " W"),
+        )
+        log.info(
+            "Überschuss o. Heizstab+Wallbox: %s",
+            fmt(r.true_surplus_w, " W"),
         )
         log.info("Speicher-Temp:      %s", fmt(r.storage_temp_c, " °C"))
         log.info(

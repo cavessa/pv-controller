@@ -1,5 +1,53 @@
 # Changelog
 
+## 2026-07-21 – Wallbox-Pause um 90s verzögert (Debounce gegen kurze PV-Einbrüche)
+
+**Problem:** Auch nach dem Fix von heute Vormittag (Wallbox-Leistung aus Überschuss herausrechnen, siehe unten) stoppte die Wallbox weiterhin häufig, z. B. 4 Minuten nachdem der User in der go-e-App manuell "Eco fortsetzen" geklickt hatte. Ursache diesmal: Die Wallbox-Freigabe hängt an "alle 3 Heizstab-Phasen an". Ein einzelner kurzer PV-Einbruch (z. B. 1 Messwert durch eine vorbeiziehende Wolke) reicht, damit PH2 ausgeht – und der Controller pausiert die Wallbox dann sofort, auch wenn die PV-Leistung eine Minute später schon wieder da ist.
+
+**Lösung:** "Nicht alle Phasen an" wird jetzt erst nach 90 Sekunden ununterbrochenem Bestehen an die Wallbox-Entscheidung weitergereicht. "Alle Phasen an" (Freigabe) bleibt weiterhin sofort wirksam – nur das Pausieren einer laufenden Ladung wird verzögert. Da jeder Cron-Lauf ein frischer Prozess ist, wird der Zeitpunkt, seit wann "nicht alle Phasen an" gilt, in der DB gespeichert (Tabelle `WallboxDebounce`, eine Zeile).
+
+- `db.py`: neue Tabelle `WallboxDebounce` + `get_wallbox_not_all_phases_since()` / `set_wallbox_not_all_phases_since()`.
+- `controller.py`: neue Konstante `_WALLBOX_PAUSE_DEBOUNCE_S = 90.0`; neue Methode `_debounce_all_phases_on()`; `_handle_wallbox()` wendet sie auf `all_phases_on` an, bevor es an `_decide_wallbox()` geht.
+
+## 2026-07-21 – Flattern Heizstab/Wallbox behoben: Wallbox-Leistung aus Überschuss herausgerechnet
+
+**Problem:** Heizstab-Phasen und Wallbox schaukelten sich alle 2–3 Minuten gegenseitig hoch: Sobald die Wallbox freigegeben war (weil alle Heizstab-Phasen an waren) und Ladestrom zog, stieg der Hauptzähler (der Ladestrom zählt als Netzbezug). Der Sommermodus sah dadurch "keinen PV-Überschuss mehr" (`significant_pv` prüfte `surplus_without_heater_w`, das die Wallbox-Leistung nicht kennt) und schaltete den Heizstab sofort komplett ab. Dadurch war nicht mehr "alle 3 Phasen an", die Wallbox wurde pausiert – wodurch der echte Überschuss (5000–7000 W PV) wieder sichtbar wurde, der Heizstab erneut ansprang, alle Phasen wieder an waren und die Wallbox erneut freigegeben wurde. Nebeneffekt: Das go-e-`frc`-Kommando "pausiert" kam oft erst eine Minute nach dem Wiederanspringen der Wallbox an, sodass im Log "Speicher priorisiert, Wallbox pausiert" stand, während die Wallbox tatsächlich noch lud.
+
+**Lösung:** Wallbox-Leistung wird jetzt einmal pro Durchlauf gelesen (`readings.wallbox_power_w`) und – wie schon beim Heizstab selbst – aus dem für Heizstab-Entscheidungen und Sommermodus verwendeten Überschuss herausgerechnet (`Readings.true_surplus_w = main_meter - heater_meter - wallbox`). Dadurch sieht die Heizstab-Logik den echten PV-Überschuss unabhängig davon, ob die Wallbox gerade lädt, und schaltet nicht mehr wegen des eigenen Wallbox-Ladestroms ab.
+
+- `models.py` `Readings`: neues Feld `wallbox_power_w`; neue Property `true_surplus_w` (Überschuss ohne Heizstab UND ohne Wallbox).
+- `controller.py` `_decide_phase()` und `_check_summer_mode()`: nutzen jetzt `true_surplus_w` statt `surplus_without_heater_w`.
+- `controller.py`: neue Methode `_read_wallbox_status()` liest den go-e-Status einmal pro Lauf (statt separat in `_decide_wallbox()`); wird für `readings.wallbox_power_w` UND für die Wallbox-Entscheidung wiederverwendet – vermeidet zwei leicht unterschiedliche go-e-Reads pro Durchlauf.
+- `controller.py` `_decide_wallbox()`/`_handle_wallbox()`: nehmen den vorab gelesenen Wallbox-Status als Parameter statt selbst zu lesen.
+- `web.py`: `true_surplus` und `wallbox_power` im Status-JSON ergänzt (Sichtbarkeit für Debugging).
+
+## 2026-07-16 – Wallbox blockiert nicht mehr bei unerreichbarem PH3-Shelly
+
+**Problem:** Der Shelly für Heizstab-Phase 3 (192.168.2.36) war im Netzwerk nicht erreichbar. Dadurch war `ph3_on = None` (unbekannt), `all_phases_on` wurde `None`, und die Wallbox blieb dauerhaft in "Speicher priorisiert, Wallbox pausiert" – obwohl 5000–7000 W PV-Überschuss ungenutzt ins Netz gingen und der Speicher (62,4 °C) noch unter dem Hysterese-Band lag.
+
+**Lösung:** Für das Wallbox-Gate "alle 3 Phasen an" zählt jetzt nur noch der bestätigte Status von PH1+PH2. Ist PH3 unbekannt (Sensor/Shelly nicht erreichbar), wird das ignoriert – PH3 wird ohnehin nicht geschaltet, solange der Shelly nicht erreichbar ist. Ist PH3 dagegen bestätigt AUS, gilt weiterhin "nicht alle Phasen an".
+
+- `controller.py` `_handle_wallbox()`: `all_phases_on`-Berechnung geändert – `None` nur noch wenn PH1 oder PH2 unbekannt sind; PH3=`None` führt zu `True` (sofern PH1+PH2 an), PH3=`False` weiterhin zu `False`.
+
+## 2026-07-11 – Sommermodus: Flattern bei laufendem Heizstab behoben
+
+**Problem:** Wenn der Heizstab alle 3 Phasen (~4900 W) lief, verbrauchte er fast den gesamten PV-Strom. Der `Hauptzähler` zeigte dann nur noch -91 W bis -192 W – über dem Schwellwert von -200 W. Damit erkannte der Sommermodus keinen „signifikanten PV-Überschuss" mehr und schaltete den Heizstab ab, obwohl er gerade PV-Energie verbrauchte. Danach stand der volle Überschuss wieder am Netz, der Regler schaltete den Heizstab erneut ein – ein Endloskreis alle 2 Minuten. Nebenwirkung: Wallbox wurde 5×/13 min zwischen pause/release hin- und hergeschaltet.
+
+**Lösung:** `_check_summer_mode()` verwendet jetzt `surplus_without_heater_w` statt `main_meter_power_w` für die `significant_pv`-Erkennung. `surplus_without_heater_w` zeigt den wahren PV-Überschuss unabhängig vom aktuellen Heizstab-Zustand (-4983 W statt -91 W). Die redundante `main_meter_power_w >= -200`-Prüfung im Phasen-Loop wurde ebenfalls entfernt.
+
+- `controller.py` `_check_summer_mode()`: `significant_pv` nutzt `readings.surplus_without_heater_w < -200` statt `main_meter_power_w < -200`.
+- `controller.py` Phase-Loop: redundante `main_meter_power_w`-Doppelprüfung bei `in_summer_stop` entfernt.
+
+## 2026-05-29 – Wallbox-Freigabe im Hysterese-Band
+
+**Problem:** Wenn der Heizstab im Hysterese-Band war (z. B. 63–64 °C), wurden keine neuen Phasen aktiviert – aber die Wallbox blieb trotzdem pausiert. Der PV-Überschuss ging ungenutzt ins Netz.
+
+**Lösung:** `_decide_wallbox` kennt jetzt den `temp_status`. Bei `HYSTERESIS_BAND` wird die Wallbox freigegeben, da der Heizstab in diesem Zustand keine neuen Phasen aufschaltet. Die Wallbox läuft im Eco-Modus und nimmt sich ohnehin nur den verfügbaren Überschuss.
+
+- `controller.py` `_decide_wallbox()`: neuer Parameter `temp_status`; Hysterese-Pfad gibt Wallbox frei (frc=0) bevor der Phasen-Check greift.
+- `controller.py` `_handle_wallbox()`: übergibt `temp_status` an `_decide_wallbox`.
+- `controller.py` `run()`: übergibt `temp_status` an `_handle_wallbox`.
+
 ## 2026-05-27 – heater_meter-Ausfall: Schätzung aus Phasenzuständen statt Fail-safe
 
 **Problem:** Wenn der Shelly 3EM für die Heizstab-Messung (heater_meter, 192.168.2.21) nicht erreichbar war, ging das System in Fail-safe (UNCHANGED für alle Phasen) – obwohl zum Schalten kein Messwert benötigt wird.

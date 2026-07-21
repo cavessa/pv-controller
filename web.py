@@ -266,6 +266,8 @@ def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
             "main_meter_power": r.main_meter_power_w,
             "heater_meter_power": r.heater_meter_power_w,
             "surplus_without_heater": r.surplus_without_heater_w,
+            "true_surplus": r.true_surplus_w,
+            "wallbox_power": r.wallbox_power_w,
             "phases": {
                 "ph1": r.ph1_on,
                 "ph2": r.ph2_on,
