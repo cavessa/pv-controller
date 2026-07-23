@@ -5,8 +5,14 @@
   },
   "shelly": {
     "ph1_url": "http://192.168.x.x",
+    "ph1_type": "shelly_gen1",
+    "ph1_channel": 0,
     "ph2_url": "http://192.168.x.x",
+    "ph2_type": "shelly_gen1",
+    "ph2_channel": 0,
     "ph3_url": "http://192.168.x.x",
+    "ph3_type": "shelly_gen1",
+    "ph3_channel": 0,
     "storage_url": "http://192.168.x.x",
     "main_meter_url": "http://192.168.x.x",
     "heater_meter_url": "http://192.168.x.x"

@@ -2462,8 +2462,14 @@ async function loadSettings() {
     setFormValue(f, "solax.url", lastConfig.solax?.url ?? "");
     setFormValue(f, "solax.pwd", lastConfig.solax?.pwd ?? "");
     setFormValue(f, "shelly.ph1_url", lastConfig.shelly?.ph1_url ?? "");
+    setFormValue(f, "shelly.ph1_type", lastConfig.shelly?.ph1_type ?? "shelly_gen1");
+    setFormValue(f, "shelly.ph1_channel", lastConfig.shelly?.ph1_channel ?? 0);
     setFormValue(f, "shelly.ph2_url", lastConfig.shelly?.ph2_url ?? "");
+    setFormValue(f, "shelly.ph2_type", lastConfig.shelly?.ph2_type ?? "shelly_gen1");
+    setFormValue(f, "shelly.ph2_channel", lastConfig.shelly?.ph2_channel ?? 0);
     setFormValue(f, "shelly.ph3_url", lastConfig.shelly?.ph3_url ?? "");
+    setFormValue(f, "shelly.ph3_type", lastConfig.shelly?.ph3_type ?? "shelly_gen1");
+    setFormValue(f, "shelly.ph3_channel", lastConfig.shelly?.ph3_channel ?? 0);
     setFormValue(f, "shelly.storage_url", lastConfig.shelly?.storage_url ?? "");
     setFormValue(f, "shelly.main_meter_url", lastConfig.shelly?.main_meter_url ?? "");
     setFormValue(f, "shelly.heater_meter_url", lastConfig.shelly?.heater_meter_url ?? "");
@@ -2529,8 +2535,14 @@ async function saveSettings(e) {
     },
     shelly: {
       ph1_url: strField("shelly.ph1_url"),
+      ph1_type: f.elements.namedItem("shelly.ph1_type")?.value,
+      ph1_channel: numField("shelly.ph1_channel"),
       ph2_url: strField("shelly.ph2_url"),
+      ph2_type: f.elements.namedItem("shelly.ph2_type")?.value,
+      ph2_channel: numField("shelly.ph2_channel"),
       ph3_url: strField("shelly.ph3_url"),
+      ph3_type: f.elements.namedItem("shelly.ph3_type")?.value,
+      ph3_channel: numField("shelly.ph3_channel"),
       storage_url: strField("shelly.storage_url"),
       main_meter_url: strField("shelly.main_meter_url"),
       heater_meter_url: strField("shelly.heater_meter_url"),

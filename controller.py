@@ -34,9 +34,7 @@ from clients.shelly_client import (
 from config import Config
 from db import (
     get_cascade_permission,
-    get_wallbox_not_all_phases_since,
     log_phase_change,
-    set_wallbox_not_all_phases_since,
 )
 from models import (
     ControllerResult,
@@ -56,12 +54,6 @@ log = logging.getLogger(__name__)
 # um sporadische Timeouts des Pocket-WiFi-Loggers zu tolerieren.
 _consecutive_errors: int = 0
 _FAIL_SAFE_THRESHOLD: int = 2
-
-# Schonfrist, bevor "nicht alle 3 Heizstab-Phasen an" tatsächlich die Wallbox
-# pausiert. Verhindert, dass ein einzelner kurzer PV-Einbruch (z. B. eine
-# vorbeiziehende Wolke, 1 Cron-Messwert) eine laufende Ladung sofort stoppt.
-# Freigeben (wieder alle Phasen an) passiert weiterhin ohne Verzögerung.
-_WALLBOX_PAUSE_DEBOUNCE_S: float = 90.0
 
 
 class ControllerMode(str, Enum):
@@ -87,9 +79,27 @@ class Controller:
             config.solax.url, config.solax.pwd, config.runtime.request_timeout_seconds
         )
         timeout = config.runtime.request_timeout_seconds
-        self.ph1 = ShellyPlugClient(config.shelly.ph1_url, timeout, name="PH1")
-        self.ph2 = ShellyPlugClient(config.shelly.ph2_url, timeout, name="PH2")
-        self.ph3 = ShellyPlugClient(config.shelly.ph3_url, timeout, name="PH3")
+        self.ph1 = ShellyPlugClient(
+            config.shelly.ph1_url,
+            timeout,
+            name="PH1",
+            type_=config.shelly.ph1_type,
+            channel=config.shelly.ph1_channel,
+        )
+        self.ph2 = ShellyPlugClient(
+            config.shelly.ph2_url,
+            timeout,
+            name="PH2",
+            type_=config.shelly.ph2_type,
+            channel=config.shelly.ph2_channel,
+        )
+        self.ph3 = ShellyPlugClient(
+            config.shelly.ph3_url,
+            timeout,
+            name="PH3",
+            type_=config.shelly.ph3_type,
+            channel=config.shelly.ph3_channel,
+        )
         self.storage = ShellyStorageTempClient(
             config.shelly.storage_url, timeout, name="storage"
         )
@@ -472,20 +482,20 @@ class Controller:
 
     def _decide_wallbox(
         self,
-        storage_temp_c: Optional[float],
-        heater_state: str,
-        temp_status: Optional["TempStatus"],
         status: Optional[WallboxStatus],
         read_error: Optional[str],
     ) -> tuple[Optional[WallboxStatus], WallboxDecision]:
-        """heater_state (nach Debounce) ∈:
-        - "full":    alle 3 Heizstab-Phasen an -> Überschuss über Volllast in Wallbox
-        - "idle":    Heizstab komplett aus -> kein Verteilungskonflikt, Wallbox frei
-        - "grace":   Heizstab-Wachstum unterbrochen, aber noch innerhalb der
-                     90s-Schonfrist -> wie zuletzt (frei) behandeln
-        - "partial": Heizstab läuft, will aber noch mehr Phasen zuschalten ->
-                     Speicher priorisiert, Wallbox pausiert
-        - "unknown": PH1/PH2-Status nicht lesbar -> fail-safe, Wallbox pausiert
+        """Der Controller pausiert die Wallbox nicht mehr aktiv. Sobald sie
+        laden darf (PV-Überschussmodus aktiv), bleibt sie dauerhaft
+        freigegeben (frc=0) – der go-e im Eco-Modus (lmo=4) sieht über
+        seinen eigenen Hauszähler den echten Hausverbrauch inkl. Heizstab
+        und drosselt/pausiert seinen Ladestrom von selbst, sobald der
+        Heizstab eine Phase zuschaltet und dadurch weniger Überschuss
+        übrig bleibt. Priorität Speicher vor Wallbox ergibt sich also
+        automatisch daraus, dass der Heizstab zuerst zuschaltet – ohne
+        dass der Controller dafür extra frc=1 setzen muss (das
+        `frc`-Umschalten war genau der Grund für die Ladeprobleme am
+        nächsten Tag).
         """
         cfg = self.cfg.wallbox
 
@@ -520,143 +530,19 @@ class Controller:
                 decision.reason += " Auto-restore: car unplugged, switching to Eco mode and resetting amp to 7A."
             return status, decision
 
-        if storage_temp_c is None:
+        if status.force_state != 0:
             return status, WallboxDecision(
-                action=WallboxAction.ERROR,
-                target_force_state=None,
-                reason="Storage temperature unavailable. fail_safe=no_change.",
-            )
-
-        release_above = cfg.release_above_storage_temp
-
-        # Speicher voll: Wallbox freigeben
-        if storage_temp_c >= release_above:
-            if status.force_state != 0:
-                return status, WallboxDecision(
-                    action=WallboxAction.RELEASE,
-                    target_force_state=0,
-                    reason=(
-                        f"Speicher voll ({storage_temp_c:.1f} °C >= "
-                        f"{release_above:.1f} °C) – Wallbox freigegeben."
-                    ),
-                )
-            return status, WallboxDecision(
-                action=WallboxAction.UNCHANGED,
+                action=WallboxAction.RELEASE,
                 target_force_state=0,
                 reason=(
-                    f"Speicher voll ({storage_temp_c:.1f} °C >= "
-                    f"{release_above:.1f} °C) – Wallbox bereits freigegeben."
-                ),
-            )
-
-        # Hysterese-Band: Heizstab aktiviert keine neuen Phasen → Wallbox darf Überschuss laden
-        if temp_status is TempStatus.HYSTERESIS_BAND:
-            if status.force_state != 0:
-                return status, WallboxDecision(
-                    action=WallboxAction.RELEASE,
-                    target_force_state=0,
-                    reason=(
-                        f"Heizstab in Hysterese ({storage_temp_c:.1f} °C, "
-                        f"Band {self.cfg.heater.heat_resume_temp:.0f}–"
-                        f"{self.cfg.heater.storage_max_temp:.0f} °C) – "
-                        f"keine neuen Phasen aktiviert, Wallbox freigegeben."
-                    ),
-                )
-            return status, WallboxDecision(
-                action=WallboxAction.UNCHANGED,
-                target_force_state=0,
-                reason=(
-                    f"Heizstab in Hysterese ({storage_temp_c:.1f} °C) – "
-                    f"Wallbox bereits freigegeben."
-                ),
-            )
-
-        # Alle 3 Phasen AN: Überschuss über Heizstab-Volllast geht in die Wallbox
-        if heater_state == "full":
-            if status.force_state != 0:
-                return status, WallboxDecision(
-                    action=WallboxAction.RELEASE,
-                    target_force_state=0,
-                    reason=(
-                        f"Alle 3 Heizstab-Phasen aktiv – Überschuss über "
-                        f"Heizstab-Volllast wird in Wallbox geleitet "
-                        f"(Speicher {storage_temp_c:.1f} °C)."
-                    ),
-                )
-            return status, WallboxDecision(
-                action=WallboxAction.UNCHANGED,
-                target_force_state=0,
-                reason=(
-                    f"Alle 3 Heizstab-Phasen aktiv – Wallbox bereits freigegeben "
-                    f"(Speicher {storage_temp_c:.1f} °C)."
-                ),
-            )
-
-        # Heizstab komplett aus: kein Verteilungskonflikt, go-e-Eco-Modus (lmo=4)
-        # übernimmt das Überschussladen selbst.
-        if heater_state == "idle":
-            if status.force_state != 0:
-                return status, WallboxDecision(
-                    action=WallboxAction.RELEASE,
-                    target_force_state=0,
-                    reason=(
-                        f"Heizstab inaktiv (0 Phasen an) – kein Verteilungskonflikt, "
-                        f"Wallbox-Eco-Modus übernimmt Überschussladen "
-                        f"(Speicher {storage_temp_c:.1f} °C)."
-                    ),
-                )
-            return status, WallboxDecision(
-                action=WallboxAction.UNCHANGED,
-                target_force_state=0,
-                reason=(
-                    f"Heizstab inaktiv – Wallbox bereits im Eco-Modus freigegeben "
-                    f"(Speicher {storage_temp_c:.1f} °C)."
-                ),
-            )
-
-        # Innerhalb der 90s-Schonfrist nach einem kurzen Einbruch: wie zuletzt freigeben
-        if heater_state == "grace":
-            if status.force_state != 0:
-                return status, WallboxDecision(
-                    action=WallboxAction.RELEASE,
-                    target_force_state=0,
-                    reason=(
-                        f"Heizstab-Wachstum kurz unterbrochen – innerhalb "
-                        f"{_WALLBOX_PAUSE_DEBOUNCE_S:.0f}s-Schonfrist, Wallbox bleibt "
-                        f"freigegeben (Speicher {storage_temp_c:.1f} °C)."
-                    ),
-                )
-            return status, WallboxDecision(
-                action=WallboxAction.UNCHANGED,
-                target_force_state=0,
-                reason=(
-                    f"Heizstab-Wachstum kurz unterbrochen – innerhalb Schonfrist, "
-                    f"Wallbox bleibt freigegeben (Speicher {storage_temp_c:.1f} °C)."
-                ),
-            )
-
-        # "partial" (Heizstab läuft, will noch mehr Phasen) oder "unknown"
-        # (PH1/PH2 nicht lesbar): Speicher hat Priorität
-        phases_info = (
-            "Phasen-Status unbekannt" if heater_state == "unknown"
-            else "Heizstab läuft, will noch weitere Phasen zuschalten"
-        )
-        if status.force_state != 1:
-            return status, WallboxDecision(
-                action=WallboxAction.PAUSE,
-                target_force_state=1,
-                reason=(
-                    f"{phases_info} – Speicher priorisiert, Wallbox pausiert "
-                    f"(Speicher {storage_temp_c:.1f} °C)."
+                    "PV-Überschussmodus aktiv – Wallbox freigegeben, "
+                    "go-e regelt Ladestrom über eigenen Hauszähler selbst."
                 ),
             )
         return status, WallboxDecision(
             action=WallboxAction.UNCHANGED,
-            target_force_state=1,
-            reason=(
-                f"{phases_info} – Speicher priorisiert, Wallbox bereits pausiert "
-                f"(Speicher {storage_temp_c:.1f} °C)."
-            ),
+            target_force_state=0,
+            reason="PV-Überschussmodus aktiv – Wallbox bereits freigegeben.",
         )
 
     def _execute_wallbox(self, decision: WallboxDecision) -> None:
@@ -816,9 +702,19 @@ class Controller:
         wallbox_read_error: Optional[str] = None
         if not self.cfg.simulation.enabled:
             wallbox_status, wallbox_read_error = self._read_wallbox_status()
-            readings.wallbox_power_w = (
-                wallbox_status.power_w if wallbox_status is not None else None
-            )
+            if wallbox_status is not None:
+                # Nur im Eco-Modus (lmo=4) regelt die Wallbox ihren Ladestrom
+                # selbst nach PV-Überschuss – ihre Leistung darf dann aus dem
+                # Hauptzähler herausgerechnet werden (true_surplus_w), damit
+                # die Heizstab-Logik den eigenen Wallbox-Ladestrom nicht als
+                # zusätzlichen Überschuss missversteht. Im Standard-/manuellen
+                # Modus lädt sie mit fest eingestelltem Strom unabhängig von
+                # der PV – dieser Verbrauch ist bereits regulär im Hauptzähler
+                # enthalten und darf NICHT herausgerechnet werden, sonst denkt
+                # die Heizstab-Logik fälschlich, es gäbe mehr Überschuss.
+                readings.wallbox_power_w = (
+                    wallbox_status.power_w if wallbox_status.pv_surplus_active else 0.0
+                )
 
         temp_status: Optional[TempStatus] = None
         if readings.storage_temp_c is not None:
@@ -947,7 +843,7 @@ class Controller:
             log.info("Reason: %s%s", d.reason, err)
 
         wallbox_status, wallbox_decision = self._handle_wallbox(
-            readings, temp_status, wallbox_status, wallbox_read_error, now
+            wallbox_status, wallbox_read_error
         )
 
         # Sommermodus-Status für das Result ermitteln (aus den ausgeführten Decisions)
@@ -977,96 +873,20 @@ class Controller:
         log.info("=== PV-Controller Ende ===")
         return result
 
-    def _debounce_heater_state(self, raw_state: str, now: datetime) -> str:
-        """raw_state ∈ {full, idle, partial, unknown}. "full" und "idle" geben die
-        Wallbox sofort frei (kein Verteilungskonflikt bzw. Heizstab schon
-        gesättigt). "partial"/"unknown" würden pausieren – das wird um
-        _WALLBOX_PAUSE_DEBOUNCE_S verzögert (in der DB persistiert, da jeder
-        Cron-Lauf ein frischer Prozess ist), damit ein kurzer PV-Einbruch eine
-        laufende Ladung nicht sofort abbricht."""
-        not_all_since = get_wallbox_not_all_phases_since()
-        if raw_state in ("full", "idle"):
-            if not_all_since is not None:
-                set_wallbox_not_all_phases_since(None)
-            return raw_state
-
-        if not_all_since is None:
-            set_wallbox_not_all_phases_since(now)
-            return "grace"  # Schonfrist beginnt: noch wie bisher freigeben
-
-        if (now - not_all_since).total_seconds() < _WALLBOX_PAUSE_DEBOUNCE_S:
-            return "grace"  # noch innerhalb der Schonfrist
-
-        return raw_state  # Schonfrist vorbei: echten Zustand (partial/unknown) durchreichen
-
     def _handle_wallbox(
         self,
-        readings: Readings,
-        temp_status: Optional[TempStatus],
         wallbox_status: Optional[WallboxStatus],
         wallbox_read_error: Optional[str],
-        now: datetime,
     ) -> tuple[Optional[WallboxStatus], WallboxDecision]:
         log.info(
             "Wallbox: enabled=%s url=%s",
             str(self.cfg.wallbox.enabled).lower(),
             self.cfg.wallbox.url or "n/a",
         )
-        # Heizstab-Zustand für die Wallbox-Priorität ermitteln:
-        # - "full":    alle 3 Phasen an -> Überschuss über Volllast in Wallbox
-        # - "idle":    keine Phase an -> kein Verteilungskonflikt, Wallbox frei
-        #              (go-e-Eco-Modus übernimmt Überschussladen selbst)
-        # - "partial": läuft, will aber noch mehr Phasen zuschalten -> Speicher
-        #              priorisiert, Wallbox wartet
-        # - "unknown": PH1/PH2 nicht lesbar -> fail-safe, Wallbox wartet
-        # PH3-Status "unbekannt" (z.B. Shelly nicht erreichbar) blockiert "full"
-        # NICHT: PH3 wird ohnehin nicht geschaltet, daher zählt dafür nur PH1+PH2.
-        # Ist PH3 bestätigt AUS, ist es weiterhin nicht "full". "idle" prüft nur
-        # PH1+PH2 (PH3 kann laut Einschalt-Schwellenwerten nicht an sein, wenn
-        # PH1+PH2 aus sind).
-        ph1, ph2, ph3 = readings.ph1_on, readings.ph2_on, readings.ph3_on
-        heater_state_raw: str
-        if ph1 is None or ph2 is None:
-            heater_state_raw = "unknown"
-        elif ph1 is False and ph2 is False:
-            heater_state_raw = "idle"
-        elif ph1 is True and ph2 is True and ph3 is not False:
-            heater_state_raw = "full"
-        else:
-            heater_state_raw = "partial"
-        heater_state = self._debounce_heater_state(heater_state_raw, now)
-        log.info(
-            "Heizstab-Phasen: PH1=%s PH2=%s PH3=%s → heater_state=%s (debounced=%s)",
-            "AN" if readings.ph1_on else "AUS" if readings.ph1_on is False else "?",
-            "AN" if readings.ph2_on else "AUS" if readings.ph2_on is False else "?",
-            "AN" if readings.ph3_on else "AUS" if readings.ph3_on is False else "?",
-            heater_state_raw,
-            heater_state,
-        )
         status, decision = self._decide_wallbox(
-            readings.storage_temp_c,
-            heater_state,
-            temp_status,
             wallbox_status,
             wallbox_read_error,
         )
-
-        # Kaskaden-Gate: Kaskade kann nur blockieren, nicht das Temp-Gate überstimmen.
-        # Das Temp-Gate (pause_below_storage_temp) ist autoritativ für "Speicher priorisiert".
-        # Wenn Kaskade False → Wallbox pausieren (zu wenig Überschuss).
-        # Wenn Kaskade True  → keine Aktion: Temp-Gate bleibt entscheidend.
-        cascade_wallbox = get_cascade_permission("wallbox")
-        if cascade_wallbox is False:
-            if decision.action is WallboxAction.RELEASE:
-                decision.action = WallboxAction.UNCHANGED
-                decision.target_force_state = None
-                decision.reason = "[Kaskade blockiert] " + decision.reason
-            elif decision.action is WallboxAction.UNCHANGED and (
-                status is not None and status.force_state == 0
-            ):
-                decision.action = WallboxAction.PAUSE
-                decision.target_force_state = 1
-                decision.reason = "[Kaskade pausiert] " + decision.reason
 
         self._execute_wallbox(decision)
         self._execute_lmo(decision)

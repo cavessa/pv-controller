@@ -82,41 +82,6 @@ def get_phase_logs(since: Optional[datetime] = None) -> list[dict]:
     ]
 
 
-def init_wallbox_debounce_table() -> None:
-    """Ein-Zeilen-Tabelle, um den 'nicht alle Heizstab-Phasen an'-Debounce der
-    Wallbox-Freigabe über mehrere Cron-Läufe hinweg zu speichern (jeder
-    main.py-Lauf ist ein frischer Prozess, In-Memory-State geht sonst verloren)."""
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS WallboxDebounce (
-                id                      INTEGER PRIMARY KEY CHECK (id = 1),
-                not_all_phases_since    TEXT
-            )
-            """
-        )
-
-
-def get_wallbox_not_all_phases_since() -> Optional[datetime]:
-    with sqlite3.connect(DB_PATH) as conn:
-        row = conn.execute(
-            "SELECT not_all_phases_since FROM WallboxDebounce WHERE id = 1"
-        ).fetchone()
-    if row is None or row[0] is None:
-        return None
-    return datetime.fromisoformat(row[0])
-
-
-def set_wallbox_not_all_phases_since(value: Optional[datetime]) -> None:
-    ts = value.isoformat(timespec="seconds") if value is not None else None
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            "INSERT INTO WallboxDebounce (id, not_all_phases_since) VALUES (1, ?) "
-            "ON CONFLICT(id) DO UPDATE SET not_all_phases_since = excluded.not_all_phases_since",
-            (ts,),
-        )
-
-
 def init_pv_logging_tables() -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
@@ -616,7 +581,6 @@ def get_string_alerts(days: int = 30) -> list[dict]:
 
 init_db()
 init_pv_logging_tables()
-init_wallbox_debounce_table()
 backfill_historical_forecasts()
 
 

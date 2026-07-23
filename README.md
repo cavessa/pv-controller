@@ -166,7 +166,8 @@ Defaults: PH1 ≥ 1500 W, PH2 ≥ 3000 W, PH3 ≥ 4500 W.
 ### Wallbox (Phase 2: go-eCharger)
 
 Default: `http://192.168.x.x`. Der Controller liest den Status mit
-Filter `fup,frc,alw,car,amp,acs` und entscheidet anschließend.
+Filter `fup,frc,alw,car,amp,nrg,wh,eto,cdi,rbt,lmo` und entscheidet
+anschließend.
 
 Bedeutung der go-e-Felder:
 
@@ -178,27 +179,33 @@ Bedeutung der go-e-Felder:
 - `alw` — Auto darf aktuell laden.
 - `car` — Fahrzeugstatus.
 - `amp` — gewünschtes Ampere-Limit.
-- `acs` — `accessControlState`. `0` = freigegeben, `1` = wartet auf
-  manuelle Freigabe (App-Knopfdruck). Der Controller setzt `acs=0`
-  automatisch, sobald die Wallbox laden darf (`frc=0` bzw. Speicher
-  ≥ release-Schwelle) und gerade noch `acs=1` ansteht.
+- `lmo` — `logicMode`. `4` = Eco/PV-Überschussmodus, `3` =
+  Standard/Basic-Modus.
 
-Regeln:
+Regeln: Der Controller pausiert/freigibt die Wallbox ausschließlich
+über die Speichertemperatur-Hysterese (`frc`), **nicht** über den
+Live-Zustand der Heizstab-Phasen. Die Priorisierung gegenüber dem
+Heizstab und die Feinregelung des Ladestroms übernimmt der go-e im
+Eco-Modus (`lmo=4`) selbst über seinen eigenen Hauszähler — er
+drosselt seinen Ladestrom automatisch, wenn der Heizstab mehr
+Überschuss braucht. Häufiges `frc`-Umschalten wurde bewusst entfernt,
+da es beim go-e dazu führen konnte, dass die Wallbox am nächsten Tag
+erst nach Aus-/Einstecken des Fahrzeugs wieder lud.
 
 - `wallbox.enabled = false` → Wallbox wird nie gelesen oder geschaltet.
 - `only_control_when_pv_surplus_active = true` und `fup = false` →
   **nicht anfassen** (manuelles/normales Laden bleibt unbeeinflusst).
-- `storage_temp < pause_below_storage_temp` und `fup = true` →
-  Wallbox pausieren (`frc=1`), außer bereits 1.
-- `storage_temp >= release_above_storage_temp` und `fup = true` →
-  Wallbox freigeben (`frc=0`), außer bereits 0.
-- Dazwischen → Zustand beibehalten.
-- Auto-Unlock: zusätzlich zum `frc=0`-Pfad — wenn die Wallbox laden
-  darf (Ziel oder aktueller `frc=0`) und `acs=1` (manuelle Freigabe
-  ausstehend), setzt der Controller `acs=0`. Damit entfällt der
-  Knopfdruck in der go-e App.
+- `storage_temp < pause_below_storage_temp` → Wallbox pausieren
+  (`frc=1`), außer bereits 1.
+- `storage_temp >= release_above_storage_temp` → Wallbox freigeben
+  (`frc=0`), außer bereits 0.
+- Dazwischen (Mittelband) → Zustand beibehalten.
+- Zusätzliches Kaskaden-Gate: Ist laut Prioritäts-Kaskade (s.o.) zu
+  wenig Überschuss für die Wallbox da, pausiert sie zusätzlich –
+  unabhängig von der Speichertemperatur. Die Kaskade kann nur
+  blockieren, nie eine Pause wegen zu kaltem Speicher übersteuern.
 - `dry_run` → kein `set`-Request, nur `DRY-RUN: would set go-e
-  forceState to X` bzw. `accessState to X`.
+  forceState to X`.
 - `runtime.enabled = false` → keine `set`-Requests.
 - Bei Fehlern (`go-e` nicht erreichbar, JSON kaputt) → `fail_safe = no_change`,
   also keine Änderung.
@@ -265,6 +272,8 @@ Beispiel: alle 2 Minuten ausführen.
 | `openhab.base_url`                | OpenHAB REST-Basis                                       |
 | `openhab.pv_power_item`           | OpenHAB-Item für aktuelle PV-Leistung                    |
 | `shelly.ph1_url` … `ph3_url`      | Shelly Plugs der drei Heizstab-Phasen                    |
+| `shelly.ph[1-3]_type`             | `shelly_gen1` (Default, 1 Kanal, z. B. Plug S/1PM) oder `shelly_gen2` (Plus/Pro, RPC-API) |
+| `shelly.ph[1-3]_channel`          | Kanal-Index (Default `0`). Ein Gen2-Gerät mit mehreren Kanälen (z. B. Pro 2PM) kann für zwei Phasen mit gleicher `url` und `channel` 0/1 verwendet werden |
 | `shelly.storage_url`              | Shelly Plus mit Speicher-Temp-Add-On                     |
 | `shelly.main_meter_url`           | Shelly 3EM Hauptzähler                                   |
 | `shelly.heater_meter_url`         | Shelly 3EM nur am Heizstab                               |

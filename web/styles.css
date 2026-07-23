@@ -324,6 +324,9 @@ main {
 
 .note      { color: var(--text-muted); font-size: 11px; margin-top: 8px; }
 .field-hint { color: var(--text-muted); font-size: 11px; line-height: 1.4; }
+.inline-fields { display: flex; gap: 8px; }
+.inline-fields select { flex: 2; }
+.inline-fields input  { flex: 1; }
 
 /* -------- Speicher -------- */
 .big-temp {

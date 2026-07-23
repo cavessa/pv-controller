@@ -21,6 +21,27 @@ class ShellyConfig:
     storage_url: str
     main_meter_url: str
     heater_meter_url: str
+    # Gen1 (Plug S, 1, 1PM …, ein Kanal) oder shelly_gen2 (Plus, Pro …).
+    # Ein Gen2-Gerät mit mehreren Kanälen (z. B. Pro 2PM) kann für zwei
+    # Phasen mit gleicher url und unterschiedlichem channel (0/1) genutzt
+    # werden. Default = altes Verhalten (Gen1, Kanal 0).
+    ph1_type: str = "shelly_gen1"
+    ph1_channel: int = 0
+    ph2_type: str = "shelly_gen1"
+    ph2_channel: int = 0
+    ph3_type: str = "shelly_gen1"
+    ph3_channel: int = 0
+
+    def __post_init__(self) -> None:
+        for name, type_ in (
+            ("ph1_type", self.ph1_type),
+            ("ph2_type", self.ph2_type),
+            ("ph3_type", self.ph3_type),
+        ):
+            if type_ not in ("shelly_gen1", "shelly_gen2"):
+                raise ValueError(
+                    f"shelly.{name} must be 'shelly_gen1' or 'shelly_gen2', got {type_!r}"
+                )
 
 
 @dataclass

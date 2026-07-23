@@ -1,5 +1,43 @@
 # Changelog
 
+## 2026-07-23 – Heizstab-Phasen: Shelly Gen2 mit Kanal-Unterstützung (Pro 2PM für 2 Phasen)
+
+**Anlass (User):** Der Shelly 1PM für Heizstab-Phase 3 ist defekt gegangen. Ersatz ist ein Shelly Pro 2PM (Gen2, RPC-API, 2 Kanäle), der PH2 und PH3 zusammen übernehmen soll (eine URL, Kanal 0/1). PH1 bleibt ein einzelner Gen1-Plug. Die bestehende Konfiguration beim Schwiegervater (3× einzelne Gen1-Plugs) muss unverändert weiterlaufen.
+
+**Lösung:** `ShellyPlugClient` (`clients/shelly_client.py`) unterstützt jetzt sowohl Gen1 (`/relay/<channel>`) als auch Gen2 (`/rpc/Switch.GetStatus` / `/rpc/Switch.Set` mit `id=<channel>`), analog zum bereits vorhandenen `ShellyCascadeClient`. Auswahl über neue optionale Config-Felder `shelly.ph[1-3]_type` (`shelly_gen1`/`shelly_gen2`) und `shelly.ph[1-3]_channel`, beide defaulten auf `shelly_gen1`/`0` – bestehende `config.json`-Dateien ohne diese Felder verhalten sich exakt wie vorher.
+
+- `clients/shelly_client.py`: `ShellyPlugClient.__init__()` nimmt `type_`/`channel` entgegen; `get_relay_state()`/`set_relay()` verzweigen auf Gen1- oder Gen2-Endpunkt.
+- `config.py`: `ShellyConfig` um `ph1_type`/`ph1_channel` … `ph3_type`/`ph3_channel` erweitert (Default `shelly_gen1`/`0`), Validierung der `type`-Werte in `__post_init__()`.
+- `controller.py` `Controller.__init__()`: `ph1`/`ph2`/`ph3`-Clients bekommen `type_`/`channel` aus der Config.
+- `web.py`: `_ALLOWED_SHELLY_KEYS` um die neuen Felder erweitert, eigene Validierung für `type` (Enum) und `channel` (Integer ≥ 0).
+- `web/index.html`, `web/app.js`, `web/styles.css`: Typ-Auswahl + Kanal-Feld pro Phase im Settings-Formular.
+- `config.example.json`, `README.md`: neue Felder dokumentiert.
+- Zwei Phasen an einem Pro 2PM konfiguriert man mit gleicher `ph2_url`/`ph3_url`, `type=shelly_gen2`, `channel=0` bzw. `1`.
+
+## 2026-07-22 – true_surplus_w zog Wallbox-Leistung auch im Standard-/manuellen Modus ab (Bugfix)
+
+**Problem (User, beim Live-Test entdeckt):** `Readings.true_surplus_w` (Basis für Heizstab-Phasenentscheidung und Sommermodus) zog `wallbox_power_w` unconditional ab, unabhängig davon ob die Wallbox im Eco-Modus (lmo=4, PV-adaptiver Ladestrom) oder im Standard-/manuellen Modus (lmo≠4, fester Ladestrom egal wie viel PV da ist) lädt. Lädt die Wallbox mit festem Strom, ist dieser Verbrauch schon reell im Hauptzähler enthalten – zieht man ihn zusätzlich ab, denkt die Heizstab-Logik fälschlich, es gäbe mehr Überschuss als real vorhanden, und aktiviert ggf. zu viele Phasen. `cascade_service.py._get_controlled_loads_w()` hatte genau diese Unterscheidung (`lmo != 4` → nicht addieren) schon korrekt eingebaut, `controller.py` beim Befüllen von `readings.wallbox_power_w` aber nicht.
+
+**Lösung:** `readings.wallbox_power_w` wird jetzt nur noch auf den gemessenen Wert gesetzt, wenn `wallbox_status.pv_surplus_active` (lmo=4) true ist; sonst auf `0.0` (Wallbox-Verbrauch bleibt dann Teil des ganz normal vom Hauptzähler erfassten Hausverbrauchs).
+
+- `controller.py` `run()`: Zuweisung von `readings.wallbox_power_w` an `wallbox_status.pv_surplus_active` gebunden.
+
+## 2026-07-22 – Wallbox-Pause komplett entfernt: dauerhaft freigegeben, go-e regelt alles selbst
+
+**Problem (User):** Das häufige Umschalten der Wallbox zwischen pausiert/freigegeben (abhängig vom Live-Zustand der Heizstab-Phasen: `full`/`idle`/`partial`/`unknown`/`grace`, inkl. 90s-Debounce) führte am nächsten Tag dazu, dass die Wallbox erst nach Aus-/Einstecken des Fahrzeugs wieder lud. Trotz mehrerer Anti-Flatter-Fixes (Debounce, Grace-Periode, `idle`-Zustand, siehe Einträge vom 2026-07-21) blieb das `frc`-Kommando zu häufig.
+
+Erster Versuch am selben Tag (reine Speichertemperatur-Hysterese `pause_below_storage_temp`/`release_above_storage_temp`) blockierte die Wallbox live trotz reichlich vorhandenem Kaskaden-Überschuss, weil die absolute Temp-Schwelle (63/64 °C) keine Rücksicht auf den tatsächlichen Überschuss nahm. Zweiter Versuch (Kaskade als alleinige Autorität für Pause/Freigabe) behob das, aber der User wies darauf hin, dass eine explizite Pause durch den Controller gar nicht nötig ist: Schaltet der Heizstab eine Phase zu, sieht der go-e das über seinen eigenen Hauszähler und drosselt seinen Ladestrom automatisch – ganz ohne dass der Controller `frc` anfassen muss.
+
+**Lösung:** `_decide_wallbox()` pausiert die Wallbox nicht mehr aktiv. Sobald der PV-Überschussmodus-Gate (`only_control_when_pv_surplus_active`) passiert, wird `frc=0` gesetzt (falls nicht schon so) und bleibt dauerhaft so – keine Temperatur-Schwelle, keine Kaskaden-Kopplung, kein Pause-Zweig mehr. Priorität Speicher vor Wallbox ergibt sich automatisch daraus, dass der Heizstab zuschaltet und der go-e das über seinen eigenen Hauszähler sieht.
+
+- `controller.py` `_decide_wallbox()`: komplett auf `cfg.enabled` → `status None` → `only_control_when_pv_surplus_active`-Gate (inkl. Auto-Restore bei `car_state==1`) → immer `RELEASE`/`UNCHANGED` mit `target_force_state=0` reduziert. Kein `heater_state`-, `temp_status`- oder Kaskaden-Parameter mehr.
+- `controller.py` `_handle_wallbox()`: PH1/PH2/PH3-Auswertung, `_debounce_heater_state()`-Aufruf und das nachgelagerte Kaskaden-Gate (blockieren/pausieren) entfernt; `readings`-Parameter entfällt (nicht mehr gebraucht).
+- `controller.py`: Methode `_debounce_heater_state()` und Konstante `_WALLBOX_PAUSE_DEBOUNCE_S` entfernt.
+- `db.py`: `init_wallbox_debounce_table()`, `get_wallbox_not_all_phases_since()`, `set_wallbox_not_all_phases_since()` sowie der zugehörige Init-Aufruf entfernt (Tabelle `WallboxDebounce` wird nicht mehr geschrieben).
+- `README.md`: Wallbox-Abschnitt an neue Logik angepasst; veraltete `acs`/Auto-Unlock-Beschreibung entfernt (die Zugangskontroll-Logik war bereits am 2026-05-13 aus dem Code entfernt worden, die Doku war seither stale).
+- Live getestet: Wallbox blieb nach dem Einstecken durchgehend `frc=0`; go-e ist einmal von selbst auf `lmo=3` zurückgesprungen (Auto-Restore hat via `car_state==1` korrekt wieder auf `lmo=4` zurückgesetzt), kein `frc`-Flattern beobachtet.
+- Bekannt/offen: `wallbox.pause_below_storage_temp` und `wallbox.release_above_storage_temp` in `config.py`/`web.py`/`web/index.html`/`web/app.js`/`config.example.json` werden jetzt nirgends mehr ausgewertet (nur noch Altlast in Config/UI, siehe TODO).
+
 ## 2026-07-21 – Wallbox pausiert nur noch, wenn Heizstab aktiv läuft (statt "alle 3 Phasen an")
 
 **Idee (User):** go-e im Eco-Modus (lmo=4) lädt selbst nur bei PV-Überschuss. Ist der Heizstab komplett aus, gibt es keinen Verteilungskonflikt – der Controller muss die Wallbox dann nicht extra pausieren, go-e regelt das Überschussladen selbst.

@@ -15,30 +15,62 @@ class ShellyError(Exception):
 
 
 class ShellyPlugClient:
-    """Gen1-Style Plug/Relay (PH1/PH2/PH3 Shelly Plugs)."""
+    """Plug/Relay für PH1/PH2/PH3.
 
-    def __init__(self, base_url: str, timeout: int = 5, name: str = "shelly"):
+    Unterstützt Gen1 (Plug S, 1, 1PM … — /relay/<channel>) und Gen2/Gen3
+    (Plus, Pro … — /rpc/Switch.* mit Kanal-ID). Ein Gen2-Gerät mit mehreren
+    Kanälen (z. B. Pro 2PM) kann so für zwei Phasen gleichzeitig verwendet
+    werden (gleiche base_url, unterschiedlicher channel).
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        timeout: int = 5,
+        name: str = "shelly",
+        type_: str = "shelly_gen1",
+        channel: int = 0,
+    ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.name = name
+        self.type_ = type_
+        self.channel = channel
 
     def get_relay_state(self) -> Optional[bool]:
         try:
-            r = requests.get(f"{self.base_url}/relay/0", timeout=self.timeout)
+            if self.type_ == "shelly_gen2":
+                r = requests.get(
+                    f"{self.base_url}/rpc/Switch.GetStatus",
+                    params={"id": self.channel},
+                    timeout=self.timeout,
+                )
+                r.raise_for_status()
+                return bool(r.json()["output"])
+            r = requests.get(
+                f"{self.base_url}/relay/{self.channel}", timeout=self.timeout
+            )
             r.raise_for_status()
             return bool(r.json()["ison"])
         except (requests.RequestException, KeyError, ValueError) as e:
-            log.error("Shelly %s read /relay/0 failed: %s", self.name, e)
+            log.error("Shelly %s read relay state failed: %s", self.name, e)
             return None
 
     def set_relay(self, on: bool) -> bool:
         action = "on" if on else "off"
         try:
-            r = requests.get(
-                f"{self.base_url}/relay/0",
-                params={"turn": action},
-                timeout=self.timeout,
-            )
+            if self.type_ == "shelly_gen2":
+                r = requests.post(
+                    f"{self.base_url}/rpc/Switch.Set",
+                    json={"id": self.channel, "on": on},
+                    timeout=self.timeout,
+                )
+            else:
+                r = requests.get(
+                    f"{self.base_url}/relay/{self.channel}",
+                    params={"turn": action},
+                    timeout=self.timeout,
+                )
             r.raise_for_status()
             return True
         except requests.RequestException as e:

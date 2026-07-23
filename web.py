@@ -411,8 +411,12 @@ _ALLOWED_WALLBOX_KEYS = {
 _ALLOWED_SOLAX_KEYS = {"url", "pwd"}
 _ALLOWED_SHELLY_KEYS = {
     "ph1_url", "ph2_url", "ph3_url",
+    "ph1_type", "ph2_type", "ph3_type",
+    "ph1_channel", "ph2_channel", "ph3_channel",
     "storage_url", "main_meter_url", "heater_meter_url",
 }
+_SHELLY_TYPE_KEYS = {"ph1_type", "ph2_type", "ph3_type"}
+_SHELLY_CHANNEL_KEYS = {"ph1_channel", "ph2_channel", "ph3_channel"}
 _ALLOWED_AUTH_KEYS = {"enabled", "user", "password"}
 _ALLOWED_LOCATION_KEYS = {"latitude", "longitude", "name"}
 _ALLOWED_SUMMER_MODE_KEYS = {"enabled", "min_temp", "target_temp"}
@@ -491,8 +495,17 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
         if bad:
             raise HTTPException(400, f"shelly keys not allowed: {sorted(bad)}")
         for k, v in patch.shelly.items():
-            if not isinstance(v, str) or not (v.startswith("http://") or v.startswith("https://")):
-                raise HTTPException(400, f"shelly.{k} must start with http:// or https://")
+            if k in _SHELLY_TYPE_KEYS:
+                if v not in ("shelly_gen1", "shelly_gen2"):
+                    raise HTTPException(
+                        400, f"shelly.{k} must be 'shelly_gen1' or 'shelly_gen2'"
+                    )
+            elif k in _SHELLY_CHANNEL_KEYS:
+                if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+                    raise HTTPException(400, f"shelly.{k} must be a non-negative integer")
+            else:
+                if not isinstance(v, str) or not (v.startswith("http://") or v.startswith("https://")):
+                    raise HTTPException(400, f"shelly.{k} must start with http:// or https://")
             new_cfg["shelly"][k] = v
 
     if patch.auth:

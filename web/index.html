@@ -574,8 +574,27 @@
           <fieldset>
             <legend>Shelly IPs</legend>
             <label>Phase 1 (ph1_url)<input type="text" name="shelly.ph1_url" placeholder="http://192.168.x.x"></label>
+            <label>Phase 1 Typ/Kanal
+              <span class="inline-fields">
+                <select name="shelly.ph1_type"><option value="shelly_gen1">Gen1 (1 Kanal)</option><option value="shelly_gen2">Gen2 (Plus/Pro)</option></select>
+                <input type="number" min="0" step="1" name="shelly.ph1_channel" placeholder="Kanal (0)">
+              </span>
+            </label>
             <label>Phase 2 (ph2_url)<input type="text" name="shelly.ph2_url" placeholder="http://192.168.x.x"></label>
+            <label>Phase 2 Typ/Kanal
+              <span class="inline-fields">
+                <select name="shelly.ph2_type"><option value="shelly_gen1">Gen1 (1 Kanal)</option><option value="shelly_gen2">Gen2 (Plus/Pro)</option></select>
+                <input type="number" min="0" step="1" name="shelly.ph2_channel" placeholder="Kanal (0)">
+              </span>
+            </label>
             <label>Phase 3 (ph3_url)<input type="text" name="shelly.ph3_url" placeholder="http://192.168.x.x"></label>
+            <label>Phase 3 Typ/Kanal
+              <span class="inline-fields">
+                <select name="shelly.ph3_type"><option value="shelly_gen1">Gen1 (1 Kanal)</option><option value="shelly_gen2">Gen2 (Plus/Pro)</option></select>
+                <input type="number" min="0" step="1" name="shelly.ph3_channel" placeholder="Kanal (0)">
+              </span>
+            </label>
+            <p class="note" style="margin-top:4px">Ein Gen2-Gerät mit mehreren Kanälen (z. B. Pro 2PM) kann für zwei Phasen mit gleicher URL und unterschiedlichem Kanal (0/1) verwendet werden.</p>
             <label>Speicher (storage_url)<input type="text" name="shelly.storage_url" placeholder="http://192.168.x.x"></label>
             <label>Hauptzähler (main_meter_url)<input type="text" name="shelly.main_meter_url" placeholder="http://192.168.x.x"></label>
             <label>Heizstab 3EM (heater_meter_url)<input type="text" name="shelly.heater_meter_url" placeholder="http://192.168.x.x"></label>
