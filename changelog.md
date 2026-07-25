@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-24 – Kaskade Heizstab: Hysterese 200→0 W
+
+**Anlass (User):** Heizstab schaltete trotz ~1500–1700 W PV-Überschuss nicht ein, weil die Kaskade wegen der 200-W-Hysterese (Toleranz, siehe Eintrag 2026-05-10) `remaining >= 1500 W + 200 W` verlangte und der Überschuss knapp innerhalb dieser Totzone lag. User: kurzer Netzbezug ist kein Problem, Hysterese soll weg.
+
+- **DB** (`cascade_devices`): `hysteresis_watts` Heizstab: 200 → 0 W. Einschalten jetzt schon ab genau 1500 W Überschuss, Ausschalten sofort bei Budget < 0 W. Kein Puffer mehr gegen kurze Mess-Dips – dafür reagiert der Heizstab jetzt direkter auf verfügbaren Überschuss.
+
 ## 2026-07-23 – Heizstab-Phasen: Shelly Gen2 mit Kanal-Unterstützung (Pro 2PM für 2 Phasen)
 
 **Anlass (User):** Der Shelly 1PM für Heizstab-Phase 3 ist defekt gegangen. Ersatz ist ein Shelly Pro 2PM (Gen2, RPC-API, 2 Kanäle), der PH2 und PH3 zusammen übernehmen soll (eine URL, Kanal 0/1). PH1 bleibt ein einzelner Gen1-Plug. Die bestehende Konfiguration beim Schwiegervater (3× einzelne Gen1-Plugs) muss unverändert weiterlaufen.
