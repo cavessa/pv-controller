@@ -192,6 +192,7 @@ class Controller:
         phase: _PhaseInput,
         readings: Readings,
         temp_status: TempStatus,
+        any_phase_on: bool,
     ) -> PhaseDecision:
         """Entscheide AN/AUS/UNCHANGED für eine Phase.
 
@@ -201,8 +202,14 @@ class Controller:
                                           -> AUS
         - storage_temp <= heat_resume_temp
                                           -> normale PV-Überschusslogik
-        - sonst (Hysteresebereich)        -> nur AUSschalten erlaubt,
-                                             keine neuen Einschaltungen
+        - sonst (Hysteresebereich)        -> AUSschalten immer erlaubt;
+                                             neue Einschaltungen nur, wenn
+                                             bereits eine Phase läuft
+                                             (aktiver Heizzyklus). Läuft noch
+                                             gar keine Phase, bleibt die
+                                             Neustart-Sperre bestehen (verhindert
+                                             Flattern direkt nach Erreichen von
+                                             storage_max_temp).
 
         PV-Überschusslogik:
           surplus = main_meter - heater_meter   (negativ = Einspeisung)
@@ -261,11 +268,23 @@ class Controller:
                 return PhaseDecision(
                     phase.name, cur, PhaseAction.TURN_OFF, reason(tail)
                 )
+            if not cur and want_on and any_phase_on:
+                tail = (
+                    f"hysteresis band ({h.heat_resume_temp:.1f} °C < "
+                    f"storage_temp={temp:.1f} °C < {h.storage_max_temp:.1f} °C); "
+                    f"active heating cycle (other phase already ON); "
+                    f"switching ON additional phase"
+                )
+                return PhaseDecision(phase.name, cur, PhaseAction.TURN_ON, reason(tail))
             if not cur:
                 tail = (
                     f"hysteresis band ({h.heat_resume_temp:.1f} °C < "
                     f"storage_temp={temp:.1f} °C < {h.storage_max_temp:.1f} °C); "
-                    f"not switching new phase ON"
+                    + (
+                        "not switching new phase ON (no active heating cycle)"
+                        if not any_phase_on
+                        else "not switching new phase ON"
+                    )
                 )
                 return PhaseDecision(
                     phase.name, cur, PhaseAction.UNCHANGED, reason(tail)
@@ -795,6 +814,9 @@ class Controller:
                 ),
             ]
             cascade_heizstab = get_cascade_permission("heizstab")
+            any_phase_on = any(
+                p.current_state is True for p in phases
+            )
 
             # Sommermodus: Prüfung VOR den Phasen-Entscheidungen
             sm_heating, sm_stop, sm_reason = self._check_summer_mode(readings, temp_status)
@@ -812,7 +834,7 @@ class Controller:
                     action = PhaseAction.UNCHANGED if p.current_state else PhaseAction.TURN_ON
                     d = PhaseDecision(p.name, p.current_state, action, sm_reason)
                 else:
-                    d = self._decide_phase(p, readings, temp_status)
+                    d = self._decide_phase(p, readings, temp_status, any_phase_on)
                     if cascade_heizstab is False:
                         # Kaskade hat Heizstab abgeschaltet:
                         # - laufende Phase aktiv ausschalten

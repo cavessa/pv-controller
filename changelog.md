@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-25 – Hysterese-Band blockierte Hochschalten weiterer Heizstab-Phasen
+
+**Anlass (User):** "jetzt könnte er doch auch alle 3 heizstäbe an machen" – bei laufender PH1 und ausreichend PV-Überschuss schalteten PH2/PH3 nicht zu, solange die Speichertemperatur im Hysterese-Band lag (`heat_resume_temp` < temp < `storage_max_temp`, aktuell 62–64 °C). `_decide_phase()` verbot dort bisher grundsätzlich jedes Einschalten einer neuen Phase, unabhängig davon, ob überhaupt schon geheizt wurde.
+
+**Lösung:** Im Hysterese-Band dürfen jetzt zusätzliche Phasen zugeschaltet werden, wenn bereits mindestens eine Phase läuft (aktiver Heizzyklus) und die PV-Überschussbedingung erfüllt ist. Ist noch gar keine Phase an, bleibt die bisherige Sperre bestehen – das verhindert weiterhin ein Neustart-Flattern direkt nach Erreichen von `storage_max_temp`.
+
+- `controller.py` `_decide_phase()`: neuer Parameter `any_phase_on`; im `HYSTERESIS_BAND`-Zweig `TURN_ON` erlaubt, wenn `want_on and any_phase_on`.
+- `controller.py` `run()`: `any_phase_on` vor der Phasen-Schleife aus dem Ausgangszustand (`ph1_on`/`ph2_on`/`ph3_on`) berechnet und an `_decide_phase()` übergeben.
+
 ## 2026-07-24 – Kaskade Heizstab: Hysterese 200→0 W
 
 **Anlass (User):** Heizstab schaltete trotz ~1500–1700 W PV-Überschuss nicht ein, weil die Kaskade wegen der 200-W-Hysterese (Toleranz, siehe Eintrag 2026-05-10) `remaining >= 1500 W + 200 W` verlangte und der Überschuss knapp innerhalb dieser Totzone lag. User: kurzer Netzbezug ist kein Problem, Hysterese soll weg.
