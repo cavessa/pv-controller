@@ -336,7 +336,7 @@ function renderEnergyFlow(heater, wb, cs) {
   const feeding = gridW < -50;
   const drawing = gridW > 50;
   const gridOn  = feeding || drawing;
-  const heatOn  = heaterW > 50;
+  const heatOn  = heaterW > 50 || phases > 0;
   const wbOn    = wbChrg && wbPwrW > 50;
 
   // Shelly cascade devices

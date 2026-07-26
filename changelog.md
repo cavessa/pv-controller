@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-26 – Energiefluss-Grafik: Fluss zum Speicher folgt Phasenstatus, nicht nur Zählerleistung
+
+**Anlass (User):** Im "Energiefluss"-Diagramm (Dashboard) stoppte die Fluss-Animation HEIZSTAB→SPEICHER, sobald der Heizstab-Zähler kurzzeitig 0 W meldete – obwohl die Phasen-Relais laut Status weiterhin an waren. Ursache dafür ist ein bekanntes Verhalten des Heizstabs: sein interner Thermostat schaltet die Heizpatrone manchmal selbst kurz ab, auch wenn das vorgeschaltete Relais an bleibt. User möchte, dass die Grafik in diesem Fall trotzdem "läuft", sobald Phasen an sind.
+
+**Lösung:** `heatOn` in `renderEnergyFlow()` (web/app.js) berücksichtigt jetzt zusätzlich zum gemessenen `heater_meter_power` auch den Phasenstatus, analog zur bereits vorhandenen `heaterAktiv`-Logik weiter oben in derselben Datei.
+
+- `web/app.js` `renderEnergyFlow()`: `const heatOn = heaterW > 50;` → `const heatOn = heaterW > 50 || phases > 0;`. Die angezeigte Leistung am HEIZSTAB-Knoten bleibt der reale Messwert, nur Aktiv/Fluss-Optik folgt jetzt zusätzlich den Relais-Zuständen.
+
 ## 2026-07-25 – Hysterese-Band blockierte Hochschalten weiterer Heizstab-Phasen
 
 **Anlass (User):** "jetzt könnte er doch auch alle 3 heizstäbe an machen" – bei laufender PH1 und ausreichend PV-Überschuss schalteten PH2/PH3 nicht zu, solange die Speichertemperatur im Hysterese-Band lag (`heat_resume_temp` < temp < `storage_max_temp`, aktuell 62–64 °C). `_decide_phase()` verbot dort bisher grundsätzlich jedes Einschalten einer neuen Phase, unabhängig davon, ob überhaupt schon geheizt wurde.
