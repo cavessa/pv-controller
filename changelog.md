@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-26 – Energiefluss-Grafik zeigte alte app.js aus dem Browser-Cache (Cache-Busting nachgezogen)
+
+**Anlass (User, Screenshot):** Nach dem `heatOn`-Fix (siehe Eintrag darunter) blieb SPEICHER trotz 3/3 aktiver Phasen im Energiefluss-Diagramm weiterhin grau/inaktiv. Ursache: `web/index.html` band `app.js` mit `?v=20260525` ein – dieser Cache-Busting-Parameter wurde bei den letzten Änderungen nie hochgezählt, wodurch Browser (insb. als Homescreen-Webapp) weiterhin die alte, gecachte `app.js` ausgeliefert bekamen.
+
+**Lösung:** Versionsparameter auf `?v=20260726` angehoben, damit der Browser die aktuelle `app.js` neu lädt.
+
+- `web/index.html`: `<script src="/static/app.js?v=...">` Version 20260525 → 20260726.
+
 ## 2026-07-26 – Energiefluss-Grafik: Fluss zum Speicher folgt Phasenstatus, nicht nur Zählerleistung
 
 **Anlass (User):** Im "Energiefluss"-Diagramm (Dashboard) stoppte die Fluss-Animation HEIZSTAB→SPEICHER, sobald der Heizstab-Zähler kurzzeitig 0 W meldete – obwohl die Phasen-Relais laut Status weiterhin an waren. Ursache dafür ist ein bekanntes Verhalten des Heizstabs: sein interner Thermostat schaltet die Heizpatrone manchmal selbst kurz ab, auch wenn das vorgeschaltete Relais an bleibt. User möchte, dass die Grafik in diesem Fall trotzdem "läuft", sobald Phasen an sind.
