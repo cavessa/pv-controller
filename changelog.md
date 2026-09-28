@@ -1,5 +1,73 @@
 # Changelog
 
+## 2026-09-28 – Energiefluss-Grafik: Werte unter 1 kW in Watt statt kW
+
+**Anlass (User):** In der Energiefluss-Grafik zeigte PV bei 90 W noch "0.09 kW" an – schwer lesbar bei kleinen Leistungen.
+
+**Lösung:** Neuer Helper `kwOrW(w)` in `renderEnergyFlow()` (`web/app.js`) – ab 1000 W wird in kW (2 Nachkommastellen), darunter in ganzen Watt angezeigt. Auf PV-, NETZ-, HEIZSTAB- und Wallbox-Knoten angewendet (HAUS und Shelly-Geräte rundeten schon vorher so). Cache-Busting `app.js?v=` auf `20260928a` angehoben.
+
+**Nachtrag (User):** Bei niedriger PV-Leistung (z. B. 73 W) fehlte die Verbindungslinie PV→HAUS, obwohl NETZ→HAUS angezeigt wurde.
+
+- `web/app.js`: PV-Schwelle `pvOn` von 100 W auf 50 W gesenkt – jetzt konsistent mit den anderen Fluss-Schwellen (NETZ/HEIZSTAB ebenfalls 50 W). Cache-Busting `app.js?v=` auf `20260928b` angehoben.
+
+## 2026-09-26 – Neue Verlauf-Sektion "Tageshoch" (PV-Spitzenleistung 7/30 Tage)
+
+**Anlass (User):** Ganz unten sollte noch ein Chart mit dem Tageshoch (PV-Spitzenleistung pro Tag) für die letzten 7 und die letzten 30 Tage her.
+
+**Lösung:** Neue Verlauf-Sektion "Tageshoch" (eigener Nav-Button, ganz unten im Verlauf-Tab) mit zwei Bar-Charts. Als Datenquelle dient `pv_hourly_log` (stündliche PV-Snapshots) – die Tages-Spitzenleistung wird per `MAX(pv_w)` gruppiert nach Tag ermittelt (Auflösung: stündlich, da keine minütliche Rohdatenhistorie vorgehalten wird).
+
+- `db.py`: neue Funktion `get_daily_peak(days)` – `MAX(pv_w)` gruppiert nach Tag aus `pv_hourly_log`, letzte N Tage.
+- `web.py`: neuer Endpunkt `GET /api/history/peak?days=` (Default 30, max 365).
+- `web/index.html`: neuer Nav-Button "Tageshoch" im Verlauf-Tab (vor "Netz") + neue Sektion `verlauf-peak` mit zwei Karten ("letzte 7 Tage" / "letzte 30 Tage"); Cache-Busting `app.js?v=` auf `20260926c` angehoben.
+- `web/app.js`: `loadVerlaufPeak()` lädt `/api/history/peak?days=30` einmal und rendert daraus beide Charts (7-Tage-Ausschnitt + volle 30 Tage) über neue generische `renderPeakChart(entries, wrapId, days)` (Balken in kW, Wochentags- bzw. Tag-des-Monats-Beschriftung wie bei `renderWeekChart`/`renderMonthChart`); Dispatch in `_loadCurrentVerlauf()` um `peak` erweitert.
+
+**Nachtrag (User):** Doch nicht im Verlauf-Tab als Balken, sondern ganz unten im Dashboard (Übersicht) als Linienchart – im Fokus steht dabei weniger der Watt-Wert als die Uhrzeit, zu der das Tageshoch jeweils auftrat.
+
+- `db.py`: `get_daily_peak()` liefert jetzt zusätzlich `peak_hour` (Stunde des Tageshochs, `substr(timestamp,12,5)` aus `pv_hourly_log`; SQLite liefert dank Bare-Column-Optimierung bei `MAX()` pro Gruppe automatisch die passende Zeile).
+- `web/index.html`: Verlauf-Tab-Nav-Button + Sektion "Tageshoch" wieder entfernt; stattdessen neue Karte "Tageshoch – Uhrzeit im Verlauf" ganz unten im Dashboard-Tab (nach `.dashboard-cols`) mit zwei Chart-Wraps (7 Tage / 30 Tage).
+- `web/app.js`: `renderPeakChart()`/`loadVerlaufPeak()` ersetzt durch `renderPeakTimeChart()`/`loadPeakTimeChart()` – Linienchart mit Y-Achse = Uhrzeit (statt Leistung), Punktgröße skaliert mit der Spitzenleistung, SVG-`<title>` als Hover-Tooltip (Datum · Uhrzeit · Watt). Wird einmalig in `boot()` und nach jedem manuellen Lauf (`runOnce()`) geladen, nicht bei jedem `refreshStatus()`-Poll (Daten ändern sich höchstens stündlich); Cache-Busting `app.js?v=` auf `20260926d` angehoben.
+
+## 2026-09-26 – STR1/STR2-Balken in "PV Erzeugung" farblich an Legende angeglichen
+
+**Anlass (User):** Die oberen Balken bei STR1/STR2 in der "PV Erzeugung"-Karte waren beide gelb – sollten wie die Legende darunter (STR1 gelb, STR2 blau) eingefärbt werden.
+
+- `web/styles.css`: neue Klasse `.pv-string-bar.str2` mit `var(--accent)` (Blau); `.pv-string-bar` bleibt für STR1 bei `var(--c-pv)` (Gelb).
+- `web/app.js`: Live-String-Balken (`stringsEl`) vergeben jetzt `str1`/`str2` als zusätzliche CSS-Klasse am Balken.
+- `web/index.html`: Cache-Busting auf `20260926b` angehoben.
+
+## 2026-09-26 – STR1/STR2-Legenden mit Standort ergänzt
+
+**Anlass (User):** STR1 sollte als "Dach" und STR2 als "Wand" gekennzeichnet werden, damit die Zuordnung in den Grafiken/Anzeigen klarer ist.
+
+- `web/index.html`: Legenden in den Karten "PV Erzeugung" (Übersicht), "String-Performance" und "String-Leistung (täglich)" zeigen jetzt "STR1 (Dach)" / "STR2 (Wand)"; Cache-Busting auf `20260926` angehoben.
+- `web/app.js`: Live-String-Anzeige (`stringsEl`) und der String-Alert-Text zeigen ebenfalls "STR1 (Dach)" / "STR2 (Wand)".
+
+## 2026-09-24 – PV1/PV2-Verlaufschart direkt in der Übersicht unter "PV Erzeugung"
+
+**Anlass (User):** Ein Chart für PV1 und PV2 sollte auch direkt in der Dashboard-Übersicht unter "PV Erzeugung" sichtbar sein, nicht nur im Verlauf-Tab (dort existiert die "String-Performance"-Grafik bereits unter Verlauf → Tag).
+
+**Lösung:** Die bestehende `renderStringChart()`-Funktion (bisher fest an `chart-strings-wrap` im Verlauf-Tab gebunden) nimmt jetzt eine `wrapId` als zweiten Parameter, damit sie für ein zweites Chart-Element wiederverwendet werden kann. In der "PV Erzeugung"-Karte der Übersicht gibt es jetzt einen neuen Chart-Container mit STR1/STR2-Legende, der bei jedem Status-Refresh (`refreshStatus()`, `runOnce()`) mit den Stundendaten des aktuellen Tages aus `/api/history/hourly` befüllt wird.
+
+- `web/app.js`: `renderStringChart(entries, wrapId = "chart-strings-wrap")` generalisiert; `refreshStatus()` lädt zusätzlich `/api/history/hourly` (heute) und rendert damit `pv-strings-chart-wrap`; `runOnce()` ebenso nach dem manuellen Lauf.
+- `web/index.html`: neuer Chart-Container `pv-strings-chart-wrap` inkl. Legende (STR1/STR2) in der "PV Erzeugung"-Karte der Übersicht; Cache-Busting `app.js?v=` auf `20260924` angehoben.
+
+**Nachtrag (User):** STR2-Linie im Chart war orange (`#f5782a`), obwohl die Legende (`.cl-str2`) für STR2 Blau (`--accent`, `#5b8cff`) zeigt – Farbe im Chart auf Blau korrigiert, betrifft beide Charts (Übersicht + Verlauf → Tag → String-Performance), da sie dieselbe `renderStringChart()` nutzen. Cache-Busting auf `20260924b` angehoben.
+
+## 2026-09-17 – Wallbox: feste Standardeinstellungen für Eco/Basic-Modus + Auto-Reset beim Abstecken
+
+**Anlass (User):** Der go-eCharger soll beim Umschalten der Segmented-Control-Buttons feste Standardwerte setzen statt nur `lmo` zu ändern: Eco/PV-Modus = einphasig, 16 A (max. ~3,7 kW), Basic-Modus = dreiphasig, 10 A (max. ~6,9 kW). Zusätzlich soll die Wallbox beim Abstecken automatisch zurück auf Eco/PV wechseln, damit das nächste Laden immer im PV-Überschuss-Modus startet.
+
+**Lösung:** `GoeClient` bekommt eine neue `set_psm()`-Methode (go-e API v2, `psm=1` einphasig / `psm=2` dreiphasig) und liest `psm` jetzt mit im Status. `WallboxConfig` bekommt neue, in den Settings konfigurierbare Felder `eco_phases`/`eco_amps`/`basic_phases`/`basic_amps`/`auto_reset_on_unplug` (Defaults 1/16/2/10/true). Der manuelle Moduswechsel (`POST /api/wallbox/set-mode`) setzt jetzt `psm`+`amp`+`lmo` passend zum Modus statt nur `lmo`. Die bereits vorhandene Auto-Restore-Logik beim Abstecken (`car_state==1` im Basic-Modus) nutzte bisher hart codiert `lmo=4, amp=7` – sie verwendet jetzt die konfigurierbaren Eco-Werte (Default 1-phasig/16 A) und setzt zusätzlich `psm`, ist per `auto_reset_on_unplug` abschaltbar.
+
+- `clients/goe_client.py`: `set_psm()` neu; `STATUS_FILTER` um `psm` erweitert.
+- `config.py` `WallboxConfig`: neue Felder `eco_phases`, `eco_amps`, `basic_phases`, `basic_amps`, `auto_reset_on_unplug` + Validierung (Phasen nur 1/2, Ampere 6–32).
+- `models.py`: `WallboxStatus.psm`, `WallboxDecision.target_psm`/`psm_executed`/`psm_execution_error` neu.
+- `controller.py`: `_parse_wallbox_status()` liest `psm`; Auto-Restore-Zweig in `_decide_wallbox()` nutzt `cfg.eco_phases`/`cfg.eco_amps` statt hart codiert `4`/`7` und respektiert `cfg.auto_reset_on_unplug`; neue `_execute_psm()` (Pendant zu `_execute_amp()`), aufgerufen in `_handle_wallbox()`.
+- `web.py`: `POST /api/wallbox/set-mode` setzt jetzt `psm`+`amp` aus der Config mit; `_ALLOWED_WALLBOX_KEYS` + Validierung um die neuen Felder erweitert; `_wallbox_status_to_dict`/`_wallbox_decision_to_dict` geben `psm`/`target_psm` mit aus.
+- `web/index.html` (Settings-Tab, Fieldset "Wallbox (go-e)"): neue Felder für Eco/Basic Phasen+Ampere und Checkbox "Nach Abstecken automatisch auf Eco/PV zurücksetzen"; Cache-Busting `app.js?v=` auf `20260917` angehoben.
+- `web/app.js`: `loadSettings()`/`saveSettings()` um die neuen `wallbox.*`-Felder erweitert.
+- `config.json`, `config.example.json`: neue Wallbox-Defaults (`eco_phases=1, eco_amps=16, basic_phases=2, basic_amps=10, auto_reset_on_unplug=true`).
+
 ## 2026-07-26 – Energiefluss-Grafik zeigte alte app.js aus dem Browser-Cache (Cache-Busting nachgezogen)
 
 **Anlass (User, Screenshot):** Nach dem `heatOn`-Fix (siehe Eintrag darunter) blieb SPEICHER trotz 3/3 aktiver Phasen im Energiefluss-Diagramm weiterhin grau/inaktiv. Ursache: `web/index.html` band `app.js` mit `?v=20260525` ein – dieser Cache-Busting-Parameter wurde bei den letzten Änderungen nie hochgezählt, wodurch Browser (insb. als Homescreen-Webapp) weiterhin die alte, gecachte `app.js` ausgeliefert bekamen.

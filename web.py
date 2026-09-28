@@ -134,6 +134,7 @@ def _wallbox_status_to_dict(s: Optional[WallboxStatus]) -> Optional[dict[str, An
         "alw": s.allowed,
         "car": s.car_state,
         "amp": s.amp,
+        "psm": s.psm,
         "power_w": s.power_w,
         "charging": s.car_state == 2,
         "energy_session_wh": s.energy_session_wh,
@@ -159,6 +160,9 @@ def _wallbox_decision_to_dict(
         "target_amp": d.target_amp,
         "amp_executed": d.amp_executed,
         "amp_execution_error": d.amp_execution_error,
+        "target_psm": d.target_psm,
+        "psm_executed": d.psm_executed,
+        "psm_execution_error": d.psm_execution_error,
     }
 
 
@@ -407,6 +411,11 @@ _ALLOWED_WALLBOX_KEYS = {
     "release_above_storage_temp",
     "fail_safe",
     "url",
+    "eco_phases",
+    "eco_amps",
+    "basic_phases",
+    "basic_amps",
+    "auto_reset_on_unplug",
 }
 _ALLOWED_SOLAX_KEYS = {"url", "pwd"}
 _ALLOWED_SHELLY_KEYS = {
@@ -459,12 +468,18 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
         if bad:
             raise HTTPException(400, f"wallbox keys not allowed: {sorted(bad)}")
         for k, v in patch.wallbox.items():
-            if k in {"enabled", "only_control_when_pv_surplus_active"}:
+            if k in {"enabled", "only_control_when_pv_surplus_active", "auto_reset_on_unplug"}:
                 if not isinstance(v, bool):
                     raise HTTPException(400, f"wallbox.{k} must be boolean")
             elif k in {"pause_below_storage_temp", "release_above_storage_temp"}:
                 if not isinstance(v, (int, float)) or isinstance(v, bool):
                     raise HTTPException(400, f"wallbox.{k} must be a number")
+            elif k in {"eco_phases", "basic_phases"}:
+                if not isinstance(v, int) or isinstance(v, bool) or v not in (1, 2):
+                    raise HTTPException(400, f"wallbox.{k} must be 1 or 2")
+            elif k in {"eco_amps", "basic_amps"}:
+                if not isinstance(v, int) or isinstance(v, bool) or not 6 <= v <= 32:
+                    raise HTTPException(400, f"wallbox.{k} must be an integer between 6 and 32")
             elif k == "fail_safe":
                 if v != "no_change":
                     raise HTTPException(
@@ -680,6 +695,16 @@ def api_daily_history(
     response.headers["Cache-Control"] = "no-store"
     from db import get_daily_history
     return {"entries": get_daily_history(days)}
+
+
+@app.get("/api/history/peak")
+def api_peak_history(
+    response: Response,
+    days: int = Query(default=30, ge=1, le=365),
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    from db import get_daily_peak
+    return {"entries": get_daily_peak(days)}
 
 
 @app.get("/api/history/month/{year_month}")
@@ -1156,9 +1181,15 @@ def wallbox_set_mode(mode: str = Query(..., pattern="^(basic|eco)$")) -> dict[st
     url = cfg.wallbox.url if cfg.wallbox else None
     if not url:
         raise HTTPException(400, "Wallbox nicht konfiguriert")
-    lmo = 3 if mode == "basic" else 4
+    if mode == "basic":
+        lmo, psm, amp = 3, cfg.wallbox.basic_phases, cfg.wallbox.basic_amps
+    else:
+        lmo, psm, amp = 4, cfg.wallbox.eco_phases, cfg.wallbox.eco_amps
+    client = GoeClient(url)
     try:
-        GoeClient(url).set_logic_mode(lmo)
+        client.set_psm(psm)
+        client.set_amp(amp)
+        client.set_logic_mode(lmo)
     except GoeError as e:
         raise HTTPException(502, f"go-e Fehler: {e}")
-    return {"ok": True, "lmo": lmo, "mode": mode}
+    return {"ok": True, "lmo": lmo, "psm": psm, "amp": amp, "mode": mode}

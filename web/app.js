@@ -332,7 +332,7 @@ function renderEnergyFlow(heater, wb, cs) {
   const wbPwrW  = wbSt.power_w ?? 0;
 
   // flow state
-  const pvOn    = pvW >= 100;
+  const pvOn    = pvW >= 50;
   const feeding = gridW < -50;
   const drawing = gridW > 50;
   const gridOn  = feeding || drawing;
@@ -343,8 +343,9 @@ function renderEnergyFlow(heater, wb, cs) {
   const shellys = (cs?.devices ?? []).filter(d => d.enabled && d.type?.startsWith("shelly"));
 
   // Hausverbrauch estimate: PV + net grid - heizstab
+  const kwOrW = w => Math.abs(w) >= 1000 ? (w / 1000).toFixed(2) + " kW" : Math.round(w) + " W";
   const hvW   = Math.max(0, pvW + gridW - heaterW);
-  const hvStr = hvW >= 1000 ? (hvW / 1000).toFixed(2) + " kW" : Math.round(hvW) + " W";
+  const hvStr = kwOrW(hvW);
 
   // node geometry (SVG coordinates, viewBox 0 0 360 H)
   const TOP_Y = 4, MID_Y = 74, BUS_Y = 138, BOT_Y = 148;
@@ -371,7 +372,7 @@ function renderEnergyFlow(heater, wb, cs) {
     let wbV = "–", wbS = "";
     if (wbSt.frc != null) {
       if (wbChrg) {
-        wbV = wbPwrW > 50 ? (wbPwrW / 1000).toFixed(2) + " kW" : "lädt";
+        wbV = wbPwrW > 50 ? kwOrW(wbPwrW) : "lädt";
         wbS = "Auto lädt";
       } else {
         wbV = wbSt.frc === 1 ? "pausiert" : wbSt.frc === 0 ? "freigeg." : `frc=${wbSt.frc}`;
@@ -450,14 +451,13 @@ function renderEnergyFlow(heater, wb, cs) {
   });
 
   // display values
-  const absKw = (Math.abs(gridW) / 1000).toFixed(2) + " kW";
-  const nzVal = Math.abs(gridW) > 50 ? absKw : "~0 W";
+  const nzVal = Math.abs(gridW) > 50 ? kwOrW(Math.abs(gridW)) : "~0 W";
   const nzSub = feeding ? "Einsp." : drawing ? "Bezug" : "";
-  const hzKw  = (heaterW / 1000).toFixed(2) + " kW";
+  const hzKw  = kwOrW(heaterW);
 
   el.innerHTML = `<svg viewBox="0 0 ${W} ${SVG_H}" width="100%" style="display:block;margin-top:8px">
 ${conn.join("\n")}
-${node(pv.x, pv.y, NW, NH, { icon:"☀️", label:"PV", value:(pvW/1000).toFixed(2)+" kW", sub:"", aktiv:pvOn, accent:PVC, always:true })}
+${node(pv.x, pv.y, NW, NH, { icon:"☀️", label:"PV", value:kwOrW(pvW), sub:"", aktiv:pvOn, accent:PVC, always:true })}
 ${node(nz.x, nz.y, NW, NH, { icon:"⚡", label:"NETZ", value:nzVal, sub:nzSub, aktiv:gridOn })}
 ${hausNode()}
 ${node(hz.x, hz.y, NW, NH, { icon:"🔥", label:"HEIZSTAB", value:hzKw, sub:`${phases}/3 Ph.`, aktiv:heatOn })}
@@ -506,13 +506,13 @@ function renderSolax(d) {
   if (stringsEl) {
     const maxW = Math.max(d.pv_total_w, 1);
     stringsEl.innerHTML = [
-      { n: "STR1", w: d.pv1_power_w, v: d.pv1_voltage_v, a: d.pv1_current_a },
-      { n: "STR2", w: d.pv2_power_w, v: d.pv2_voltage_v, a: d.pv2_current_a },
+      { n: "STR1 (Dach)", w: d.pv1_power_w, v: d.pv1_voltage_v, a: d.pv1_current_a, cls: "str1" },
+      { n: "STR2 (Wand)", w: d.pv2_power_w, v: d.pv2_voltage_v, a: d.pv2_current_a, cls: "str2" },
     ].map(s => {
       const pct = Math.max(2, Math.min(100, s.w / maxW * 100)).toFixed(1);
       return `<div class="pv-string">
         <div class="pv-string-label">${s.n}</div>
-        <div class="pv-string-bar-wrap"><div class="pv-string-bar" style="width:${pct}%"></div></div>
+        <div class="pv-string-bar-wrap"><div class="pv-string-bar ${s.cls}" style="width:${pct}%"></div></div>
         <div class="pv-string-val">${Math.round(s.w)} W</div>
         <div class="pv-string-sub">${s.v.toFixed(0)} V · ${s.a.toFixed(1)} A</div>
       </div>`;
@@ -836,8 +836,8 @@ function renderDailyChart(entries) {
   </svg>`;
 }
 
-function renderStringChart(entries) {
-  const wrap = document.getElementById("chart-strings-wrap");
+function renderStringChart(entries, wrapId = "chart-strings-wrap") {
+  const wrap = document.getElementById(wrapId);
   if (!wrap) return;
   if (!entries || entries.length < 2) {
     wrap.innerHTML = '<div class="chart-empty">Noch keine Stundendaten.</div>';
@@ -876,9 +876,9 @@ function renderStringChart(entries) {
   wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">
     <g>${yElems}${xElems}</g>
     <line x1="${nowX}" y1="${pad.t}" x2="${nowX}" y2="${pad.t+ch}" class="now-line"/>
-    <path d="${area('s2')}" fill="rgba(245,120,42,0.15)" stroke="none"/>
+    <path d="${area('s2')}" fill="rgba(91,140,255,0.15)" stroke="none"/>
     <path d="${area('s1')}" fill="rgba(232,164,53,0.15)" stroke="none"/>
-    <path d="${path('s2')}" fill="none" stroke="#f5782a" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="${path('s2')}" fill="none" stroke="#5b8cff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
     <path d="${path('s1')}" fill="none" stroke="#e8a435" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
   </svg>`;
 }
@@ -1111,6 +1111,74 @@ async function loadVerlaufJahr(year) {
   } catch (e) {
     showError("Jahresverlauf konnte nicht geladen werden: " + e.message);
   }
+}
+
+async function loadPeakTimeChart() {
+  try {
+    const data = await api("/api/history/peak?days=30");
+    const entries = (data.entries || []).filter(e => e.peak_hour && e.peak_w);
+    renderPeakTimeChart(entries.slice(-7), "chart-peak-week-wrap", 7);
+    renderPeakTimeChart(entries, "chart-peak-month-wrap", 30);
+  } catch (e) {
+    console.error("Tageshoch-Zeitverlauf konnte nicht geladen werden:", e);
+  }
+}
+
+function renderPeakTimeChart(entries, wrapId, days) {
+  const wrap = document.getElementById(wrapId);
+  if (!wrap) return;
+  if (!entries || !entries.length) {
+    wrap.innerHTML = '<div class="chart-empty">Noch keine Tagesdaten.</div>';
+    return;
+  }
+  const toMin = hhmm => { const [h, m] = hhmm.split(":").map(Number); return h * 60 + m; };
+  const n = entries.length;
+  const mins = entries.map(e => toMin(e.peak_hour));
+  const maxW = Math.max(...entries.map(e => e.peak_w || 0), 1);
+
+  const VW = 480, VH = 100;
+  const pad = { t: 10, r: 6, b: 22, l: 40 };
+  const cw = VW - pad.l - pad.r, ch = VH - pad.t - pad.b;
+
+  const rawMin = Math.min(...mins), rawMax = Math.max(...mins);
+  const minY = Math.floor((rawMin - 30) / 60) * 60;
+  const maxY = Math.ceil((rawMax + 30) / 60) * 60;
+  const spanY = Math.max(60, maxY - minY);
+  const sy = v => pad.t + ch - ((v - minY) / spanY * ch);
+  const sx = i => n === 1 ? pad.l + cw / 2 : pad.l + (i / (n - 1)) * cw;
+
+  let yElems = "";
+  const yStepMin = spanY <= 240 ? 60 : spanY <= 480 ? 120 : 180;
+  for (let yv = Math.ceil(minY / yStepMin) * yStepMin; yv <= maxY + 0.01; yv += yStepMin) {
+    const ypx = sy(yv).toFixed(1);
+    const hh = String(Math.floor(yv / 60)).padStart(2, "0");
+    const mm = String(yv % 60).padStart(2, "0");
+    yElems += `<line x1="${pad.l}" y1="${ypx}" x2="${pad.l+cw}" y2="${ypx}" class="grid-line"/>`;
+    yElems += `<text x="${pad.l-4}" y="${ypx}" text-anchor="end" dominant-baseline="middle">${hh}:${mm}</text>`;
+  }
+
+  const weekdays = ["So","Mo","Di","Mi","Do","Fr","Sa"];
+  let points = "", dots = "", xLabels = "";
+  entries.forEach((e, i) => {
+    const x = sx(i), y = sy(toMin(e.peak_hour));
+    points += `${x.toFixed(1)},${y.toFixed(1)} `;
+    const r = (2 + (e.peak_w || 0) / maxW * 3).toFixed(1);
+    dots += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" fill="#fbbf24">`
+          + `<title>${_fmtDate(e.date)} · ${e.peak_hour} Uhr · ${e.peak_w} W</title></circle>`;
+    let label = "";
+    if (days <= 7) {
+      label = weekdays[new Date(e.date + "T12:00:00").getDay()];
+    } else if (i === 0 || i % 5 === 0 || i === n - 1) {
+      label = parseInt((e.date || "").split("-")[2] || "0") + ".";
+    }
+    if (label) xLabels += `<text x="${x.toFixed(1)}" y="${VH-3}" text-anchor="middle">${label}</text>`;
+  });
+
+  wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">
+    <g>${yElems}</g>
+    <polyline points="${points.trim()}" fill="none" stroke="#fbbf24" stroke-width="1.5" opacity="0.6"/>
+    ${dots}${xLabels}
+  </svg>`;
 }
 
 function _renderKpiRow(elemId, entries, round0 = false) {
@@ -1817,7 +1885,7 @@ function renderStringAlertsList(alerts) {
     return `<div class="${cls}" style="margin-bottom:8px;">
       <div style="font-size:10px;color:var(--text-muted);margin-bottom:3px;">${ts}</div>
       ${a.message}
-      <div style="font-size:10px;color:var(--text-muted);margin-top:3px;">STR1: ${a.str1_w ?? "–"} W · STR2: ${a.str2_w ?? "–"} W${ratioStr}</div>
+      <div style="font-size:10px;color:var(--text-muted);margin-top:3px;">STR1 (Dach): ${a.str1_w ?? "–"} W · STR2 (Wand): ${a.str2_w ?? "–"} W${ratioStr}</div>
     </div>`;
   }).join("");
 }
@@ -2379,11 +2447,12 @@ async function loadPhaseLogs() {
 async function refreshStatus() {
   try {
     const activeTab = document.querySelector(".tab.active")?.dataset.tab;
-    const [data, history, solax, cascadeStatus] = await Promise.all([
+    const [data, history, solax, cascadeStatus, hourlyToday] = await Promise.all([
       api("/api/status"),
       api("/api/temp-history").catch(() => ({ entries: [] })),
       api("/api/solax").catch(() => null),
       api("/api/cascade/status").catch(() => null),
+      api("/api/history/hourly").catch(() => ({ entries: [] })),
     ]);
     if (solax !== null) {
       lastSolaxData = solax;
@@ -2402,6 +2471,7 @@ async function refreshStatus() {
     renderSolax(effectiveSolax);
     renderTempChart(history.entries, data.heater?.storage_max_temp);
     renderWbChart(history.entries);
+    renderStringChart(hourlyToday.entries || [], "pv-strings-chart-wrap");
     loadPhaseLogs();
     if (cascadeStatus) {
       renderCascadeMini(cascadeStatus);
@@ -2437,7 +2507,11 @@ async function runOnce() {
       renderTempChart(h.entries, data.heater?.storage_max_temp);
       renderWbChart(h.entries);
     }).catch(() => {});
+    api("/api/history/hourly").then(h => {
+      renderStringChart(h.entries || [], "pv-strings-chart-wrap");
+    }).catch(() => {});
     loadPhaseLogs();
+    loadPeakTimeChart();
   } catch (e) {
     showError("Lauf fehlgeschlagen: " + e.message);
   } finally {
@@ -2484,6 +2558,11 @@ async function loadSettings() {
     setFormValue(f, "wallbox.pause_below_storage_temp", lastConfig.wallbox?.pause_below_storage_temp);
     setFormValue(f, "wallbox.release_above_storage_temp", lastConfig.wallbox?.release_above_storage_temp);
     setFormValue(f, "wallbox.fail_safe", lastConfig.wallbox?.fail_safe ?? "no_change");
+    setFormValue(f, "wallbox.eco_phases", lastConfig.wallbox?.eco_phases ?? 1);
+    setFormValue(f, "wallbox.eco_amps", lastConfig.wallbox?.eco_amps ?? 16);
+    setFormValue(f, "wallbox.basic_phases", lastConfig.wallbox?.basic_phases ?? 2);
+    setFormValue(f, "wallbox.basic_amps", lastConfig.wallbox?.basic_amps ?? 10);
+    setFormValue(f, "wallbox.auto_reset_on_unplug", lastConfig.wallbox?.auto_reset_on_unplug ?? true);
     setFormValue(f, "auth.enabled", lastConfig.auth_enabled ?? false);
     setFormValue(f, "auth.user", lastConfig.auth_user ?? "admin");
     // Passwort-Feld bewusst leer lassen
@@ -2561,6 +2640,11 @@ async function saveSettings(e) {
       pause_below_storage_temp: numField("wallbox.pause_below_storage_temp"),
       release_above_storage_temp: numField("wallbox.release_above_storage_temp"),
       fail_safe: f.elements.namedItem("wallbox.fail_safe")?.value,
+      eco_phases: numField("wallbox.eco_phases"),
+      eco_amps: numField("wallbox.eco_amps"),
+      basic_phases: numField("wallbox.basic_phases"),
+      basic_amps: numField("wallbox.basic_amps"),
+      auto_reset_on_unplug: boolField("wallbox.auto_reset_on_unplug"),
     },
     auth: {
       enabled: boolField("auth.enabled"),
@@ -2757,6 +2841,7 @@ function boot() {
 
   refreshStatus().finally(hideLoadingOverlay);
   refreshTimer = setInterval(refreshStatus, REFRESH_MS);
+  loadPeakTimeChart();
 }
 
 function hideLoadingOverlay() {

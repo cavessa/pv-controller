@@ -658,6 +658,9 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
   transition: width 0.5s ease;
   min-width: 2px;
 }
+.pv-string-bar.str2 {
+  background: var(--accent);
+}
 .pv-string-val {
   grid-column: 3; grid-row: 1;
   font-size: 13px;

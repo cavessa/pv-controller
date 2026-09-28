@@ -462,6 +462,7 @@ class Controller:
             energy_total_wh=_num(raw.get("eto")),
             charge_duration_s=charge_duration_s,
             logic_mode=int(lmo) if isinstance(lmo, (int, float)) else None,
+            psm=int(raw["psm"]) if isinstance(raw.get("psm"), (int, float)) else None,
         )
 
     def _read_wallbox_status(self) -> tuple[Optional[WallboxStatus], Optional[str]]:
@@ -543,10 +544,14 @@ class Controller:
                     "Manual/normal charging will not be touched."
                 ),
             )
-            if status.car_state == 1:
+            if status.car_state == 1 and cfg.auto_reset_on_unplug:
                 decision.target_logic_mode = 4
-                decision.target_amp = 7
-                decision.reason += " Auto-restore: car unplugged, switching to Eco mode and resetting amp to 7A."
+                decision.target_amp = cfg.eco_amps
+                decision.target_psm = cfg.eco_phases
+                decision.reason += (
+                    " Auto-restore: car unplugged, switching to Eco mode "
+                    f"({cfg.eco_phases}-phasig, {cfg.eco_amps}A)."
+                )
             return status, decision
 
         if status.force_state != 0:
@@ -624,6 +629,31 @@ class Controller:
         except GoeError as e:
             decision.amp_execution_error = str(e)
             log.error("go-e set amp=%d failed: %s", target, e)
+
+    def _execute_psm(self, decision: WallboxDecision) -> None:
+        target = decision.target_psm
+        if target is None:
+            return
+        if self._read_only:
+            log.info("READ-ONLY: would set go-e psm to %d.", target)
+            return
+        if not self.cfg.runtime.enabled:
+            log.info("Controller disabled: not setting go-e psm to %d.", target)
+            return
+        if self.cfg.runtime.dry_run:
+            log.info("DRY-RUN: would set go-e psm to %d.", target)
+            return
+        if self.goe is None:
+            decision.psm_execution_error = "wallbox client not initialised"
+            log.error(decision.psm_execution_error)
+            return
+        try:
+            self.goe.set_psm(target)
+            decision.psm_executed = True
+            log.info("go-e psm set to %d.", target)
+        except (GoeError, ValueError) as e:
+            decision.psm_execution_error = str(e)
+            log.error("go-e set psm=%d failed: %s", target, e)
 
     def _execute_lmo(self, decision: WallboxDecision) -> None:
         target = decision.target_logic_mode
@@ -913,6 +943,7 @@ class Controller:
         self._execute_wallbox(decision)
         self._execute_lmo(decision)
         self._execute_amp(decision)
+        self._execute_psm(decision)
         log.info(
             "Wallbox Decision: action=%s target_force_state=%s target_lmo=%s",
             decision.action.value,

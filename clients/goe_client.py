@@ -9,7 +9,7 @@ import requests
 
 log = logging.getLogger(__name__)
 
-STATUS_FILTER = "fup,frc,alw,car,amp,nrg,wh,eto,cdi,rbt,lmo"
+STATUS_FILTER = "fup,frc,alw,car,amp,nrg,wh,eto,cdi,rbt,lmo,psm"
 
 
 class GoeError(Exception):
@@ -44,6 +44,18 @@ class GoeClient:
             r.raise_for_status()
         except requests.RequestException as e:
             raise GoeError(f"go-e set amp={value} failed: {e}") from e
+
+    def set_psm(self, value: int) -> None:
+        if value not in (1, 2):
+            raise ValueError(
+                f"set_psm only accepts 1 (einphasig) or 2 (dreiphasig), got {value!r}"
+            )
+        url = f"{self.base_url}/api/set"
+        try:
+            r = requests.get(url, params={"psm": value}, timeout=self.timeout)
+            r.raise_for_status()
+        except requests.RequestException as e:
+            raise GoeError(f"go-e set psm={value} failed: {e}") from e
 
     def set_logic_mode(self, value: int) -> None:
         url = f"{self.base_url}/api/set"

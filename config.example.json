@@ -48,7 +48,12 @@
     "pause_below_storage_temp": 62,
     "release_above_storage_temp": 63,
     "request_timeout_seconds": 5,
-    "fail_safe": "no_change"
+    "fail_safe": "no_change",
+    "eco_phases": 1,
+    "eco_amps": 16,
+    "basic_phases": 2,
+    "basic_amps": 10,
+    "auto_reset_on_unplug": true
   },
   "auth_enabled": false,
   "auth_user": "admin",

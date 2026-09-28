@@ -109,6 +109,7 @@ class WallboxStatus:
     energy_total_wh: Optional[float] = None
     charge_duration_s: Optional[float] = None
     logic_mode: Optional[int] = None  # go-e lmo: 3=eco/PV, 4=next-trip, other=standard
+    psm: Optional[int] = None  # go-e psm: 1=einphasig, 2=dreiphasig
 
 
 @dataclass
@@ -124,6 +125,9 @@ class WallboxDecision:
     target_amp: Optional[int] = None
     amp_executed: bool = False
     amp_execution_error: Optional[str] = None
+    target_psm: Optional[int] = None
+    psm_executed: bool = False
+    psm_execution_error: Optional[str] = None
 
 
 @dataclass

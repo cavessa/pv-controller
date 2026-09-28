@@ -98,6 +98,11 @@ class WallboxConfig:
     release_above_storage_temp: float = 62.0
     request_timeout_seconds: int = 5
     fail_safe: str = "no_change"
+    eco_phases: int = 1
+    eco_amps: int = 16
+    basic_phases: int = 2
+    basic_amps: int = 10
+    auto_reset_on_unplug: bool = True
 
     def __post_init__(self) -> None:
         if self.release_above_storage_temp <= self.pause_below_storage_temp:
@@ -111,6 +116,18 @@ class WallboxConfig:
             raise ValueError(
                 "wallbox.url must be set when wallbox.enabled=true"
             )
+        for name, value in (
+            ("eco_phases", self.eco_phases),
+            ("basic_phases", self.basic_phases),
+        ):
+            if value not in (1, 2):
+                raise ValueError(f"wallbox.{name} must be 1 or 2 (got {value})")
+        for name, value in (
+            ("eco_amps", self.eco_amps),
+            ("basic_amps", self.basic_amps),
+        ):
+            if not 6 <= value <= 32:
+                raise ValueError(f"wallbox.{name} must be between 6 and 32 (got {value})")
 
 
 @dataclass

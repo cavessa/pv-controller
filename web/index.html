@@ -148,6 +148,14 @@
             <div><span>Einspeisung / Bezug</span><b id="pv-live-feedin">–</b></div>
             <div><span>Hausverbrauch</span><b id="pv-live-consumption">–</b></div>
           </div>
+          <div class="card-head" style="margin-top:10px">
+            <span style="font-size:11px;letter-spacing:2px;color:#8a8d95;text-transform:uppercase">PV1 / PV2 heute</span>
+            <div class="chart-legend-inline">
+              <span class="cl-str1">STR1 (Dach)</span>
+              <span class="cl-str2">STR2 (Wand)</span>
+            </div>
+          </div>
+          <div id="pv-strings-chart-wrap" class="temp-chart-wrap"></div>
         </div>
 
         <div class="card">
@@ -239,6 +247,23 @@
       </div><!-- .grid -->
       </div><!-- .dashboard-right -->
       </div><!-- .dashboard-cols -->
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Tageshoch – Uhrzeit im Verlauf</h2>
+          <div class="chart-legend-inline">
+            <span class="cl-pv">&#9679; Uhrzeit des Tageshochs</span>
+          </div>
+        </div>
+        <div style="font-size:11px;letter-spacing:1px;color:#8a8d95;text-transform:uppercase;margin-bottom:4px">Letzte 7 Tage</div>
+        <div id="chart-peak-week-wrap" class="temp-chart-wrap">
+          <div class="chart-empty">Lade…</div>
+        </div>
+        <div style="font-size:11px;letter-spacing:1px;color:#8a8d95;text-transform:uppercase;margin:12px 0 4px">Letzte 30 Tage</div>
+        <div id="chart-peak-month-wrap" class="temp-chart-wrap">
+          <div class="chart-empty">Lade…</div>
+        </div>
+      </div>
     </section>
 
     <!-- ========= Verlauf ========= -->
@@ -281,8 +306,8 @@
           <div class="card-head">
             <h2>String-Performance</h2>
             <div class="chart-legend-inline">
-              <span class="cl-str1">STR1</span>
-              <span class="cl-str2">STR2</span>
+              <span class="cl-str1">STR1 (Dach)</span>
+              <span class="cl-str2">STR2 (Wand)</span>
             </div>
           </div>
           <div id="chart-strings-wrap" class="temp-chart-wrap">
@@ -363,8 +388,8 @@
           <div class="card-head">
             <h2>String-Leistung (täglich)</h2>
             <div class="chart-legend-inline">
-              <span class="cl-str1-b">STR1</span>
-              <span class="cl-str2-b">STR2</span>
+              <span class="cl-str1-b">STR1 (Dach)</span>
+              <span class="cl-str2-b">STR2 (Wand)</span>
             </div>
           </div>
           <div id="chart-strings-day-wrap" class="temp-chart-wrap">
@@ -635,6 +660,21 @@
                 <option value="no_change">no_change</option>
               </select>
             </label>
+            <label>Eco/PV Phasen
+              <select name="wallbox.eco_phases">
+                <option value="1">1-phasig</option>
+                <option value="2">3-phasig</option>
+              </select>
+            </label>
+            <label>Eco/PV Ampere<input type="number" min="6" max="32" step="1" name="wallbox.eco_amps"></label>
+            <label>Basic Phasen
+              <select name="wallbox.basic_phases">
+                <option value="1">1-phasig</option>
+                <option value="2">3-phasig</option>
+              </select>
+            </label>
+            <label>Basic Ampere<input type="number" min="6" max="32" step="1" name="wallbox.basic_amps"></label>
+            <label class="check"><input type="checkbox" name="wallbox.auto_reset_on_unplug"> Nach Abstecken automatisch auf Eco/PV zurücksetzen</label>
           </fieldset>
 
           <fieldset>
@@ -787,6 +827,6 @@
   </footer>
   </div>
 
-  <script src="/static/app.js?v=20260726" defer></script>
+  <script src="/static/app.js?v=20260928b" defer></script>
 </body>
 </html>

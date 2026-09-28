@@ -256,6 +256,25 @@ def get_daily_history(days: int = 30) -> list[dict]:
     return result
 
 
+def get_daily_peak(days: int = 30) -> list[dict]:
+    """Tages-Spitzenleistung (PV) samt Uhrzeit aus den stündlichen Snapshots.
+
+    Die Uhrzeit ist auf volle Stunden genau, da nur stündliche Snapshots
+    vorgehalten werden (kein minütliches Rohdaten-Log).
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """SELECT substr(timestamp,1,10) as day, MAX(pv_w) as peak_w,
+                      substr(timestamp,12,5) as peak_hour
+               FROM pv_hourly_log
+               GROUP BY day ORDER BY day DESC LIMIT ?""",
+            (days,),
+        ).fetchall()
+    result = [{"date": r[0], "peak_w": r[1], "peak_hour": r[2]} for r in rows]
+    result.reverse()
+    return result
+
+
 def get_daily_for_month(year_month: str) -> list[dict]:
     """Alle Tages-Einträge für einen Monat (Format YYYY-MM)."""
     with sqlite3.connect(DB_PATH) as conn:
