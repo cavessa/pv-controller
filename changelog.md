@@ -1,5 +1,149 @@
 # Changelog
 
+## 2026-10-10 – PV-Card: Balken-Skala sichtbar, kein doppelter Wert, Label-Layout
+
+**Anlass (User):** Die Balken hatten unterschiedliche Skalen ohne Hinweis, der Pergola-Wert stand doppelt, und „PERGOLA" überlappte die V/A-Zeile.
+
+**Umsetzung:**
+- **Max-Wert am Balkenende:** hinter dem Watt-Wert steht klein und grau „/ 10 kW" bzw. „/ 1 kW" (≥ 1000 W in kW, sonst in W). Die Skala kommt aus der Config: neues Feld `solax.max_w` (pro String, Default 10000) und `solax2.max_w` (Gerät, Default 1000); `/api/solax` liefert `str_max_w` und `pergola_max_w`. Dadurch sind jetzt auch STR1/STR2 auf 10 kW skaliert (vorher relativ zur Gesamt-PV). Die Felder sind nur in `config.json` einstellbar, nicht im Settings-UI; `config.example.json` ergänzt.
+- **Doppelter Wert:** Der Summenwert in der Gruppenzeile erscheint nur bei mehr als einem String („PV-Anlage" ja, „Balkonkraftwerk" nein).
+- **Label-Kollision:** Label-Spalte 70 px, linksbündig, Zeilenumbruch erlaubt (`line-height: 1.2`); Wertspalte 104 px ohne Umbruch. Das Label wird nicht mehr auf 7 Zeichen gekürzt. Cache-Busting `app.js?v=20261010g`, `styles.css?v=56`.
+
+**Hinweis:** Backend-Änderung (`/api/solax`, `config.py`) → Dienst neu starten.
+
+## 2026-10-10 – PV-Card: Pergola-Balken auf 1000 W skaliert
+
+**Anlass (User):** Die Pergola-Anlage hat maximal 1000 W; der Balken war relativ zur Gesamt-PV skaliert und deshalb kaum sichtbar.
+
+**Umsetzung:** In `renderSolax` (`web/app.js`) bekommt die Pergola-Zeile `max: 1000` – 1000 W entsprechen einem vollen Balken. STR1/STR2 bleiben relativ zur Gesamt-PV. Der Wert ist im Code fest (kein Config-Eintrag). Cache-Busting `app.js?v=20261010f`.
+
+## 2026-10-10 – Hausverbrauch-Card: Zeile „davon aus PV"
+
+**Anlass (User):** Neben „davon zugekauft" soll der PV-Anteil stehen. 
+
+**Umsetzung:** Neue Zeile „davon aus PV: X kWh (Y%)" vor „davon zugekauft" (`web/index.html`, `renderHausverbrauch` in `web/app.js`). Wert = `meter_today.verbrauch_kwh − bezug_kwh` (identisch mit „Eigenverbr." in der HEUTE-Card). Wert grün (#2ed8a3), der Wert bei „davon zugekauft" jetzt rot (#ff6b6b) statt grau. Cache-Busting `app.js?v=20261010e`.
+
+## 2026-10-10 – Tagesverbrauch und Netzbezug aus dem Shelly-Hauptzähler
+
+**Anlass (User):** Mit dem Pergola-Wechselrichter ist der Shelly 3EM am Hauptzähler (`main_meter_url`) die verlässlichere Quelle für Netzbezug/Einspeisung – er sieht alles.
+
+**Umsetzung:**
+- `clients/shelly_client.py`: `Shelly3EMClient.get_energy_wh()` liest die Lifetime-Zähler (Gen1 `/status` → `emeters[i].total`/`total_returned`, über die Phasen summiert; Gen2 `/rpc/EMData.GetStatus` → `total_act`/`total_act_ret`). Leistung und Energie teilen sich pro Lauf einen `/status`-Abruf (2 s Cache). Erkennung automatisch (Gen1 zuerst), es gibt kein `main_meter_type` in der Config.
+- `db.py`: Tabelle `meter_snapshots` (`date`, `import_wh_at_midnight`, `export_wh_at_midnight`, zusätzlich `taken_at`); `ensure_meter_snapshot()` legt den Snapshot beim ersten Lauf des Tages an (`INSERT OR IGNORE`, Web-Poller und Cron kollidieren nicht).
+- Neues Modul `meter.py` (`compute_meter_today`): `bezug = Zähler − Snapshot`, `einspeisung` analog, `verbrauch = PV-Ertrag (Haupt-WR + Pergola) + Bezug − Einspeisung`. Fallback auf die Solax-Tageszähler (`source: "solax"`), wenn der Shelly nicht lesbar ist, der Snapshot fehlt/ungültig ist oder ein Zähler zurückgesetzt wurde.
+- `controller.py`/`models.py`: `Readings` um Hauptzähler-Lifetime und Solax-Tageszähler erweitert. Fehler beim Energie-Lesen sind nicht kritisch (nur Log, kein Fail-safe).
+- `web.py`: `/api/status` liefert `meter_today` `{source, bezug_kwh, einspeisung_kwh, verbrauch_kwh}`. `/api/solax` liefert dasselbe und setzt `grid_in_today_kwh`/`grid_out_today_kwh`/`self_consumption_kwh` auf die Shelly-Werte, damit HEUTE-Card, Eigenverbrauch/Autarkie-Gauges und Hausverbrauch konsistent sind.
+- `pv_logger.py`: `pv_daily_log.feed_out_kwh`/`feed_in_kwh` kommen beim Tagesabschluss aus dem Shelly (wenn verfügbar), damit Verlauf, Netz-Tab und Autarkie konsistent sind.
+- Web-UI: Hausverbrauch-Card „Heute: X kWh" = Gesamtverbrauch plus Zeile „davon zugekauft: Y kWh (Z%)"; HEUTE-Card mit Hinweis „Quelle: Hauptzähler" bzw. „Quelle: Wechselrichter". Cache-Busting `app.js?v=20261010d`, `styles.css?v=55`.
+
+**Hinweise:**
+- Ein Snapshot gilt nur als Mitternachtswert, wenn er bis 00:30 Uhr entstand (`taken_at`). Der heutige Snapshot entstand beim Test um 13:18 und wird deshalb **nicht** verwendet: **Heute zeigen die Karten noch die Solax-Werte, ab morgen 00:00 den Hauptzähler.** Fällt Cron/Dienst um Mitternacht aus, gilt der Tag ebenfalls mit Solax-Werten.
+- Der 3EM zählt Bezug und Einspeisung **pro Phase**: Bezug und Einspeisung sind dadurch höher als beim Zähler des Netzbetreibers (der saldiert über die Phasen), die Differenz und damit der Verbrauch stimmen. 
+- Dienst neu starten (Backend-Änderungen).
+
+## 2026-10-10 – Tages-Charts: X-Achse auf Sonnenfenster begrenzt
+
+**Anlass (User):** Die Charts zeigten immer 0h–24h; die Nachtstunden (flach 0) stauchten die eigentliche Kurve.
+
+**Umsetzung:** X-Achse = Sonnenaufgang −1 h bis Sonnenuntergang +1 h, auf volle Stunden gerundet (heute 07:33/18:43 → 6h–20h); ohne Sonnenzeiten Fallback 5h–21h. Gilt für „PV1 / PV2 heute" (PV-Card), Verlauf → Tag („Tagesverlauf" und String-Chart) und Verlauf → Strings (Tagesverlauf). Speicher-Temperatur, Hausverbrauch-Sparkline und Netz-Tagesverlauf bleiben unverändert. Datenpunkte außerhalb des Fensters werden nicht gezeichnet, die „Jetzt"-Linie nur innerhalb des Fensters.
+- `weather.py`/`db.py`: Open-Meteo-Abfrage um `sunrise` erweitert, neue Spalte `weather_log.sunrise` (automatische Migration). Der Abruf wird wiederholt, solange der Sonnenaufgang von heute fehlt. `calculate_forecast` liefert `today.sunrise` mit.
+- `web.py`: `/api/history/hourly` liefert `sunrise`/`sunset` des angefragten Tages.
+- `web/app.js`: `sunWindow()`, die drei Chart-Funktionen nehmen das Fenster als Parameter. Cache-Busting `app.js?v=20261010c`.
+
+**Hinweis:** Nur ab heute ist `sunrise` gespeichert (Open-Meteo-Abruf holt gestern/heute/morgen). Ältere Tage haben keinen Sonnenaufgang in `weather_log` und zeigen deshalb das Fallback-Fenster 5h–21h. Dienst-Neustart nötig (Backend-Änderung an `/api/history/hourly`).
+
+## 2026-10-10 – Pergola-PV (Solax 2, 1,5 kW) als zweite PV-Quelle
+
+**Anlass (User):** Der zweite Solax-Wechselrichter (Balkonkraftwerk, 192.168.2.141) soll im Energiefluss, in der PV-Erzeugung-Card und im Verlauf erscheinen. Name im UI: **Pergola** (nicht „Balkon").
+
+**Umsetzung:**
+- `config.py`: `SolaxConfig` um `enabled`/`name` erweitert, neuer optionaler Block `solax2` (`enabled`, `url`, `pwd`, `name`; Default aus). Verschachtelt wie `solax`, nicht als flache `solax2_*`-Keys. `config.example.json` ergänzt.
+- `clients/solax_client.py`: Cache jetzt **pro URL** (vorher modulweit – zwei Geräte hätten sich gegenseitig überschrieben). Das Pergola-Gerät (payload `type` 4, X1) hat eine **andere Register-Belegung** als der Haupt-WR: PV-Leistung `Data[7]+Data[8]`, Spannung `[3]/[4]`, Strom `[5]/[6]`, Tagesertrag `Data[13]/10`. Die Belegung `Data[14]/[15]`/`[82]` aus der Vorgabe liefert hier 0 und wurde nur für den Haupt-WR beibehalten. `pv_logger` liest weiter nur den Haupt-WR (`_cached_raw`).
+- `controller.py`/`models.py`: `pv_power_w` = Haupt-WR + Pergola; neu `pv1_power_w`, `pv2_power_w`, `pv2_today_kwh`. Pergola-Lesefehler sind **nicht kritisch** (nur Log, kein Fail-safe). Fällt der Haupt-WR aus, bleibt `pv_power_w` None wie bisher.
+- `web.py`: `/api/status` (`heater.pv1_power`, `pv2_power`, `pv2_today_kwh`, `pv2_name`, `pv2_enabled`; `pv_power` = Summe), `/api/solax` (`pv_total_w`, `yield_today_kwh`, `consumption_w` = Summe inkl. Pergola, dazu `main_total_w`, `pergola_*`), neuer `POST /api/solax2/test`, `PUT /api/config` akzeptiert `solax2`. Die Strings STR1/STR2 (`pv1_power_w`/`pv2_power_w` in `/api/solax`) bleiben die des Haupt-WR.
+- `db.py`/`pv_logger.py`: neue Spalten `pv_hourly_log.pv2_w`, `pv_daily_log.pv2_kwh` (automatische Migration). `pv_w`/`pv_kwh` sind die Summen; der Hausverbrauch im Stunden-Log enthält jetzt die Pergola-Leistung. Der String-Check nutzt nur die Haupt-WR-Leistung.
+- PV-Card: Gruppenüberschriften „PV-Anlage" (STR1 Dach, STR2 Wand) und „Balkonkraftwerk" (Zeile mit dem Standort, z. B. „Pergola"); vorher stand „Dach"/„Pergola" doppelt (`app.js?v=20261010b`).
+- Web-UI: Einstellungen „Pergola (Solax 2)" mit „Verbindung testen"; Energiefluss mit zweiter PV-Box (Linie ab 50 W, Layout unverändert wenn deaktiviert); PV-Card mit Aufschlüsselung Dach/Pergola; dritte grüne Linie im Tages-Chart. Cache-Busting `app.js?v=20261010a`, `styles.css?v=54`.
+
+**Hinweise:**
+- Dienst muss neu gestartet werden (`pvcontroller-web`), `config.json` ist bereits mit `solax2.enabled=true`, `name=Pergola` angepasst.
+- Der Pergola-**Tagesertrag** (`Data[13]`) ist nicht gegen die Solax-Doku verifiziert (aktuell 0,2 kWh) – abends mit dem Wert in der Solax-App vergleichen.
+- Die Summe geht in die Überschuss-Schwellen (`pv >= min_pv_power`) ein; die Überschussberechnung selbst nutzt den Hauptzähler, der die Pergola schon enthält. Die Prognose-Regression (GHI → `pv_kwh`) mischt ab heute Dach+Pergola.
+- Bei Pergola-Ausfall fällt `pv_power` kurz auf den Haupt-WR-Wert zurück; der Tagesertrag im Log behält den zuletzt gespeicherten Pergola-Wert.
+
+## 2026-10-03 – Heizstab: einstellbare Netzbezug-Toleranz (`heater.grid_assist_w`)
+
+**Anlass (User):** Im Winter werden 1,5 kW PV-Überschuss selten erreicht; der Heizstab soll schon ab z. B. 1 kW starten und die fehlenden 500 W aus dem Netz beziehen. Per Schalter einstellbar.
+
+**Umsetzung:** Neue Einstellung `heater.grid_assist_w` (W, Default 0 = aus). Sie wird von `min_pv_power_ph1/2/3` abgezogen (`HeaterConfig.effective_min_pv`, genutzt in `controller.py`) – gilt für Ein- und Ausschaltschwelle sowie die PV-Mindestleistung. Beispiel 500 W: Phase 1 ab 1000 W, Phase 2 ab 2500 W, Phase 3 ab 4000 W. Einstellbar im Web-UI (Heizstab & Speicher), in `web.py` erlaubt, `config.json`/`config.example.json` ergänzt. Cache-Busting `app.js?v=20261003a`.
+
+**Hinweis:** Dienst muss neu gestartet werden. Der Netzbezug entspricht höchstens dem eingestellten Wert pro laufender Phase-Stufe.
+
+## 2026-09-29 – Tageshoch wird serverseitig gespeichert (war nach Reload falsch)
+
+**Anlass (User):** Dashboard zeigte "Tageshoch: 2342 W um 15:47", obwohl heute über 7000 W erreicht wurden.
+
+**Ursache:** Das Tageshoch wurde nur im Browser mitgezählt (`pvPeakToday` in `web/app.js`) und startete bei jedem Seiten-Reload bei 0 – es zeigte also nur das Maximum seit dem Laden der Seite.
+
+**Fix:** Neue Tabelle `pv_peak_day` (`db.py`, `update_pv_peak()`); `/api/solax` schreibt das Tagesmaximum bei jedem Abruf fort und liefert `pv_peak_w`/`pv_peak_time`. Das Frontend zeigt nur noch diese Werte an. Cache-Busting `app.js?v=20260929d`.
+
+**Nachtrag:** Tageshoch-Anzeige war leer, solange der Dienst noch nicht neu gestartet war (altes Backend ohne `pv_peak_w`). Frontend hat jetzt einen Fallback auf die lokale Zählung (`app.js?v=20260929e`).
+
+**Hinweis:** Das Maximum gilt ab jetzt (Deploy ~15:50); die heutigen 7000 W vor dem Fix sind nicht nachgetragen, ab morgen stimmt der Wert komplett. Der Verlaufschart (7/30 Tage) nutzt weiter die stündlichen Snapshots und kann Spitzen zwischen den Stunden verpassen.
+
+## 2026-09-29 – Fehlalarm "String 1 liefert 0 W" auf dem Dashboard behoben
+
+**Anlass (User):** Dashboard zeigte "String 1 liefert 0 W während String 2 aktiv ist", obwohl beide Strings liefen (3677 W / 3091 W).
+
+**Ursache:** Das Banner (`_checkLiveStringAlert` in `web/app.js`) zeigte den neuesten Eintrag aus `string_alerts` der letzten 24 h – ohne Prüfung, ob der Fehler noch besteht. Der Alarm war echt, aber von 13:39 (STR1 0 W, STR2 2364 W, vermutlich kurzzeitige Verschattung) und um 14:22 längst vorbei.
+
+**Fix:** Banner erscheint nur noch, wenn die Live-Werte (`/api/solax`, `pv1_power_w`/`pv2_power_w`) den Fehler noch zeigen (ein String < 10 W, der andere > 200 W). Das Alert-Log im Verlauf-Tab bleibt unverändert. Cache-Busting `app.js?v=20260929c`.
+
+**Hinweis (nicht geändert):** In `db.log_string_alert` wird `datetime('now')` (UTC) mit lokalen Timestamps verglichen – das 55-min-Dedup ist dadurch um 2 h verschoben.
+
+## 2026-09-29 – Dashboard lädt sofort: Status-Cache im Backend, Skeleton-UI statt Loading-Overlay
+
+**Anlass (User):** Der Fullscreen-Loading-Overlay (Sonne + Spinner) stand ~5 Sekunden, bevor das Dashboard erschien. Wunsch: Layout sofort anzeigen (Skeleton-Platzhalter), jede Karte einzeln füllen sobald ihre Daten da sind, und die Ursache der 5 Sekunden im Backend beheben.
+
+**Messung vorher:** `/api/status` 5,6 s, `/api/cascade/status` 6,6 s, `/api/cascade/log` 1,5 s – alle anderen Endpunkte < 100 ms. Ursachen:
+1. `/api/status` **und** `/api/cascade/status` führten jeweils einen kompletten READ_ONLY-Controllerlauf aus (8 HTTP-Roundtrips zu Solax, Shellys, go-e) – zweimal pro Dashboard-Refresh, alle 10 s.
+2. Der Shelly-Heizstab-Zähler `heater_meter_url = http://192.168.2.21` ist nicht erreichbar → jeder Controllerlauf wartet 5 s auf den Connect-Timeout (der Controller fällt dann korrekt auf "0 W aus 0 aktiven Phasen" zurück). **Das Gerät sollte geprüft werden** – auch der minütliche Cron-Lauf (`main.py`) wartet dadurch bei jedem Durchlauf 5 s.
+3. `cascade_log` hat ~630.000 Zeilen und keinen Index auf `timestamp` → `ORDER BY timestamp DESC LIMIT 50` scannt die ganze Tabelle.
+
+**Backend:**
+- `web.py`: Neuer Hintergrund-Poller (`_status_poll_loop`, Daemon-Thread, gestartet über FastAPI-`lifespan`). Er führt den READ_ONLY-Controllerlauf alle 10 s aus (60 s, wenn 60 s lang kein Client den Status abgefragt hat) und cached das `ControllerResult` + Config. `/api/status` und `/api/cascade/status` liefern nur noch den Snapshot (`_cached_status()`), kein Geräte-Roundtrip mehr im Request-Pfad. Vor dem ersten Snapshot wartet ein Request bis zu 30 s (danach 503). Ist der Snapshot beim Request älter als 10 s (Übergang idle→aktiv), wird der Poller sofort geweckt. `POST /api/run-once` schreibt sein NORMAL-Ergebnis direkt in den Cache; `PUT /api/config` weckt den Poller, damit geänderte Einstellungen sofort im Status auftauchen. `append_temp_history` wandert vom Request-Pfad in den Poller (gleiche 10-s-Rate wie bisher bei offenem Dashboard).
+- `db.py`: `CREATE INDEX IF NOT EXISTS idx_cascade_log_timestamp ON cascade_log(timestamp)` in `init_db()`.
+
+**Messung nachher:** `/api/status` 25 ms, `/api/cascade/status` 18 ms, `/api/cascade/log` 16 ms.
+
+**Frontend:**
+- `web/index.html`: `#loading-overlay` komplett entfernt. Alle Dashboard-Werte/-Container starten mit Skeleton-Platzhaltern (`<span class="skeleton">…</span>` bzw. `<div class="skeleton skeleton-chart">`); der Platzhaltertext (transparent) bestimmt die Balkenbreite. Da die Renderer die Elemente per `textContent`/`innerHTML` überschreiben, verschwindet das Skeleton automatisch mit dem ersten echten Wert – kein separates "Skeleton entfernen" nötig. Cache-Busting `styles.css?v=53`, `app.js?v=20260929b`.
+- `web/styles.css`: `.skeleton` (Shimmer-Gradient, `color: transparent`, `pointer-events: none`), `.skeleton-chart`, `@keyframes shimmer`.
+- `web/app.js`: `refreshStatus()` wartet nicht mehr per `Promise.all` auf alle fünf Calls, sondern rendert jeden Bereich, sobald seine Antwort da ist: Kaskade-Mini, String-Chart, Wallbox-Chart, Phasen-Logs, Prognose, Hausverbrauch-Sparkline laufen unabhängig; nur Status + Solax werden gemeinsam gerendert (gemeinsame PV-Leistung als Single Source of Truth), Temperatur-Chart danach (braucht `storage_max_temp` aus dem Status). `hideLoadingOverlay()` entfernt.
+
+## 2026-09-29 – String-Verhältnis-Feature entfernt, Tageshoch-Chart auf kW umgestellt, Dashboard-Card-Layout iPad-Fix
+
+**Anlass (User):** Das String-Verhältnis-Warnsystem (Dach vs. Wand) schlägt bei diesem System grundsätzlich immer an, da beide Strings unterschiedlich ausgerichtet sind und nie ein stabiles "Normalverhältnis" haben. Zudem sollte die Tageshoch-Karte im Verlauf Leistung (kW) statt Uhrzeit zeigen, und auf dem iPad wirkte die Tageshoch-Karte deutlich breiter als die übrigen Dashboard-Karten.
+
+**String-Verhältnis entfernt** (die reine Ratio-Auswertung STR1/STR2 – die Erkennung "String liefert 0 W" bleibt erhalten, da sie orientierungsunabhängig ist):
+- `pv_logger.py`: `_check_string_anomaly()` – Block, der bei >30 % Abweichung vom "Normalverhältnis" einen Alert loggt, entfernt.
+- `web/app.js`: `checkStringAlert()` – Ratio-Abweichungs-Check (Tagesdurchschnitt) entfernt; `renderStringRatioChart()` sowie der Ratio-Fetch in `loadVerlaufStrings()` entfernt; `_cachedNormalRatio` entfernt.
+- `web/index.html`: Karte "String-Verhältnis (30 Tage)" (Verlauf → Strings) entfernt.
+- `web.py` / `db.py`: unbenutzt gewordenen Endpunkt `GET /api/strings/ratio` sowie `get_string_ratio_history()` entfernt (`get_normal_ratio()` bleibt, wird noch als Kontext-Info bei "String liefert 0 W"-Alerts geloggt).
+
+**Tageshoch-Chart auf kW umgestellt:**
+- `web/app.js`: `renderPeakTimeChart()` – Y-Achse zeigt jetzt die Tageshoch-Leistung in kW (`peak_w / 1000`, Achsenschritte über `niceStep()`) statt der Uhrzeit; Uhrzeit steht weiterhin im Hover-Tooltip. Cache-Busting `app.js?v=` auf `20260929a` angehoben.
+- `web/index.html`: Karte umbenannt in "Tageshoch – Verlauf (kW)", Legende auf "Tageshoch" vereinfacht.
+
+**iPad-Layout-Fix:** Die Tageshoch-Karte lag als eigenständige `.card` direkt unter `.dashboard-cols` und wurde ab 768 px Breite dadurch über die volle Breite gestreckt, während die übrigen Karten im Zwei-Spalten-Grid nur halb so breit waren.
+- `web/index.html`: Tageshoch-Karte zunächst in das `.grid` von `.dashboard-right` verschoben (nach der Wallbox-Karte).
+
+**Nachtrag (User):** Alte, bereits vor der Code-Änderung geloggte "String-Verhältnis weicht ... ab"-Alerts wurden weiterhin im Dashboard angezeigt (kamen aus der DB, nicht aus neu generiertem Code). Zudem war die rechte Dashboard-Spalte (PV Erzeugung, Heizstab, PV & Netz, Prognose, Wallbox, Tageshoch) auf dem iPad deutlich länger als die linke Spalte – die Tageshoch-Karte sollte stattdessen links stehen.
+
+- `pvcontroller.db`: 145 veraltete `string_alerts`-Zeilen mit der Nachricht "String-Verhältnis weicht ... vom Normal ab" gelöscht (Restbestände aus der Zeit vor der Code-Änderung; die Zeilen zu "String liefert 0 W" blieben erhalten).
+- `web/index.html`: Tageshoch-Karte von `.dashboard-right` nach `.dashboard-left` verschoben (letzte Karte, nach "Speicher"), um die beiden Spalten auf dem iPad in der Höhe anzugleichen.
+- `pvcontroller-web.service` neu gestartet, damit die entfernte `/api/strings/ratio`-Route und der bereinigte `pv_logger.py`-Code aktiv sind (reine Web-/API-Schicht, keine Auswirkung auf die minütlich per Cron laufende Steuerungslogik in `main.py`).
+
 ## 2026-09-28 – Energiefluss-Grafik: Werte unter 1 kW in Watt statt kW
 
 **Anlass (User):** In der Energiefluss-Grafik zeigte PV bei 90 W noch "0.09 kW" an – schwer lesbar bei kleinen Leistungen.

@@ -8,37 +8,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=52">
+  <link rel="stylesheet" href="/static/styles.css?v=56">
 </head>
 <body>
-  <div id="loading-overlay" style="
-    position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background: #1a1d23;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    z-index: 9999;
-    transition: opacity 0.3s ease;
-  ">
-    <div style="font-size: 24px; margin-bottom: 12px;">☀️</div>
-    <div style="
-      font-family: 'Courier New', monospace;
-      color: #e8a435;
-      font-size: 14px;
-      letter-spacing: 2px;
-    ">PV CONTROLLER</div>
-    <div style="
-      margin-top: 16px;
-      width: 40px; height: 40px;
-      border: 3px solid #3a3d45;
-      border-top-color: #2ed8a3;
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-    "></div>
-    <style>@keyframes spin { to { transform: rotate(360deg); } }</style>
-  </div>
   <div class="app-shell">
   <header class="topbar">
     <h1 class="brand-title">PV Controller</h1>
@@ -80,27 +52,29 @@
           <h2>Aktuelle Entscheidung</h2>
           <span class="severity-badge" id="summary-severity">…</span>
         </div>
-        <div class="decision-state" id="summary-state">…</div>
-        <div class="decision-reason" id="summary-reason">…</div>
+        <div class="decision-state" id="summary-state"><span class="skeleton">Speicher priorisiert</span></div>
+        <div class="decision-reason" id="summary-reason"><span class="skeleton">Speicher-Temperatur und PV-Überschuss werden gelesen …</span></div>
       </div>
 
       <div class="card flow-card">
         <h2>Energiefluss</h2>
-        <div id="flow-diagram"></div>
+        <div id="flow-diagram"><div class="skeleton skeleton-chart" style="height:220px"></div></div>
       </div>
 
       <div class="card">
         <h2>Eigenverbrauch &amp; Autarkie</h2>
-        <div id="kpi-gauges"></div>
+        <div id="kpi-gauges"><div class="skeleton skeleton-chart" style="height:72px"></div></div>
       </div>
 
       <div class="card">
         <h2>Hausverbrauch</h2>
         <div class="hv-body">
           <div class="hv-left">
-            <div class="hv-val" id="hv-val">–<span class="hv-unit">W</span></div>
-            <div class="hv-today" id="hv-today">Heute: –</div>
-            <div class="hv-avg" id="hv-avg">Ø – kW/h</div>
+            <div class="hv-val" id="hv-val"><span class="skeleton">1234 W</span></div>
+            <div class="hv-today" id="hv-today"><span class="skeleton">Heute: 12.3 kWh</span></div>
+            <div class="hv-bought" id="hv-pv"></div>
+            <div class="hv-bought" id="hv-bought"></div>
+            <div class="hv-avg" id="hv-avg"><span class="skeleton">Ø 0.50 kW/h</span></div>
           </div>
           <canvas id="hausverbrauch-sparkline" width="110" height="50" class="hv-sparkline"></canvas>
         </div>
@@ -109,9 +83,9 @@
       <div class="card cascade-mini-card" id="cascade-mini">
         <div class="card-head">
           <h2>Kaskade</h2>
-          <span class="cascade-mini-surplus" id="cascade-mini-surplus">Überschuss: –</span>
+          <span class="cascade-mini-surplus" id="cascade-mini-surplus"><span class="skeleton">Überschuss: 0.0 kW</span></span>
         </div>
-        <div id="cascade-mini-devices"></div>
+        <div id="cascade-mini-devices"><div class="skeleton skeleton-chart" style="height:64px"></div></div>
         <div id="cascade-mini-footer" class="cascade-mini-footer"></div>
       </div>
 
@@ -120,19 +94,36 @@
           <h2>Speicher</h2>
           <span class="dot hidden" id="storage-dot"></span>
         </div>
-        <div class="big-temp" id="m-temp">–</div>
+        <div class="big-temp" id="m-temp"><span class="skeleton">52.8 °C</span></div>
         <div class="progress">
           <div class="progress-bar" id="m-temp-bar"></div>
           <div class="progress-marker resume" id="m-temp-marker-resume"></div>
           <div class="progress-marker max" id="m-temp-marker-max"></div>
         </div>
         <div class="kv compact">
-          <div><span>Maximaltemperatur</span><b id="m-temp-max">–</b></div>
-          <div><span>Resume-Temperatur</span><b id="m-temp-resume">–</b></div>
-          <div><span>Status</span><b id="m-temp-status" class="badge">–</b></div>
+          <div><span>Maximaltemperatur</span><b id="m-temp-max"><span class="skeleton">64.0 °C</span></b></div>
+          <div><span>Resume-Temperatur</span><b id="m-temp-resume"><span class="skeleton">62.0 °C</span></b></div>
+          <div><span>Status</span><b id="m-temp-status" class="badge"><span class="skeleton">Wartet auf PV</span></b></div>
         </div>
         <div id="summer-mode-hint" class="hidden" style="margin-top:8px;padding:6px 10px;background:rgba(232,164,53,0.12);border:1px solid rgba(232,164,53,0.35);border-radius:6px;font-size:12px;color:#e8a435;"></div>
-        <div id="temp-chart-wrap" class="temp-chart-wrap"></div>
+        <div id="temp-chart-wrap" class="temp-chart-wrap"><div class="skeleton skeleton-chart"></div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Tageshoch – Verlauf (kW)</h2>
+          <div class="chart-legend-inline">
+            <span class="cl-pv">&#9679; Tageshoch</span>
+          </div>
+        </div>
+        <div style="font-size:11px;letter-spacing:1px;color:#8a8d95;text-transform:uppercase;margin-bottom:4px">Letzte 7 Tage</div>
+        <div id="chart-peak-week-wrap" class="temp-chart-wrap">
+          <div class="skeleton skeleton-chart"></div>
+        </div>
+        <div style="font-size:11px;letter-spacing:1px;color:#8a8d95;text-transform:uppercase;margin:12px 0 4px">Letzte 30 Tage</div>
+        <div id="chart-peak-month-wrap" class="temp-chart-wrap">
+          <div class="skeleton skeleton-chart"></div>
+        </div>
       </div>
 
       </div><!-- .dashboard-left -->
@@ -140,37 +131,38 @@
       <div class="grid">
         <div class="card">
           <h2>PV Erzeugung</h2>
-          <div class="pv-live-total" id="pv-live-total">– W</div>
-          <div id="pv-peak-display" style="font-size:12px;color:#6a6d75;text-align:center;margin-top:4px">Tageshoch: –</div>
+          <div class="pv-live-total" id="pv-live-total"><span class="skeleton">5123 W</span></div>
+          <div id="pv-peak-display" style="font-size:12px;color:#6a6d75;text-align:center;margin-top:4px"><span class="skeleton">Tageshoch: 6420 W um 13:10</span></div>
           <div id="string-dash-alert" class="string-dash-alert hidden"></div>
-          <div id="pv-live-strings"></div>
+          <div id="pv-live-strings"><div class="skeleton skeleton-chart" style="height:70px"></div></div>
           <div class="kv compact" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
-            <div><span>Einspeisung / Bezug</span><b id="pv-live-feedin">–</b></div>
-            <div><span>Hausverbrauch</span><b id="pv-live-consumption">–</b></div>
+            <div><span>Einspeisung / Bezug</span><b id="pv-live-feedin"><span class="skeleton">-639 W</span></b></div>
+            <div><span>Hausverbrauch</span><b id="pv-live-consumption"><span class="skeleton">639 W</span></b></div>
           </div>
           <div class="card-head" style="margin-top:10px">
             <span style="font-size:11px;letter-spacing:2px;color:#8a8d95;text-transform:uppercase">PV1 / PV2 heute</span>
             <div class="chart-legend-inline">
               <span class="cl-str1">STR1 (Dach)</span>
               <span class="cl-str2">STR2 (Wand)</span>
+              <span class="cl-str3 hidden" id="legend-pergola">Pergola</span>
             </div>
           </div>
-          <div id="pv-strings-chart-wrap" class="temp-chart-wrap"></div>
+          <div id="pv-strings-chart-wrap" class="temp-chart-wrap"><div class="skeleton skeleton-chart"></div></div>
         </div>
 
         <div class="card">
           <h2>Heizstab Phasen</h2>
-          <div class="phases" id="phases"></div>
+          <div class="phases" id="phases"><div class="skeleton skeleton-chart" style="height:56px"></div></div>
           <div id="phase-timeline" class="phase-tl-wrap hidden"></div>
         </div>
 
         <div class="card">
           <h2>PV &amp; Netz</h2>
-          <div id="pv-netz-body"></div>
+          <div id="pv-netz-body"><div class="skeleton skeleton-chart" style="height:130px"></div></div>
         </div>
 
         <div class="card" id="heute-card">
-          <div id="sol-today"></div>
+          <div id="sol-today"><div class="skeleton skeleton-chart" style="height:110px"></div></div>
         </div>
 
         <div class="card" id="forecast-card">
@@ -178,10 +170,10 @@
             <h2>Prognose Morgen</h2>
             <span id="forecast-badge" class="forecast-badge"></span>
           </div>
-          <div id="forecast-kwh" class="forecast-kwh">–</div>
+          <div id="forecast-kwh" class="forecast-kwh"><span class="skeleton">~25.4 kWh</span></div>
           <div class="kv compact" id="forecast-details" style="margin-top:6px">
-            <div><span>Sonnenstunden</span><b id="forecast-sun">–</b></div>
-            <div><span>Globalstrahlung</span><b id="forecast-ghi">–</b></div>
+            <div><span>Sonnenstunden</span><b id="forecast-sun"><span class="skeleton">8.5 h</span></b></div>
+            <div><span>Globalstrahlung</span><b id="forecast-ghi"><span class="skeleton">4.2 kWh/m²</span></b></div>
           </div>
         </div>
 
@@ -220,24 +212,24 @@
           <div class="charge-indicator" id="charge-indicator">
             <div class="charge-icon">🚗</div>
             <div class="charge-meta">
-              <div class="charge-state" id="charge-state">–</div>
-              <div class="charge-power" id="charge-power">–</div>
+              <div class="charge-state" id="charge-state"><span class="skeleton">kein Auto angesteckt</span></div>
+              <div class="charge-power" id="charge-power"></div>
             </div>
             <div class="charge-bolts" aria-hidden="true">
               <span></span><span></span><span></span><span></span>
             </div>
           </div>
           <div class="charge-energy" id="charge-energy">
-            <div><span>Diese Session</span><b id="charge-session">–</b></div>
-            <div><span>Gesamt (lifetime)</span><b id="charge-total">–</b></div>
-            <div><span>Ladezeit</span><b id="charge-duration">–</b></div>
+            <div><span>Diese Session</span><b id="charge-session"><span class="skeleton">16.17 kWh</span></b></div>
+            <div><span>Gesamt (lifetime)</span><b id="charge-total"><span class="skeleton">7162.24 kWh</span></b></div>
+            <div><span>Ladezeit</span><b id="charge-duration"><span class="skeleton">1h 20min</span></b></div>
           </div>
           <details class="wb-raw">
             <summary>Technische Details</summary>
             <div class="kv compact" id="wallbox-kv"></div>
             <div class="decision-mini" id="wallbox-decision"></div>
           </details>
-          <div id="wb-chart-wrap" class="temp-chart-wrap"></div>
+          <div id="wb-chart-wrap" class="temp-chart-wrap"><div class="skeleton skeleton-chart"></div></div>
           <div style="font-size:11px;letter-spacing:2px;color:#8a8d95;text-transform:uppercase;margin-top:12px;margin-bottom:6px">Lademodus</div>
           <div style="display:flex;background:#1a1d23;border-radius:8px;padding:2px;border:1px solid #2a2d35">
             <div id="btn-wb-basic" onclick="setWallboxMode('basic')" style="flex:1;text-align:center;padding:8px;border-radius:6px;font-size:12px;font-family:'Courier New',monospace;cursor:pointer;transition:all 0.2s ease">Basic</div>
@@ -247,23 +239,6 @@
       </div><!-- .grid -->
       </div><!-- .dashboard-right -->
       </div><!-- .dashboard-cols -->
-
-      <div class="card">
-        <div class="card-head">
-          <h2>Tageshoch – Uhrzeit im Verlauf</h2>
-          <div class="chart-legend-inline">
-            <span class="cl-pv">&#9679; Uhrzeit des Tageshochs</span>
-          </div>
-        </div>
-        <div style="font-size:11px;letter-spacing:1px;color:#8a8d95;text-transform:uppercase;margin-bottom:4px">Letzte 7 Tage</div>
-        <div id="chart-peak-week-wrap" class="temp-chart-wrap">
-          <div class="chart-empty">Lade…</div>
-        </div>
-        <div style="font-size:11px;letter-spacing:1px;color:#8a8d95;text-transform:uppercase;margin:12px 0 4px">Letzte 30 Tage</div>
-        <div id="chart-peak-month-wrap" class="temp-chart-wrap">
-          <div class="chart-empty">Lade…</div>
-        </div>
-      </div>
     </section>
 
     <!-- ========= Verlauf ========= -->
@@ -393,12 +368,6 @@
             </div>
           </div>
           <div id="chart-strings-day-wrap" class="temp-chart-wrap">
-            <div class="chart-empty">Lade…</div>
-          </div>
-        </div>
-        <div class="card">
-          <h2>String-Verhältnis (30 Tage)</h2>
-          <div id="chart-strings-ratio-wrap" class="temp-chart-wrap">
             <div class="chart-empty">Lade…</div>
           </div>
         </div>
@@ -597,6 +566,16 @@
           </fieldset>
 
           <fieldset>
+            <legend>Pergola (Solax 2)</legend>
+            <label class="check"><input type="checkbox" name="solax2.enabled"> Aktiviert (solax2.enabled)</label>
+            <label>URL<input type="text" name="solax2.url" placeholder="http://192.168.x.x"></label>
+            <label>Passwort (pwd)<input type="text" name="solax2.pwd" placeholder="XXXXXXXXXX"></label>
+            <label>Bezeichnung<input type="text" name="solax2.name" placeholder="Pergola"></label>
+            <button type="button" id="solax2-test-btn">Verbindung testen</button>
+            <div class="form-msg" id="solax2-test-msg"></div>
+          </fieldset>
+
+          <fieldset>
             <legend>Shelly IPs</legend>
             <label>Phase 1 (ph1_url)<input type="text" name="shelly.ph1_url" placeholder="http://192.168.x.x"></label>
             <label>Phase 1 Typ/Kanal
@@ -632,6 +611,7 @@
             <label>min_pv_power_ph1 (W)<input type="number" step="50" name="heater.min_pv_power_ph1"></label>
             <label>min_pv_power_ph2 (W)<input type="number" step="50" name="heater.min_pv_power_ph2"></label>
             <label>min_pv_power_ph3 (W)<input type="number" step="50" name="heater.min_pv_power_ph3"></label>
+            <label>Netzbezug-Toleranz (W)<input type="number" step="50" min="0" name="heater.grid_assist_w"><small class="field-hint">Wird von den Einschaltschwellen abgezogen: Bei 500 W startet Phase 1 schon mit 1000 W Überschuss, die fehlenden 500 W kommen aus dem Netz. 0 = aus.</small></label>
             <label>Speicher-Priorität aktiv bis (°C)<input type="number" step="0.1" name="wallbox.pause_below_storage_temp"><small class="field-hint">Unterhalb dieser Temperatur bleibt PV-Überschuss zuerst für den Speicher reserviert.</small></label>
             <label>Wallbox wieder freigeben ab Speicher-Temperatur (°C)<input type="number" step="0.1" name="wallbox.release_above_storage_temp"><small class="field-hint">Ab dieser Temperatur darf die Wallbox wieder laden.</small></label>
           </fieldset>
@@ -827,6 +807,6 @@
   </footer>
   </div>
 
-  <script src="/static/app.js?v=20260928b" defer></script>
+  <script src="/static/app.js?v=20261010g" defer></script>
 </body>
 </html>

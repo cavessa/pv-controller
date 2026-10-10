@@ -5,6 +5,7 @@ import logging
 from datetime import datetime
 
 import db
+from meter import compute_meter_today
 from models import ControllerResult
 
 log = logging.getLogger(__name__)
@@ -21,7 +22,7 @@ def maybe_log(result: ControllerResult) -> None:
     except Exception:
         log.exception("pv_logger: hourly snapshot fehlgeschlagen")
     try:
-        _log_daily()
+        _log_daily(result)
     except Exception:
         log.exception("pv_logger: daily summary fehlgeschlagen")
     try:
@@ -34,6 +35,12 @@ def maybe_log(result: ControllerResult) -> None:
         log.exception("pv_logger: cleanup fehlgeschlagen")
 
 
+def _pergola_w(result: ControllerResult) -> int | None:
+    """Pergola-Leistung (W) oder None, wenn deaktiviert / nicht lesbar."""
+    p2 = result.readings.pv2_power_w
+    return int(p2) if p2 is not None else None
+
+
 def _log_hourly(result: ControllerResult) -> None:
     import clients.solax_client as sc
     raw = sc._cached_raw
@@ -43,8 +50,10 @@ def _log_hourly(result: ControllerResult) -> None:
     if r.pv_power_w is None:
         return
 
+    pv2_w = _pergola_w(result)
     feed_in_w = int(sc._signed16(raw[34]))
-    consumption_w = int(sc._signed16(raw[47]))
+    # Der Haupt-WR sieht den Pergola-Anteil im Hausverbrauch nicht
+    consumption_w = int(sc._signed16(raw[47])) + (pv2_w or 0)
     heater_w = int(r.heater_meter_power_w) if r.heater_meter_power_w is not None else None
     wallbox_w = None
     if result.wallbox_status is not None and result.wallbox_status.power_w is not None:
@@ -63,6 +72,7 @@ def _log_hourly(result: ControllerResult) -> None:
         storage_temp_c=r.storage_temp_c,
         heater_w=heater_w,
         wallbox_w=wallbox_w,
+        pv2_w=pv2_w,
     )
 
 
@@ -89,7 +99,8 @@ def _check_string_anomaly(result: ControllerResult) -> None:
     if raw is None or len(raw) < 16:
         return
     r = result.readings
-    if r.pv_power_w is None or r.pv_power_w < 500:
+    # Strings gehören zum Haupt-WR: Schwelle auf dessen Leistung, nicht die Summe
+    if r.pv1_power_w is None or r.pv1_power_w < 500:
         return
     str1_w = int(raw[14])
     str2_w = int(raw[15])
@@ -105,34 +116,36 @@ def _check_string_anomaly(result: ControllerResult) -> None:
             str1_w, str2_w, None, db.get_normal_ratio(),
         )
         return
-    if str2_w < 50:
-        return
-    normal = db.get_normal_ratio()
-    if normal is None:
-        return
-    current_ratio = str1_w / str2_w
-    deviation = abs(current_ratio - normal) / normal * 100
-    if deviation > 30:
-        db.log_string_alert(
-            "warning",
-            f"String-Verhältnis weicht {deviation:.0f}% vom Normal ab "
-            f"(aktuell {current_ratio:.2f}, normal {normal:.2f})",
-            str1_w, str2_w, round(current_ratio, 3), normal,
-        )
 
 
-def _log_daily() -> None:
+def _log_daily(result: ControllerResult) -> None:
     import clients.solax_client as sc
     raw = sc._cached_raw
     if raw is None or len(raw) < 93:
         return
     today = datetime.now().strftime("%Y-%m-%d")
     today_weather = db.get_weather(today)
+
+    # Pergola-Tagesertrag; bei Lesefehler den zuletzt gespeicherten Wert behalten,
+    # damit pv_kwh nicht kurzzeitig auf den Haupt-WR-Wert zurückfällt.
+    pv2_kwh = result.readings.pv2_today_kwh
+    if pv2_kwh is None and result.readings.pv2_power_w is None:
+        stored = db.get_daily_for_date(today)
+        pv2_kwh = stored.get("pv2_kwh") if stored else None
+    pv_kwh = raw[82] / 10.0 + (pv2_kwh or 0.0)
+
+    # Einspeisung/Bezug bevorzugt aus dem Hauptzähler (Shelly), sonst Solax
+    feed_out_kwh, feed_in_kwh = raw[90] / 100.0, raw[92] / 100.0
+    mt = compute_meter_today(result.readings, pv_kwh=pv_kwh)
+    if mt is not None and mt["source"] == "shelly":
+        feed_out_kwh, feed_in_kwh = mt["einspeisung_kwh"], mt["bezug_kwh"]
+
     db.log_daily_summary(
         date_str=today,
-        pv_kwh=raw[82] / 10.0,
-        feed_out_kwh=raw[90] / 100.0,
-        feed_in_kwh=raw[92] / 100.0,
+        pv_kwh=pv_kwh,
+        pv2_kwh=pv2_kwh,
+        feed_out_kwh=feed_out_kwh,
+        feed_in_kwh=feed_in_kwh,
         sunshine_h=today_weather.get("sunshine_hours") if today_weather else None,
         ghi_kwh_m2=today_weather.get("ghi_kwh_m2") if today_weather else None,
     )

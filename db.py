@@ -99,10 +99,26 @@ def init_pv_logging_tables() -> None:
                 string_ratio    REAL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS meter_snapshots (
+                date                  TEXT PRIMARY KEY,
+                import_wh_at_midnight REAL,
+                export_wh_at_midnight REAL,
+                taken_at              TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pv_peak_day (
+                date     TEXT PRIMARY KEY,
+                peak_w   INTEGER NOT NULL,
+                peak_time TEXT NOT NULL
+            )
+        """)
         for col, definition in (
             ("storage_temp_c", "REAL"),
             ("heater_w",       "INTEGER"),
             ("wallbox_w",      "INTEGER"),
+            ("pv2_w",          "INTEGER"),  # Pergola-PV (Solax 2)
         ):
             try:
                 conn.execute(
@@ -130,7 +146,8 @@ def init_pv_logging_tables() -> None:
                 temp_max       REAL,
                 temp_min       REAL,
                 weathercode    INTEGER,
-                sunset         TEXT
+                sunset         TEXT,
+                sunrise        TEXT
             )
         """)
         conn.execute("""
@@ -152,6 +169,7 @@ def init_pv_logging_tables() -> None:
         """)
         for col, definition in (
             ("forecast_ghi", "REAL"),
+            ("pv2_kwh", "REAL"),  # Pergola-PV-Anteil an pv_kwh
         ):
             try:
                 conn.execute(
@@ -161,6 +179,7 @@ def init_pv_logging_tables() -> None:
                 pass
         for col, definition in (
             ("sunset", "TEXT"),
+            ("sunrise", "TEXT"),
         ):
             try:
                 conn.execute(
@@ -178,6 +197,7 @@ def log_hourly_snapshot(
     storage_temp_c: Optional[float] = None,
     heater_w: Optional[int] = None,
     wallbox_w: Optional[int] = None,
+    pv2_w: Optional[int] = None,
 ) -> None:
     ratio = round(str1_w / str2_w, 3) if str2_w > 0 else None
     ts = datetime.now().strftime("%Y-%m-%d %H:00")
@@ -186,11 +206,11 @@ def log_hourly_snapshot(
             """INSERT OR REPLACE INTO pv_hourly_log
                (timestamp, pv_w, feed_in_w, consumption_w,
                 str1_w, str2_w, str1_v, str1_a, str2_v, str2_a, string_ratio,
-                storage_temp_c, heater_w, wallbox_w)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                storage_temp_c, heater_w, wallbox_w, pv2_w)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (ts, pv_w, feed_in_w, consumption_w,
              str1_w, str2_w, str1_v, str1_a, str2_v, str2_a, ratio,
-             storage_temp_c, heater_w, wallbox_w),
+             storage_temp_c, heater_w, wallbox_w, pv2_w),
         )
 
 
@@ -199,7 +219,9 @@ def log_daily_summary(
     sunshine_h: float | None = None, ghi_kwh_m2: float | None = None,
     cloud_cover_pct: float | None = None, temp_avg_c: float | None = None,
     forecast_kwh: float | None = None, forecast_ghi: float | None = None,
+    pv2_kwh: float | None = None,
 ) -> None:
+    """pv_kwh ist die Gesamt-Erzeugung (inkl. Pergola); pv2_kwh nur dessen Anteil."""
     selfuse = max(0.0, pv_kwh - feed_out_kwh)
     selfuse_pct = round(selfuse / pv_kwh * 100, 1) if pv_kwh > 0 else 0.0
     denom = selfuse + feed_in_kwh
@@ -209,11 +231,13 @@ def log_daily_summary(
             """INSERT OR REPLACE INTO pv_daily_log
                (date, pv_kwh, feed_out_kwh, feed_in_kwh,
                 selfuse_kwh, selfuse_pct, autarky_pct,
-                sunshine_h, ghi_kwh_m2, cloud_cover_pct, temp_avg_c, forecast_kwh, forecast_ghi)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                sunshine_h, ghi_kwh_m2, cloud_cover_pct, temp_avg_c, forecast_kwh, forecast_ghi,
+                pv2_kwh)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (date_str, round(pv_kwh, 2), round(feed_out_kwh, 2), round(feed_in_kwh, 2),
              round(selfuse, 2), selfuse_pct, autarky_pct,
-             sunshine_h, ghi_kwh_m2, cloud_cover_pct, temp_avg_c, forecast_kwh, forecast_ghi),
+             sunshine_h, ghi_kwh_m2, cloud_cover_pct, temp_avg_c, forecast_kwh, forecast_ghi,
+             None if pv2_kwh is None else round(pv2_kwh, 2)),
         )
 
 
@@ -222,7 +246,7 @@ def get_hourly_data(date_str: str) -> list[dict]:
         rows = conn.execute(
             """SELECT timestamp, pv_w, feed_in_w, consumption_w,
                       str1_w, str2_w, str1_v, str1_a, str2_v, str2_a, string_ratio,
-                      storage_temp_c, heater_w, wallbox_w
+                      storage_temp_c, heater_w, wallbox_w, pv2_w
                FROM pv_hourly_log WHERE timestamp LIKE ?
                ORDER BY timestamp ASC""",
             (date_str + "%",),
@@ -231,7 +255,8 @@ def get_hourly_data(date_str: str) -> list[dict]:
         {"ts": r[0], "pv_w": r[1], "feed_in_w": r[2], "consumption_w": r[3],
          "str1_w": r[4], "str2_w": r[5], "str1_v": r[6], "str1_a": r[7],
          "str2_v": r[8], "str2_a": r[9], "string_ratio": r[10],
-         "storage_temp_c": r[11], "heater_w": r[12], "wallbox_w": r[13]}
+         "storage_temp_c": r[11], "heater_w": r[12], "wallbox_w": r[13],
+         "pv2_w": r[14]}
         for r in rows
     ]
 
@@ -241,7 +266,8 @@ def get_daily_history(days: int = 30) -> list[dict]:
         rows = conn.execute(
             """SELECT date, pv_kwh, feed_out_kwh, feed_in_kwh,
                       selfuse_kwh, selfuse_pct, autarky_pct,
-                      sunshine_h, ghi_kwh_m2, cloud_cover_pct, temp_avg_c, forecast_kwh
+                      sunshine_h, ghi_kwh_m2, cloud_cover_pct, temp_avg_c, forecast_kwh,
+                      pv2_kwh
                FROM pv_daily_log ORDER BY date DESC LIMIT ?""",
             (days,),
         ).fetchall()
@@ -249,11 +275,53 @@ def get_daily_history(days: int = 30) -> list[dict]:
         {"date": r[0], "pv_kwh": r[1], "feed_out_kwh": r[2], "feed_in_kwh": r[3],
          "selfuse_kwh": r[4], "selfuse_pct": r[5], "autarky_pct": r[6],
          "sunshine_h": r[7], "ghi_kwh_m2": r[8], "cloud_cover_pct": r[9],
-         "temp_avg_c": r[10], "forecast_kwh": r[11]}
+         "temp_avg_c": r[10], "forecast_kwh": r[11], "pv2_kwh": r[12]}
         for r in rows
     ]
     result.reverse()
     return result
+
+
+def ensure_meter_snapshot(import_wh: float, export_wh: float) -> dict:
+    """Mitternachts-Snapshot der Hauptzähler-Lifetimezähler für heute.
+
+    Legt den Eintrag beim ersten Aufruf des Tages an (INSERT OR IGNORE, damit
+    Web-Poller und Cron sich nicht in die Quere kommen) und liefert ihn zurück.
+    `taken_at` (HH:MM:SS) erlaubt dem Aufrufer zu prüfen, ob der Snapshot
+    wirklich um Mitternacht entstand.
+    """
+    now = datetime.now()
+    day = now.strftime("%Y-%m-%d")
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO meter_snapshots
+               (date, import_wh_at_midnight, export_wh_at_midnight, taken_at)
+               VALUES (?,?,?,?)""",
+            (day, import_wh, export_wh, now.strftime("%H:%M:%S")),
+        )
+        row = conn.execute(
+            """SELECT import_wh_at_midnight, export_wh_at_midnight, taken_at
+               FROM meter_snapshots WHERE date = ?""",
+            (day,),
+        ).fetchone()
+    return {"import_wh": row[0], "export_wh": row[1], "taken_at": row[2]}
+
+
+def update_pv_peak(pv_w: float) -> dict:
+    """Tageshoch (PV-Gesamtleistung) fortschreiben und aktuellen Stand liefern."""
+    now = datetime.now()
+    day, hhmm, w = now.strftime("%Y-%m-%d"), now.strftime("%H:%M"), int(round(pv_w))
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """INSERT INTO pv_peak_day(date, peak_w, peak_time) VALUES (?,?,?)
+               ON CONFLICT(date) DO UPDATE SET peak_w=excluded.peak_w, peak_time=excluded.peak_time
+               WHERE excluded.peak_w > pv_peak_day.peak_w""",
+            (day, w, hhmm),
+        )
+        row = conn.execute(
+            "SELECT peak_w, peak_time FROM pv_peak_day WHERE date=?", (day,)
+        ).fetchone()
+    return {"peak_w": row[0], "peak_time": row[1]}
 
 
 def get_daily_peak(days: int = 30) -> list[dict]:
@@ -362,20 +430,21 @@ def upsert_weather(
     temp_min: Optional[float],
     weathercode: Optional[int],
     sunset: Optional[str] = None,
+    sunrise: Optional[str] = None,
 ) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """INSERT OR REPLACE INTO weather_log
-               (date, sunshine_hours, ghi_kwh_m2, temp_max, temp_min, weathercode, sunset)
-               VALUES (?,?,?,?,?,?,?)""",
-            (date_str, sunshine_hours, ghi_kwh_m2, temp_max, temp_min, weathercode, sunset),
+               (date, sunshine_hours, ghi_kwh_m2, temp_max, temp_min, weathercode, sunset, sunrise)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (date_str, sunshine_hours, ghi_kwh_m2, temp_max, temp_min, weathercode, sunset, sunrise),
         )
 
 
 def get_weather(date_str: str) -> Optional[dict]:
     with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute(
-            """SELECT date, sunshine_hours, ghi_kwh_m2, temp_max, temp_min, weathercode, sunset
+            """SELECT date, sunshine_hours, ghi_kwh_m2, temp_max, temp_min, weathercode, sunset, sunrise
                FROM weather_log WHERE date = ?""",
             (date_str,),
         ).fetchone()
@@ -384,6 +453,7 @@ def get_weather(date_str: str) -> Optional[dict]:
     return {
         "date": row[0], "sunshine_hours": row[1], "ghi_kwh_m2": row[2],
         "temp_max": row[3], "temp_min": row[4], "weathercode": row[5], "sunset": row[6],
+        "sunrise": row[7],
     }
 
 
@@ -504,7 +574,8 @@ def get_daily_for_date(date_str: str) -> Optional[dict]:
     with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute(
             """SELECT date, pv_kwh, feed_out_kwh, feed_in_kwh,
-                      selfuse_kwh, selfuse_pct, autarky_pct, sunshine_h, ghi_kwh_m2
+                      selfuse_kwh, selfuse_pct, autarky_pct, sunshine_h, ghi_kwh_m2,
+                      pv2_kwh
                FROM pv_daily_log WHERE date = ?""",
             (date_str,),
         ).fetchone()
@@ -514,7 +585,7 @@ def get_daily_for_date(date_str: str) -> Optional[dict]:
         "date": row[0], "pv_kwh": row[1], "feed_out_kwh": row[2],
         "feed_in_kwh": row[3], "selfuse_kwh": row[4],
         "selfuse_pct": row[5], "autarky_pct": row[6],
-        "sunshine_h": row[7], "ghi_kwh_m2": row[8],
+        "sunshine_h": row[7], "ghi_kwh_m2": row[8], "pv2_kwh": row[9],
     }
 
 
@@ -530,32 +601,6 @@ def get_normal_ratio() -> Optional[float]:
             )"""
         ).fetchone()
     return round(row[0], 3) if row and row[0] is not None else None
-
-
-def get_string_ratio_history(days: int = 30) -> list[dict]:
-    """Tägliche Durchschnitts-Ratios der letzten N Tage (nur Taglichtstunden)."""
-    with sqlite3.connect(DB_PATH) as conn:
-        rows = conn.execute(
-            """SELECT date(timestamp) as day,
-                      AVG(string_ratio) as avg_ratio,
-                      MIN(string_ratio) as min_ratio,
-                      MAX(string_ratio) as max_ratio,
-                      COUNT(*) as samples
-               FROM pv_hourly_log
-               WHERE pv_w > 500
-               AND string_ratio > 0.5 AND string_ratio < 3.0
-               AND timestamp >= date('now', ?)
-               GROUP BY day ORDER BY day ASC""",
-            (f"-{days} days",),
-        ).fetchall()
-    return [
-        {"day": r[0],
-         "avg": round(r[1], 3) if r[1] is not None else None,
-         "min": round(r[2], 3) if r[2] is not None else None,
-         "max": round(r[3], 3) if r[3] is not None else None,
-         "samples": r[4]}
-        for r in rows
-    ]
 
 
 def log_string_alert(
@@ -670,6 +715,9 @@ def init_cascade_tables() -> None:
                 remaining_watts INTEGER
             )
         """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cascade_log_timestamp ON cascade_log(timestamp)"
+        )
         conn.execute("""
             INSERT OR IGNORE INTO cascade_devices
                 (id, name, type, power_watts, priority)

@@ -1,7 +1,8 @@
 """FastAPI-App: lokale Weboberfläche für den PV-Controller.
 
 Wichtig:
-- /api/status ist *read-only* und schaltet niemals.
+- /api/status ist *read-only* und schaltet niemals. Es liefert den letzten
+  Snapshot eines Hintergrund-Pollers (kein Geräte-Roundtrip im Request-Pfad).
 - /api/run-once führt einen NORMAL-Lauf aus (respektiert runtime.enabled +
   runtime.dry_run wie `python main.py`).
 - Optionale Basic Auth via auth_enabled/auth_user/auth_password in config.json.
@@ -16,6 +17,9 @@ import json
 import logging
 import secrets
 import shutil
+import threading
+import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
@@ -66,7 +70,13 @@ if not logging.getLogger().handlers:
     )
 log = logging.getLogger("pv-controller.web")
 
-app = FastAPI(title="PV-Controller Web", docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    threading.Thread(target=_status_poll_loop, name="status-poller", daemon=True).start()
+    yield
+
+
+app = FastAPI(title="PV-Controller Web", docs_url=None, redoc_url=None, lifespan=_lifespan)
 app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 
 
@@ -251,6 +261,9 @@ def _summary(result: ControllerResult, cfg: Config) -> dict[str, str]:
     return {"state": state, "reason": reason, "severity": severity}
 
 
+from meter import compute_meter_today  # noqa: E402
+
+
 def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
     r = result.readings
     return {
@@ -266,7 +279,12 @@ def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
             "storage_temp_hysteresis": cfg.heater.storage_temp_hysteresis,
             "resume_temp": cfg.heater.heat_resume_temp,
             "temperature_status": result.temp_status.value if result.temp_status else None,
-            "pv_power": r.pv_power_w,
+            "pv_power": r.pv_power_w,  # Summe Haupt-WR + Pergola
+            "pv1_power": r.pv1_power_w,
+            "pv2_power": r.pv2_power_w,
+            "pv2_today_kwh": r.pv2_today_kwh,
+            "pv2_name": cfg.solax2.name if cfg.solax2 is not None else None,
+            "pv2_enabled": cfg.solax2_active,
             "main_meter_power": r.main_meter_power_w,
             "heater_meter_power": r.heater_meter_power_w,
             "surplus_without_heater": r.surplus_without_heater_w,
@@ -297,6 +315,7 @@ def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
             "reason": result.summer_mode_reason,
         },
         "summary": _summary(result, cfg),
+        "meter_today": compute_meter_today(r),
     }
 
 
@@ -306,6 +325,81 @@ def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
 def _append_history(temp: float | None, wb_w: float | None) -> None:
     from db import append_temp_history
     append_temp_history(temp, wb_w)
+
+
+# ---- Status cache (Hintergrund-Poller) -------------------------------------
+#
+# Ein READ_ONLY-Controllerlauf braucht 8 Geräte-Roundtrips (Solax, Shellys,
+# go-e) und mehrere Sekunden, sobald ein Gerät nicht antwortet. Damit
+# /api/status und /api/cascade/status sofort antworten, läuft der Lesezyklus
+# in einem Hintergrund-Thread und die Endpunkte liefern den letzten Snapshot.
+
+_POLL_ACTIVE_S = 10.0          # solange ein Client den Status abfragt
+_POLL_IDLE_S = 60.0            # ohne Client-Anfragen
+_CLIENT_ACTIVE_WINDOW_S = 60.0
+_STATUS_FIRST_WAIT_S = 30.0
+
+_status_lock = threading.Lock()
+_status_ready = threading.Event()
+_poll_wakeup = threading.Event()
+_status_result: Optional[ControllerResult] = None
+_status_cfg: Optional[Config] = None
+_status_error: Optional[str] = None
+_status_ts: float = 0.0
+_last_status_request: float = 0.0
+
+
+def _set_status_cache(result: ControllerResult, cfg: Config) -> None:
+    global _status_result, _status_cfg, _status_error, _status_ts
+    with _status_lock:
+        _status_result, _status_cfg, _status_error = result, cfg, None
+        _status_ts = time.monotonic()
+    _status_ready.set()
+
+
+def _poll_status_once() -> None:
+    global _status_error
+    cfg = _load_cfg()
+    try:
+        result = run_controller(cfg, mode=ControllerMode.READ_ONLY)
+    except Exception as e:
+        log.exception("read-only controller run failed")
+        with _status_lock:
+            _status_error = f"controller error: {e}"
+        _status_ready.set()
+        return
+    ws = result.wallbox_status
+    _append_history(result.readings.storage_temp_c, (ws.power_w or 0.0) if ws is not None else None)
+    _set_status_cache(result, cfg)
+
+
+def _status_poll_loop() -> None:
+    while True:
+        started = time.monotonic()
+        try:
+            _poll_status_once()
+        except Exception:
+            log.exception("status poller failed")
+        client_active = (time.monotonic() - _last_status_request) < _CLIENT_ACTIVE_WINDOW_S
+        interval = _POLL_ACTIVE_S if client_active else _POLL_IDLE_S
+        _poll_wakeup.wait(max(1.0, interval - (time.monotonic() - started)))
+        _poll_wakeup.clear()
+
+
+def _cached_status() -> tuple[ControllerResult, Config]:
+    global _last_status_request
+    _last_status_request = time.monotonic()
+    if not _status_ready.is_set():
+        _poll_wakeup.set()
+        if not _status_ready.wait(_STATUS_FIRST_WAIT_S):
+            raise HTTPException(status_code=503, detail="status snapshot not ready yet")
+    with _status_lock:
+        result, cfg, err, ts = _status_result, _status_cfg, _status_error, _status_ts
+    if result is None or cfg is None:
+        raise HTTPException(status_code=500, detail=err or "status unavailable")
+    if time.monotonic() - ts > _POLL_ACTIVE_S:
+        _poll_wakeup.set()
+    return result, cfg
 
 
 # ---- Routes: static --------------------------------------------------------
@@ -327,14 +421,7 @@ def health() -> dict[str, Any]:
 @app.get("/api/status")
 def api_status(response: Response) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
-    cfg = _load_cfg()
-    try:
-        result = run_controller(cfg, mode=ControllerMode.READ_ONLY)
-    except Exception as e:
-        log.exception("read-only controller run failed")
-        raise HTTPException(status_code=500, detail=f"controller error: {e}")
-    ws = result.wallbox_status
-    _append_history(result.readings.storage_temp_c, (ws.power_w or 0.0) if ws is not None else None)
+    result, cfg = _cached_status()
     return _serialize_status(result, cfg)
 
 
@@ -349,6 +436,7 @@ def api_run_once(response: Response) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"controller error: {e}")
     ws = result.wallbox_status
     _append_history(result.readings.storage_temp_c, (ws.power_w or 0.0) if ws is not None else None)
+    _set_status_cache(result, cfg)
     return _serialize_status(result, cfg)
 
 
@@ -403,6 +491,7 @@ _ALLOWED_HEATER_KEYS = {
     "min_pv_power_ph1",
     "min_pv_power_ph2",
     "min_pv_power_ph3",
+    "grid_assist_w",
 }
 _ALLOWED_WALLBOX_KEYS = {
     "enabled",
@@ -418,6 +507,7 @@ _ALLOWED_WALLBOX_KEYS = {
     "auto_reset_on_unplug",
 }
 _ALLOWED_SOLAX_KEYS = {"url", "pwd"}
+_ALLOWED_SOLAX2_KEYS = {"enabled", "url", "pwd", "name"}
 _ALLOWED_SHELLY_KEYS = {
     "ph1_url", "ph2_url", "ph3_url",
     "ph1_type", "ph2_type", "ph3_type",
@@ -436,6 +526,7 @@ class ConfigUpdate(BaseModel):
     heater: dict[str, Any] | None = None
     wallbox: dict[str, Any] | None = None
     solax: dict[str, Any] | None = None
+    solax2: dict[str, Any] | None = None
     shelly: dict[str, Any] | None = None
     auth: dict[str, Any] | None = None
     location: dict[str, Any] | None = None
@@ -504,6 +595,26 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
             if k == "url" and not (v.startswith("http://") or v.startswith("https://")):
                 raise HTTPException(400, "solax.url must start with http:// or https://")
             new_cfg["solax"][k] = v
+
+    if patch.solax2:
+        bad = set(patch.solax2) - _ALLOWED_SOLAX2_KEYS
+        if bad:
+            raise HTTPException(400, f"solax2 keys not allowed: {sorted(bad)}")
+        block = new_cfg.setdefault("solax2", {"enabled": False, "url": "", "pwd": "", "name": "Pergola"})
+        for k, v in patch.solax2.items():
+            if k == "enabled":
+                if not isinstance(v, bool):
+                    raise HTTPException(400, "solax2.enabled must be boolean")
+            else:
+                if not isinstance(v, str):
+                    raise HTTPException(400, f"solax2.{k} must be a string")
+                if k == "url" and v and not (v.startswith("http://") or v.startswith("https://")):
+                    raise HTTPException(400, "solax2.url must start with http:// or https://")
+                if k == "name" and not v.strip():
+                    raise HTTPException(400, "solax2.name must not be empty")
+            block[k] = v
+        if block.get("enabled") and not (block.get("url") and block.get("pwd")):
+            raise HTTPException(400, "solax2: url und pwd erforderlich wenn aktiviert")
 
     if patch.shelly:
         bad = set(patch.shelly) - _ALLOWED_SHELLY_KEYS
@@ -594,6 +705,7 @@ def load_config_from_dict(raw: dict[str, Any]) -> Config:
         SolaxConfig,
         SummerModeConfig,
         WallboxConfig,
+        parse_solax2,
     )
 
     return Config(
@@ -612,6 +724,7 @@ def load_config_from_dict(raw: dict[str, Any]) -> Config:
             k: v for k, v in raw.get("summer_mode", {}).items()
             if k != "max_phases"
         }),
+        solax2=parse_solax2(raw),
     )
 
 
@@ -633,6 +746,7 @@ def api_config_put(patch: ConfigUpdate) -> dict[str, Any]:
     tmp_path.replace(CONFIG_PATH)
 
     log.info("config updated, backup written to %s", backup_path.name)
+    _poll_wakeup.set()
     return {"ok": True, "backup": backup_path.name, "config": new_cfg}
 
 
@@ -648,6 +762,20 @@ def api_phase_logs(
     return {"entries": get_phase_logs(since_dt)}
 
 
+def _read_pergola(cfg: Config):
+    """SolaxRealtimeData des Pergola-WR oder None (deaktiviert / nicht erreichbar)."""
+    if not cfg.solax2_active:
+        return None
+    from clients.solax_client import SolaxClient
+    try:
+        return SolaxClient(
+            cfg.solax2.url, cfg.solax2.pwd, cfg.runtime.request_timeout_seconds
+        ).get_realtime_data()
+    except Exception:
+        log.warning("Pergola-WR: Lesefehler", exc_info=True)
+        return None
+
+
 @app.get("/api/solax")
 def api_solax(response: Response) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
@@ -657,22 +785,87 @@ def api_solax(response: Response) -> dict[str, Any]:
     data = client.get_realtime_data()
     if data is None:
         raise HTTPException(status_code=503, detail="Solax device not reachable")
-    selfuse = round(max(0.0, data.yield_today_kwh - data.grid_out_today_kwh), 2)
+    bk = _read_pergola(cfg)
+    bk_w = bk.pv_total_w if bk is not None else 0.0
+    bk_kwh = bk.yield_today_kwh if bk is not None else 0.0
+    # Der Pergola-WR speist hinter dem Hauszähler ein: Gesamt-PV, Tagesertrag und
+    # Hausverbrauch (Haupt-WR sieht den Pergola-Anteil nicht) = Summe.
+    pv_total_w = data.pv_total_w + bk_w
+    yield_today = round(data.yield_today_kwh + bk_kwh, 2)
+    grid_out, grid_in = data.grid_out_today_kwh, data.grid_in_today_kwh
+    # Tageswerte bevorzugt aus dem Hauptzähler (Shelly); Zählerstände liefert der
+    # zuletzt gecachte Status-Lauf (kein zusätzlicher Geräte-Abruf).
+    from models import Readings
+    with _status_lock:
+        cached = _status_result
+    mr = Readings(
+        solax_yield_today_kwh=yield_today,
+        solax_grid_out_kwh=grid_out,
+        solax_grid_in_kwh=grid_in,
+        main_import_wh=cached.readings.main_import_wh if cached else None,
+        main_export_wh=cached.readings.main_export_wh if cached else None,
+    )
+    meter = compute_meter_today(mr, pv_kwh=yield_today)
+    if meter is not None and meter["source"] == "shelly":
+        grid_out, grid_in = meter["einspeisung_kwh"], meter["bezug_kwh"]
+    selfuse = round(max(0.0, yield_today - grid_out), 2)
+    from db import update_pv_peak
+    peak = update_pv_peak(pv_total_w)
     return {
+        "pv_peak_w": peak["peak_w"],
+        "pv_peak_time": peak["peak_time"],
         "pv1_power_w": data.pv1_power_w,
         "pv2_power_w": data.pv2_power_w,
-        "pv_total_w": data.pv_total_w,
+        "pv_total_w": pv_total_w,
+        "main_total_w": data.pv_total_w,
         "pv1_voltage_v": data.pv1_voltage_v,
         "pv2_voltage_v": data.pv2_voltage_v,
         "pv1_current_a": data.pv1_current_a,
         "pv2_current_a": data.pv2_current_a,
         "feed_in_w": data.feed_in_w,
-        "consumption_w": data.consumption_w,
-        "yield_today_kwh": data.yield_today_kwh,
-        "grid_out_today_kwh": data.grid_out_today_kwh,
-        "grid_in_today_kwh": data.grid_in_today_kwh,
+        "consumption_w": data.consumption_w + bk_w,
+        "yield_today_kwh": yield_today,
+        "main_yield_today_kwh": data.yield_today_kwh,
+        "grid_out_today_kwh": grid_out,
+        "grid_in_today_kwh": grid_in,
         "self_consumption_kwh": selfuse,
+        "meter_today": meter,
         "mode": data.mode,
+        "str_max_w": cfg.solax.max_w,
+        "pergola_max_w": cfg.solax2.max_w if cfg.solax2 is not None else None,
+        "pergola_enabled": cfg.solax2_active,
+        "pergola_name": cfg.solax2.name if cfg.solax2 is not None else None,
+        "pergola_ok": bk is not None,
+        "pergola_power_w": bk.pv_total_w if bk is not None else None,
+        "pergola_yield_today_kwh": bk.yield_today_kwh if bk is not None else None,
+        "pergola_voltage_v": bk.pv1_voltage_v if bk is not None else None,
+        "pergola_current_a": bk.pv1_current_a if bk is not None else None,
+    }
+
+
+class Solax2TestRequest(BaseModel):
+    url: str
+    pwd: str
+
+
+@app.post("/api/solax2/test")
+def api_solax2_test(req: Solax2TestRequest, response: Response) -> dict[str, Any]:
+    """Verbindungstest mit den (noch ungespeicherten) Formularwerten."""
+    response.headers["Cache-Control"] = "no-store"
+    if not (req.url.startswith("http://") or req.url.startswith("https://")):
+        raise HTTPException(400, "url must start with http:// or https://")
+    if not req.pwd.strip():
+        raise HTTPException(400, "pwd must not be empty")
+    from clients.solax_client import SolaxClient
+    timeout = max(_load_cfg().runtime.request_timeout_seconds, 8)
+    d = SolaxClient(req.url, req.pwd, timeout).get_realtime_data()
+    if d is None:
+        raise HTTPException(503, "Solax nicht erreichbar oder Passwort falsch")
+    return {
+        "ok": True,
+        "power_w": d.pv_total_w,
+        "yield_today_kwh": d.yield_today_kwh,
+        "model": d.model,
     }
 
 
@@ -682,9 +875,16 @@ def api_hourly_history(
     for_date: Optional[str] = Query(default=None),
 ) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
-    from db import get_hourly_data
+    from db import get_hourly_data, get_weather
     date_str = for_date or datetime.now().strftime("%Y-%m-%d")
-    return {"date": date_str, "entries": get_hourly_data(date_str)}
+    w = get_weather(date_str) or {}
+    # Sonnenzeiten (HH:MM) für die X-Achse der Tages-Charts; None -> Fallback im Frontend
+    return {
+        "date": date_str,
+        "entries": get_hourly_data(date_str),
+        "sunrise": w.get("sunrise"),
+        "sunset": w.get("sunset"),
+    }
 
 
 @app.get("/api/history/daily")
@@ -765,16 +965,6 @@ def api_forecast_accuracy(
     response.headers["Cache-Control"] = "no-store"
     from db import get_forecast_accuracy_data
     return {"entries": get_forecast_accuracy_data(days)}
-
-
-@app.get("/api/strings/ratio")
-def api_strings_ratio(
-    response: Response,
-    days: int = Query(default=30, ge=1, le=365),
-) -> dict[str, Any]:
-    response.headers["Cache-Control"] = "no-store"
-    from db import get_normal_ratio, get_string_ratio_history
-    return {"normal_ratio": get_normal_ratio(), "entries": get_string_ratio_history(days)}
 
 
 @app.get("/api/strings/alerts")
@@ -1038,15 +1228,14 @@ def cascade_reorder(body: _CascadeReorder) -> dict[str, Any]:
 @app.get("/api/cascade/status")
 def cascade_status(response: Response) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
-    cfg = _load_cfg()
 
-    # Echte Messwerte via Read-Only-Controllerlauf (Shelly-Meter + Wallbox)
+    # Echte Messwerte aus dem Status-Snapshot des Hintergrund-Pollers
     heater_power_w: Optional[float] = None
     wb_charging: bool = False
     wb_power_w: Optional[float] = None
     surplus_w: Optional[int] = None
     try:
-        result = run_controller(cfg, mode=ControllerMode.READ_ONLY)
+        result, _ = _cached_status()
         r = result.readings
         heater_power_w = r.heater_meter_power_w
         # main_meter ist negativ bei Einspeisung → Überschuss = max(0, -main_meter)

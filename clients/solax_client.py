@@ -8,6 +8,12 @@ Race-condition-Schutz: Das Pocket-WiFi-Modul verarbeitet nur eine
 HTTP-Verbindung gleichzeitig. Modul-Level-Cache (TTL _CACHE_TTL_S) +
 1 Retry mit Cache-Check verhindern dass parallele Aufrufe
 (z. B. /api/status + /api/solax) den Logger blockieren.
+
+Mehrere Geräte: Der Cache ist pro Basis-URL getrennt (Haupt-WR + Pergola-WR).
+Die Register-Belegung hängt vom Gerätetyp ab (payload["type"]):
+  Typ 4  = X1 (Pergola-PV): Data[2]=AC-Leistung, [3]/[4]=PV-Spannung,
+           [5]/[6]=PV-Strom (je 0,1), [7]/[8]=PV-Leistung, [13]=Ertrag heute (0,1 kWh).
+  sonst  = X3-Belegung (Hauptwechselrichter, siehe get_realtime_data).
 """
 
 from __future__ import annotations
@@ -24,8 +30,13 @@ log = logging.getLogger(__name__)
 
 # ---- Modul-Level-Cache (prozesslokal, thread-safe) -------------------
 _lock = threading.Lock()
+# base_url -> (raw Data-Liste, monotonic-Zeitstempel, Gerätetyp)
+_cache: dict[str, tuple[list, float, int]] = {}
+# Rückwärtskompatibel (pv_logger): Rohdaten des zuletzt erfolgreich gelesenen
+# Haupt-Wechselrichters (nicht-X1). Der Pergola-WR überschreibt das nie.
 _cached_raw: Optional[list] = None
 _cached_ts: float = 0.0
+_X1_TYPES = (4,)
 _CACHE_TTL_S: float = 25.0   # Gecachte Daten gelten bis zu 25 s als frisch
 _RETRY_DELAY_S: float = 0.25  # Pause vor dem 2. Versuch
 
@@ -49,6 +60,8 @@ class SolaxRealtimeData:
     grid_out_today_kwh: float # Einspeisung heute
     grid_in_today_kwh: float  # Netzbezug heute
     mode: int
+    model: str = "x3"         # "x3" (Haupt-WR) | "x1" (Pergola-PV)
+    ac_power_w: float = 0.0   # nur X1: AC-Ausgangsleistung
 
 
 class SolaxClient:
@@ -58,6 +71,16 @@ class SolaxClient:
         self.base_url = base_url.rstrip("/")
         self.password = password
         self.timeout = timeout
+        self.device_type: Optional[int] = None
+
+    def _cache_get(self, max_age: float) -> Optional[list]:
+        """Cache-Eintrag dieses Geräts, wenn jünger als max_age (sonst None)."""
+        with _lock:
+            entry = _cache.get(self.base_url)
+            if entry is not None and (time.monotonic() - entry[1]) < max_age:
+                self.device_type = entry[2]
+                return entry[0]
+        return None
 
     def _fetch(self) -> Optional[list]:
         """Holt ReadRealTimeData vom Logger.
@@ -73,18 +96,18 @@ class SolaxClient:
         global _cached_raw, _cached_ts
 
         # Fast-Path: Cache ist frisch genug
-        with _lock:
-            if _cached_raw is not None and (time.monotonic() - _cached_ts) < _CACHE_TTL_S:
-                return _cached_raw
+        fresh = self._cache_get(_CACHE_TTL_S)
+        if fresh is not None:
+            return fresh
 
         for attempt in range(2):
             if attempt:
                 # Vor Retry: prüfen ob ein paralleler Thread den Cache inzwischen
                 # aktualisiert hat (häufig bei /api/status + /api/solax gleichzeitig).
                 time.sleep(_RETRY_DELAY_S)
-                with _lock:
-                    if _cached_raw is not None and (time.monotonic() - _cached_ts) < _CACHE_TTL_S:
-                        return _cached_raw
+                fresh = self._cache_get(_CACHE_TTL_S)
+                if fresh is not None:
+                    return fresh
 
             try:
                 r = requests.post(
@@ -107,29 +130,46 @@ class SolaxClient:
                 )
                 continue
 
+            try:
+                dev_type = int(payload.get("type", 0))
+            except (TypeError, ValueError):
+                dev_type = 0
+            self.device_type = dev_type
+
             # Erfolg – Cache aktualisieren
             with _lock:
-                _cached_raw = raw
-                _cached_ts = time.monotonic()
+                now = time.monotonic()
+                _cache[self.base_url] = (raw, now, dev_type)
+                if dev_type not in _X1_TYPES:
+                    _cached_raw, _cached_ts = raw, now
             return raw
 
         # Alle Versuche gescheitert – älteren Cache als letzten Ausweg nutzen
         with _lock:
-            if _cached_raw is not None:
-                age = time.monotonic() - _cached_ts
+            entry = _cache.get(self.base_url)
+            if entry is not None:
+                self.device_type = entry[2]
                 log.warning(
-                    "Solax: HTTP fehlgeschlagen, nutze Cache (%.0f s alt).", age
+                    "Solax %s: HTTP fehlgeschlagen, nutze Cache (%.0f s alt).",
+                    self.base_url, time.monotonic() - entry[1],
                 )
-                return _cached_raw
+                return entry[0]
 
-        log.error("Solax: alle Reads fehlgeschlagen, kein Cache vorhanden.")
+        log.error("Solax %s: alle Reads fehlgeschlagen, kein Cache vorhanden.", self.base_url)
         return None
+
+    @property
+    def is_x1(self) -> bool:
+        return self.device_type in _X1_TYPES
 
     def get_pv_power_w(self) -> Optional[float]:
         raw = self._fetch()
         if raw is None:
             return None
-        pv1, pv2 = raw[14], raw[15]
+        if self.is_x1:
+            pv1, pv2 = raw[7], raw[8]
+        else:
+            pv1, pv2 = raw[14], raw[15]
         if not isinstance(pv1, (int, float)) or not isinstance(pv2, (int, float)):
             log.error("Solax: PV-Register ungültig – pv1=%r pv2=%r", pv1, pv2)
             return None
@@ -139,6 +179,24 @@ class SolaxClient:
         raw = self._fetch()
         if raw is None:
             return None
+        if self.is_x1:
+            return SolaxRealtimeData(
+                pv1_power_w=float(raw[7]),
+                pv2_power_w=float(raw[8]),
+                pv_total_w=float(raw[7] + raw[8]),
+                pv1_voltage_v=raw[3] / 10.0,
+                pv2_voltage_v=raw[4] / 10.0,
+                pv1_current_a=raw[5] / 10.0,
+                pv2_current_a=raw[6] / 10.0,
+                feed_in_w=0.0,
+                consumption_w=0.0,
+                yield_today_kwh=raw[13] / 10.0,
+                grid_out_today_kwh=0.0,
+                grid_in_today_kwh=0.0,
+                mode=int(raw[10]),
+                model="x1",
+                ac_power_w=float(raw[2]),
+            )
         return SolaxRealtimeData(
             pv1_power_w=float(raw[14]),
             pv2_power_w=float(raw[15]),

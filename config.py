@@ -5,12 +5,17 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 
 @dataclass
 class SolaxConfig:
     url: str
     pwd: str
+    enabled: bool = True
+    name: str = "Dach"
+    # Skalenende der PV-Balken (W): bei `solax` pro String, bei `solax2` für das Gerät
+    max_w: float = 10000.0
 
 
 @dataclass
@@ -52,8 +57,15 @@ class HeaterConfig:
     min_pv_power_ph1: float = 1500.0
     min_pv_power_ph2: float = 3000.0
     min_pv_power_ph3: float = 4500.0
+    # Erlaubter Netzbezug (W): wird von den min_pv_power_phX-Schwellen abgezogen,
+    # d.h. der Heizstab startet schon mit (min_pv_power - grid_assist_w) Überschuss.
+    grid_assist_w: float = 0.0
 
     def __post_init__(self) -> None:
+        if self.grid_assist_w < 0:
+            raise ValueError(
+                f"heater.grid_assist_w must be >= 0, got {self.grid_assist_w}"
+            )
         if self.storage_max_temp <= 0:
             raise ValueError(
                 f"heater.storage_max_temp must be > 0, got {self.storage_max_temp}"
@@ -63,6 +75,9 @@ class HeaterConfig:
                 "heater.storage_temp_hysteresis must be >= 0, "
                 f"got {self.storage_temp_hysteresis}"
             )
+
+    def effective_min_pv(self, min_pv: float) -> float:
+        return float(max(0.0, min_pv - self.grid_assist_w))
 
     @property
     def heat_resume_temp(self) -> float:
@@ -153,6 +168,26 @@ class Config:
     simulation: SimulationConfig
     wallbox: WallboxConfig
     summer_mode: SummerModeConfig = field(default_factory=SummerModeConfig)
+    # Zweiter Wechselrichter (Pergola-PV); None = nicht konfiguriert
+    solax2: Optional[SolaxConfig] = None
+
+    @property
+    def solax2_active(self) -> bool:
+        return self.solax2 is not None and self.solax2.enabled and bool(self.solax2.url)
+
+
+def parse_solax2(raw: dict) -> Optional[SolaxConfig]:
+    """solax2-Block aus der Roh-Config; fehlend -> None, enabled-Default False."""
+    block = raw.get("solax2")
+    if not block:
+        return None
+    return SolaxConfig(
+        url=block.get("url", ""),
+        pwd=block.get("pwd", ""),
+        enabled=bool(block.get("enabled", False)),
+        name=block.get("name", "Pergola"),
+        max_w=float(block.get("max_w", 1000.0)),
+    )
 
 
 def load_config(path: str | Path) -> Config:
@@ -175,4 +210,5 @@ def load_config(path: str | Path) -> Config:
             k: v for k, v in raw.get("summer_mode", {}).items()
             if k != "max_phases"
         }),
+        solax2=parse_solax2(raw),
     )

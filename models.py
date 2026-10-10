@@ -37,7 +37,16 @@ class Readings:
     """Alle Messwerte eines Durchlaufs. Felder sind optional, damit Teilfehler
     nicht den ganzen Snapshot ungültig machen."""
 
-    pv_power_w: Optional[float] = None
+    pv_power_w: Optional[float] = None  # Summe Haupt-WR + Pergola-PV
+    pv1_power_w: Optional[float] = None  # nur Haupt-WR
+    pv2_power_w: Optional[float] = None  # Pergola-PV (None = aus / n/a)
+    pv2_today_kwh: Optional[float] = None
+    # Tageszähler des Haupt-WR (Fallback für meter_today) und Hauptzähler-Lifetime (Wh)
+    solax_yield_today_kwh: Optional[float] = None
+    solax_grid_out_kwh: Optional[float] = None
+    solax_grid_in_kwh: Optional[float] = None
+    main_import_wh: Optional[float] = None
+    main_export_wh: Optional[float] = None
     main_meter_power_w: Optional[float] = None
     heater_meter_power_w: Optional[float] = None
     storage_temp_c: Optional[float] = None

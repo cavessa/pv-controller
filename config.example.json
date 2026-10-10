@@ -1,7 +1,15 @@
 {
   "solax": {
     "url": "http://192.168.x.x",
-    "pwd": "YOUR_POCKET_WIFI_PASSWORD"
+    "pwd": "YOUR_POCKET_WIFI_PASSWORD",
+    "max_w": 10000
+  },
+  "solax2": {
+    "enabled": false,
+    "url": "http://192.168.x.x",
+    "pwd": "YOUR_POCKET_WIFI_PASSWORD",
+    "name": "Pergola",
+    "max_w": 1000
   },
   "shelly": {
     "ph1_url": "http://192.168.x.x",
@@ -23,7 +31,8 @@
     "storage_temp_hysteresis": 1,
     "min_pv_power_ph1": 1500,
     "min_pv_power_ph2": 3000,
-    "min_pv_power_ph3": 4500
+    "min_pv_power_ph3": 4500,
+    "grid_assist_w": 0
   },
   "runtime": {
     "enabled": true,

@@ -15,7 +15,6 @@ let _vTagDate    = new Date().toISOString().slice(0, 10);
 let _vMonth      = new Date().toISOString().slice(0, 7);
 let _vYear       = new Date().getFullYear();
 let _vStringsDate = new Date().toISOString().slice(0, 10);
-let _cachedNormalRatio = null;
 
 // ── Netz sub-tab state ────────────────────────────────
 let _vNetzSub     = "tag";
@@ -323,7 +322,11 @@ function renderEnergyFlow(heater, wb, cs) {
   const NW = 88, NH = 52, H_W = 100;
 
   // data
-  const pvW     = heater.pv_power ?? 0;
+  const pvW     = heater.pv_power ?? 0;          // Summe (Haus-Bilanz)
+  const pergolaOn_  = heater.pv2_enabled === true;
+  const pv1W    = pergolaOn_ ? (heater.pv1_power ?? 0) : pvW;
+  const pgW     = heater.pv2_power ?? 0;
+  const pgName  = (heater.pv2_name || "Pergola").toUpperCase().slice(0, 11);
   const gridW   = heater.main_meter_power ?? 0;
   const heaterW = heater.heater_meter_power ?? 0;
   const phases  = ["ph1","ph2","ph3"].filter(k => heater.phases?.[k] === true).length;
@@ -333,6 +336,8 @@ function renderEnergyFlow(heater, wb, cs) {
 
   // flow state
   const pvOn    = pvW >= 50;
+  const pv1On   = pv1W >= 50;
+  const pgOn    = pergolaOn_ && pgW >= 50;
   const feeding = gridW < -50;
   const drawing = gridW > 50;
   const gridOn  = feeding || drawing;
@@ -349,7 +354,11 @@ function renderEnergyFlow(heater, wb, cs) {
 
   // node geometry (SVG coordinates, viewBox 0 0 360 H)
   const TOP_Y = 4, MID_Y = 74, BUS_Y = 138, BOT_Y = 148;
-  const pv = { x: (W - NW) / 2, y: TOP_Y, cx: W / 2, by: TOP_Y + NH };
+  const PG_W = 76;
+  const pv = pergolaOn_
+    ? { x: W / 2 - 8 - NW, y: TOP_Y, cx: W / 2 - 8 - NW / 2, by: TOP_Y + NH }
+    : { x: (W - NW) / 2, y: TOP_Y, cx: W / 2, by: TOP_Y + NH };
+  const pg = { x: W / 2 + 8, y: TOP_Y + 4, cx: W / 2 + 8 + PG_W / 2, by: TOP_Y + 4 + NH - 4, nh: NH - 4 };
   const hs = {
     x: (W - H_W) / 2, y: MID_Y, cx: W / 2,
     ty: MID_Y, by: MID_Y + NH,
@@ -437,7 +446,14 @@ function renderEnergyFlow(heater, wb, cs) {
 
   // connections
   const conn = [];
-  if (pvOn)   conn.push(L(pv.cx, pv.by, hs.cx, hs.ty, "down"));
+  if (pergolaOn_) {
+    // beide PV-Linien laufen über eine gemeinsame Schiene zum Haus
+    const JY = pv.by + (hs.ty - pv.by) / 2;
+    if (pv1On) conn.push(`<path d="M ${pv.cx} ${pv.by} L ${pv.cx} ${JY} L ${hs.cx} ${JY} L ${hs.cx} ${hs.ty}" class="ef-line ef-down"/>`);
+    if (pgOn)  conn.push(`<path d="M ${pg.cx} ${pg.by} L ${pg.cx} ${JY} L ${hs.cx} ${JY} L ${hs.cx} ${hs.ty}" class="ef-line ef-down"/>`);
+  } else if (pvOn) {
+    conn.push(L(pv.cx, pv.by, hs.cx, hs.ty, "down"));
+  }
   if (gridOn) conn.push(L(nz.rx, nz.ry, hs.lx, hs.ly, drawing ? "right" : "left"));
   if (heatOn) conn.push(L(hs.rx, hs.ry, hz.lx, hz.ly, "right"));
 
@@ -457,7 +473,8 @@ function renderEnergyFlow(heater, wb, cs) {
 
   el.innerHTML = `<svg viewBox="0 0 ${W} ${SVG_H}" width="100%" style="display:block;margin-top:8px">
 ${conn.join("\n")}
-${node(pv.x, pv.y, NW, NH, { icon:"☀️", label:"PV", value:kwOrW(pvW), sub:"", aktiv:pvOn, accent:PVC, always:true })}
+${node(pv.x, pv.y, NW, NH, { icon:"☀️", label:"PV", value:kwOrW(pv1W), sub:"", aktiv:pv1On, accent:PVC, always:true })}
+${pergolaOn_ ? node(pg.x, pg.y, PG_W, pg.nh, { icon:"☀️", label:pgName, value: heater.pv2_power == null ? "n/a" : kwOrW(pgW), sub:"", aktiv:pgOn, accent:PVC, always:true }) : ""}
 ${node(nz.x, nz.y, NW, NH, { icon:"⚡", label:"NETZ", value:nzVal, sub:nzSub, aktiv:gridOn })}
 ${hausNode()}
 ${node(hz.x, hz.y, NW, NH, { icon:"🔥", label:"HEIZSTAB", value:hzKw, sub:`${phases}/3 Ph.`, aktiv:heatOn })}
@@ -490,12 +507,12 @@ function renderSolax(d) {
     totalEl.style.color = d.pv_total_w > 50 ? "var(--c-pv)" : "var(--text-dim)";
   }
 
-  // Peak tracking & midnight reset
-  const nowH = new Date().getHours();
-  if (nowH === 0 && pvPeakToday > 0) { pvPeakToday = 0; pvPeakTime = ''; }
-  const pvW = Math.round(d.pv_total_w);
-  if (pvW > pvPeakToday) {
-    pvPeakToday = pvW;
+  // Tageshoch kommt serverseitig aus der DB (überlebt Reload/Neustart)
+  if (d.pv_peak_w > 0) {
+    pvPeakToday = d.pv_peak_w; pvPeakTime = d.pv_peak_time;
+  } else if (Math.round(d.pv_total_w) > pvPeakToday) {
+    // Fallback, falls der Server kein Tageshoch liefert
+    pvPeakToday = Math.round(d.pv_total_w);
     pvPeakTime = new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
   }
   const peakEl = document.getElementById('pv-peak-display');
@@ -504,19 +521,40 @@ function renderSolax(d) {
   }
 
   if (stringsEl) {
-    const maxW = Math.max(d.pv_total_w, 1);
-    stringsEl.innerHTML = [
-      { n: "STR1 (Dach)", w: d.pv1_power_w, v: d.pv1_voltage_v, a: d.pv1_current_a, cls: "str1" },
-      { n: "STR2 (Wand)", w: d.pv2_power_w, v: d.pv2_voltage_v, a: d.pv2_current_a, cls: "str2" },
-    ].map(s => {
-      const pct = Math.max(2, Math.min(100, s.w / maxW * 100)).toFixed(1);
+    const pergola = d.pergola_enabled === true;
+    const fmtMax = w => w >= 1000 ? `${+(w / 1000).toFixed(1)} kW` : `${Math.round(w)} W`;
+    const row = s => {
+      const pct = Math.max(2, Math.min(100, s.w / s.max * 100)).toFixed(1);
       return `<div class="pv-string">
         <div class="pv-string-label">${s.n}</div>
         <div class="pv-string-bar-wrap"><div class="pv-string-bar ${s.cls}" style="width:${pct}%"></div></div>
-        <div class="pv-string-val">${Math.round(s.w)} W</div>
-        <div class="pv-string-sub">${s.v.toFixed(0)} V · ${s.a.toFixed(1)} A</div>
+        <div class="pv-string-val"><span style="color:#e0e2e6">${s.w == null ? "n/a" : Math.round(s.w) + " W"}</span><span style="color:#6a6d75;font-size:11px;margin-left:6px">/ ${fmtMax(s.max)}</span></div>
+        <div class="pv-string-sub">${s.v == null ? "" : s.v.toFixed(0) + " V · " + s.a.toFixed(1) + " A"}</div>
       </div>`;
-    }).join("");
+    };
+    // Summenwert im Kopf nur bei mehr als einem String (sonst steht er schon im Balken)
+    const group = (name, w, nStrings) => `<div class="pv-group"><span>${name}</span>${nStrings > 1 ? `<b>${w == null ? "n/a" : Math.round(w) + " W"}</b>` : ""}</div>`;
+    const strMax = d.str_max_w ?? 10000;
+    const strs = [
+      { n: "STR1 (Dach)", w: d.pv1_power_w, v: d.pv1_voltage_v, a: d.pv1_current_a, cls: "str1", max: strMax },
+      { n: "STR2 (Wand)", w: d.pv2_power_w, v: d.pv2_voltage_v, a: d.pv2_current_a, cls: "str2", max: strMax },
+    ].map(row).join("");
+    if (!pergola) {
+      stringsEl.innerHTML = strs;
+    } else {
+      const pgName = d.pergola_name || "Pergola";
+      stringsEl.innerHTML =
+        group("PV-Anlage", d.main_total_w, 2) + strs +
+        group("Balkonkraftwerk", d.pergola_ok ? d.pergola_power_w : null, 1) +
+        row({ n: pgName, w: d.pergola_ok ? d.pergola_power_w : 0,
+              v: d.pergola_ok ? d.pergola_voltage_v : null, a: d.pergola_current_a, cls: "str3",
+              max: d.pergola_max_w ?? 1000 });
+    }
+    const lg = document.getElementById("legend-pergola");
+    if (lg) {
+      lg.classList.toggle("hidden", !pergola);
+      if (pergola) lg.textContent = d.pergola_name || "Pergola";
+    }
   }
 
   if (feedinEl) {
@@ -542,6 +580,10 @@ function renderHausverbrauch(d) {
     valEl.innerHTML     = `–<span class="hv-unit">W</span>`;
     valEl.style.color   = "var(--text-dim)";
     todayEl.textContent = "Heute: –";
+    const b0 = document.getElementById("hv-bought");
+    if (b0) b0.textContent = "";
+    const p0 = document.getElementById("hv-pv");
+    if (p0) p0.textContent = "";
     if (avgEl) avgEl.textContent = "Ø – kW/h";
     return;
   }
@@ -552,8 +594,25 @@ function renderHausverbrauch(d) {
     valEl.innerHTML = `${w}<span class="hv-unit">W</span>`;
   }
   valEl.style.color = w > 3000 ? "var(--warn)" : "var(--text)";
-  const kwh = d.self_consumption_kwh;
+  // Gesamtverbrauch heute (Hauptzähler bzw. Solax-Fallback); ohne meter_today alter Wert
+  const mt = d.meter_today;
+  const kwh = mt?.verbrauch_kwh ?? d.self_consumption_kwh;
   todayEl.textContent = "Heute: " + (kwh != null ? kwh.toFixed(1) + " kWh" : "–");
+  const pvShareEl = document.getElementById("hv-pv");
+  const boughtEl = document.getElementById("hv-bought");
+  const hasShare = mt && mt.verbrauch_kwh > 0;
+  const pvKwh = hasShare ? Math.max(0, mt.verbrauch_kwh - mt.bezug_kwh) : 0;
+  const pvPct = hasShare ? Math.round(Math.min(100, pvKwh / mt.verbrauch_kwh * 100)) : 0;
+  if (pvShareEl) {
+    pvShareEl.innerHTML = hasShare
+      ? `davon aus PV: <span style="color:#2ed8a3">${pvKwh.toFixed(1)} kWh (${pvPct}%)</span>`
+      : "";
+  }
+  if (boughtEl) {
+    boughtEl.innerHTML = hasShare
+      ? `davon zugekauft: <span style="color:#ff6b6b">${mt.bezug_kwh.toFixed(1)} kWh (${Math.round(Math.min(100, mt.bezug_kwh / mt.verbrauch_kwh * 100))}%)</span>`
+      : "";
+  }
   if (avgEl && kwh != null) {
     const hours = Math.max(1, new Date().getHours());
     avgEl.textContent = "Ø " + (kwh / hours).toFixed(2) + " kW/h";
@@ -734,7 +793,8 @@ function renderToday(d) {
       ${kpiBox(evQuote + '%',              'Eigenverbr.', '#2ed8a3')}
       ${kpiBox(autarkie + '%',             'Autarkie',    '#e8a435')}
       ${kpiBox(gesamtKwh.toFixed(1),       'kWh verbr.',  '#e0e2e6')}
-    </div>`;
+    </div>
+    <div style="font-size:10px;color:var(--text-muted);margin-top:8px;text-align:right">Quelle: ${d.meter_today?.source === "shelly" ? "Hauptzähler" : "Wechselrichter"}</div>`;
 }
 
 function kpiBox(val, label, color) {
@@ -786,8 +846,23 @@ function renderKpiGauges(d) {
   </div>`;
 }
 
+// X-Achsen-Fenster der Tages-Charts: Sonnenaufgang−1h … Sonnenuntergang+1h
+// (volle Stunden). Ohne Sonnenzeiten Fallback 5h–21h.
+function sunWindow(res) {
+  const toH = t => {
+    const m = /^(\d{1,2}):(\d{2})/.exec(t || "");
+    return m ? Number(m[1]) + Number(m[2]) / 60 : null;
+  };
+  const sr = toH(res?.sunrise), ss = toH(res?.sunset);
+  if (sr == null || ss == null || ss <= sr) return [5, 21];
+  const xMin = Math.max(0, Math.floor(sr) - 1);
+  const xMax = Math.min(24, Math.ceil(ss) + 1);
+  return xMax - xMin >= 2 ? [xMin, xMax] : [5, 21];
+}
+
 // ---------- Verlauf / History Charts ----------
-function renderDailyChart(entries) {
+function renderDailyChart(entries, win = [5, 21]) {
+  const [xMin, xMax] = win;
   const wrap = document.getElementById("chart-daily-wrap");
   if (!wrap) return;
   if (!entries || entries.length < 2) {
@@ -801,10 +876,14 @@ function renderDailyChart(entries) {
   const pts = entries.map(e => {
     const h = parseInt((e.ts || "").split(" ")[1]?.split(":")[0] || "0", 10);
     return { h, pv: e.pv_w || 0, feed: Math.max(0, e.feed_in_w || 0), cons: Math.abs(e.consumption_w || 0) };
-  }).sort((a, b) => a.h - b.h);
+  }).filter(p => p.h >= xMin && p.h <= xMax).sort((a, b) => a.h - b.h);
+  if (pts.length < 2) {
+    wrap.innerHTML = '<div class="chart-empty">Keine Daten im Sonnenfenster.</div>';
+    return;
+  }
 
   const maxW = Math.max(...pts.flatMap(p => [p.pv, p.feed, p.cons]), 100);
-  const sx = h => pad.l + (h / 23) * cw;
+  const sx = h => pad.l + ((h - xMin) / (xMax - xMin)) * cw;
   const sy = w => pad.t + ch - (w / maxW * ch);
 
   let yElems = "", xElems = "";
@@ -814,19 +893,23 @@ function renderDailyChart(entries) {
     yElems += `<line x1="${pad.l}" y1="${ypx}" x2="${pad.l+cw}" y2="${ypx}" class="grid-line"/>`;
     yElems += `<text x="${pad.l-4}" y="${ypx}" text-anchor="end" dominant-baseline="middle">${yv >= 1000 ? (yv/1000).toFixed(0)+"k" : yv}</text>`;
   }
-  for (let h = 0; h <= 23; h += 3) {
+  const xStep = xMax - xMin > 12 ? 3 : 2;
+  for (let h = xMin; h <= xMax; h += xStep) {
     const xv = sx(h).toFixed(1);
     xElems += `<line x1="${xv}" y1="${pad.t}" x2="${xv}" y2="${pad.t+ch}" class="grid-line"/>`;
     xElems += `<text x="${xv}" y="${VH-2}" text-anchor="middle">${h}h</text>`;
   }
   const now = new Date();
-  const nowX = sx(now.getHours() + now.getMinutes() / 60).toFixed(1);
+  const nowH = now.getHours() + now.getMinutes() / 60;
+  const nowX = sx(Math.min(Math.max(nowH, xMin), xMax)).toFixed(1);
+  const nowLine = (nowH >= xMin && nowH <= xMax)
+    ? `<line x1="${nowX}" y1="${pad.t}" x2="${nowX}" y2="${pad.t+ch}" class="now-line"/>` : "";
   const path = key => pts.map((p, i) => `${i===0?"M":"L"}${sx(p.h).toFixed(1)},${sy(p[key]).toFixed(1)}`).join(" ");
   const area = key => path(key) + ` L${sx(pts[pts.length-1].h).toFixed(1)},${(pad.t+ch).toFixed(1)} L${sx(pts[0].h).toFixed(1)},${(pad.t+ch).toFixed(1)} Z`;
 
   wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">
     <g>${yElems}${xElems}</g>
-    <line x1="${nowX}" y1="${pad.t}" x2="${nowX}" y2="${pad.t+ch}" class="now-line"/>
+    ${nowLine}
     <path d="${area('cons')}" fill="rgba(224,226,230,0.1)" stroke="none"/>
     <path d="${area('feed')}" fill="rgba(46,216,163,0.15)" stroke="none"/>
     <path d="${area('pv')}" fill="rgba(232,164,53,0.2)" stroke="none"/>
@@ -836,7 +919,8 @@ function renderDailyChart(entries) {
   </svg>`;
 }
 
-function renderStringChart(entries, wrapId = "chart-strings-wrap") {
+function renderStringChart(entries, wrapId = "chart-strings-wrap", win = [5, 21]) {
+  const [xMin, xMax] = win;
   const wrap = document.getElementById(wrapId);
   if (!wrap) return;
   if (!entries || entries.length < 2) {
@@ -849,11 +933,17 @@ function renderStringChart(entries, wrapId = "chart-strings-wrap") {
 
   const pts = entries.map(e => {
     const h = parseInt((e.ts || "").split(" ")[1]?.split(":")[0] || "0", 10);
-    return { h, s1: e.str1_w || 0, s2: e.str2_w || 0 };
-  }).sort((a, b) => a.h - b.h);
+    return { h, s1: e.str1_w || 0, s2: e.str2_w || 0, s3: e.pv2_w || 0 };
+  }).filter(p => p.h >= xMin && p.h <= xMax).sort((a, b) => a.h - b.h);
+  if (pts.length < 2) {
+    wrap.innerHTML = '<div class="chart-empty">Keine Daten im Sonnenfenster.</div>';
+    return;
+  }
+  // dritte Linie (Pergola) nur wenn der Tag Pergola-Werte enthält
+  const hasPg = entries.some(e => e.pv2_w != null);
 
-  const maxW = Math.max(...pts.flatMap(p => [p.s1, p.s2]), 100);
-  const sx = h => pad.l + (h / 23) * cw;
+  const maxW = Math.max(...pts.flatMap(p => hasPg ? [p.s1, p.s2, p.s3] : [p.s1, p.s2]), 100);
+  const sx = h => pad.l + ((h - xMin) / (xMax - xMin)) * cw;
   const sy = w => pad.t + ch - (w / maxW * ch);
 
   let yElems = "", xElems = "";
@@ -863,23 +953,28 @@ function renderStringChart(entries, wrapId = "chart-strings-wrap") {
     yElems += `<line x1="${pad.l}" y1="${ypx}" x2="${pad.l+cw}" y2="${ypx}" class="grid-line"/>`;
     yElems += `<text x="${pad.l-4}" y="${ypx}" text-anchor="end" dominant-baseline="middle">${yv >= 1000 ? (yv/1000).toFixed(0)+"k" : yv}</text>`;
   }
-  for (let h = 0; h <= 23; h += 3) {
+  const xStep = xMax - xMin > 12 ? 3 : 2;
+  for (let h = xMin; h <= xMax; h += xStep) {
     const xv = sx(h).toFixed(1);
     xElems += `<line x1="${xv}" y1="${pad.t}" x2="${xv}" y2="${pad.t+ch}" class="grid-line"/>`;
     xElems += `<text x="${xv}" y="${VH-2}" text-anchor="middle">${h}h</text>`;
   }
   const now = new Date();
-  const nowX = sx(now.getHours() + now.getMinutes() / 60).toFixed(1);
+  const nowH = now.getHours() + now.getMinutes() / 60;
+  const nowX = sx(Math.min(Math.max(nowH, xMin), xMax)).toFixed(1);
+  const nowLine = (nowH >= xMin && nowH <= xMax)
+    ? `<line x1="${nowX}" y1="${pad.t}" x2="${nowX}" y2="${pad.t+ch}" class="now-line"/>` : "";
   const path = key => pts.map((p, i) => `${i===0?"M":"L"}${sx(p.h).toFixed(1)},${sy(p[key]).toFixed(1)}`).join(" ");
   const area = key => path(key) + ` L${sx(pts[pts.length-1].h).toFixed(1)},${(pad.t+ch).toFixed(1)} L${sx(pts[0].h).toFixed(1)},${(pad.t+ch).toFixed(1)} Z`;
 
   wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">
     <g>${yElems}${xElems}</g>
-    <line x1="${nowX}" y1="${pad.t}" x2="${nowX}" y2="${pad.t+ch}" class="now-line"/>
+    ${nowLine}
     <path d="${area('s2')}" fill="rgba(91,140,255,0.15)" stroke="none"/>
     <path d="${area('s1')}" fill="rgba(232,164,53,0.15)" stroke="none"/>
     <path d="${path('s2')}" fill="none" stroke="#5b8cff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
     <path d="${path('s1')}" fill="none" stroke="#e8a435" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    ${hasPg ? `<path d="${path('s3')}" fill="none" stroke="#2ed8a3" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>` : ""}
   </svg>`;
 }
 
@@ -979,16 +1074,6 @@ function checkStringAlert(entries) {
     el.textContent = "⚠️ String 2 liefert keine Leistung – Verschattung oder Ausfall prüfen.";
     el.className = "string-alert error"; return;
   }
-  const valid = daytime.filter(e => (e.str2_w || 0) > 50);
-  if (valid.length >= 3 && latest.str2_w > 50) {
-    const avg = valid.reduce((s, e) => s + e.str1_w / e.str2_w, 0) / valid.length;
-    const cur = latest.str1_w / latest.str2_w;
-    const dev = Math.abs(cur - avg) / Math.max(avg, 0.01);
-    if (dev > 0.3) {
-      el.textContent = `⚠️ String-Verhältnis weicht ${Math.round(dev*100)}% vom Tagesdurchschnitt ab – Verschattung oder Verschmutzung prüfen.`;
-      el.className = "string-alert warn"; return;
-    }
-  }
   el.className = "string-alert hidden";
 }
 
@@ -1064,8 +1149,9 @@ async function loadVerlaufTag(dateStr) {
   if (nextBtn) nextBtn.disabled = dateStr >= today;
   try {
     const hourly = await api(`/api/history/hourly?for_date=${dateStr}`);
-    renderDailyChart(hourly.entries || []);
-    renderStringChart(hourly.entries || []);
+    const win = sunWindow(hourly);
+    renderDailyChart(hourly.entries || [], win);
+    renderStringChart(hourly.entries || [], "chart-strings-wrap", win);
     checkStringAlert(hourly.entries || []);
   } catch (e) {
     showError("Tagesverlauf konnte nicht geladen werden: " + e.message);
@@ -1131,39 +1217,32 @@ function renderPeakTimeChart(entries, wrapId, days) {
     wrap.innerHTML = '<div class="chart-empty">Noch keine Tagesdaten.</div>';
     return;
   }
-  const toMin = hhmm => { const [h, m] = hhmm.split(":").map(Number); return h * 60 + m; };
   const n = entries.length;
-  const mins = entries.map(e => toMin(e.peak_hour));
-  const maxW = Math.max(...entries.map(e => e.peak_w || 0), 1);
+  const kw = entries.map(e => (e.peak_w || 0) / 1000);
+  const maxKw = Math.max(...kw, 0.1);
 
   const VW = 480, VH = 100;
   const pad = { t: 10, r: 6, b: 22, l: 40 };
   const cw = VW - pad.l - pad.r, ch = VH - pad.t - pad.b;
 
-  const rawMin = Math.min(...mins), rawMax = Math.max(...mins);
-  const minY = Math.floor((rawMin - 30) / 60) * 60;
-  const maxY = Math.ceil((rawMax + 30) / 60) * 60;
-  const spanY = Math.max(60, maxY - minY);
-  const sy = v => pad.t + ch - ((v - minY) / spanY * ch);
+  const yStep = niceStep(maxKw, 4);
+  const maxY = Math.ceil(maxKw / yStep) * yStep;
+  const sy = v => pad.t + ch - (v / maxY * ch);
   const sx = i => n === 1 ? pad.l + cw / 2 : pad.l + (i / (n - 1)) * cw;
 
   let yElems = "";
-  const yStepMin = spanY <= 240 ? 60 : spanY <= 480 ? 120 : 180;
-  for (let yv = Math.ceil(minY / yStepMin) * yStepMin; yv <= maxY + 0.01; yv += yStepMin) {
+  for (let yv = 0; yv <= maxY + 0.001; yv += yStep) {
     const ypx = sy(yv).toFixed(1);
-    const hh = String(Math.floor(yv / 60)).padStart(2, "0");
-    const mm = String(yv % 60).padStart(2, "0");
     yElems += `<line x1="${pad.l}" y1="${ypx}" x2="${pad.l+cw}" y2="${ypx}" class="grid-line"/>`;
-    yElems += `<text x="${pad.l-4}" y="${ypx}" text-anchor="end" dominant-baseline="middle">${hh}:${mm}</text>`;
+    yElems += `<text x="${pad.l-4}" y="${ypx}" text-anchor="end" dominant-baseline="middle">${yv.toFixed(1)}</text>`;
   }
 
   const weekdays = ["So","Mo","Di","Mi","Do","Fr","Sa"];
   let points = "", dots = "", xLabels = "";
   entries.forEach((e, i) => {
-    const x = sx(i), y = sy(toMin(e.peak_hour));
+    const x = sx(i), y = sy(kw[i]);
     points += `${x.toFixed(1)},${y.toFixed(1)} `;
-    const r = (2 + (e.peak_w || 0) / maxW * 3).toFixed(1);
-    dots += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" fill="#fbbf24">`
+    dots += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.5" fill="#fbbf24">`
           + `<title>${_fmtDate(e.date)} · ${e.peak_hour} Uhr · ${e.peak_w} W</title></circle>`;
     let label = "";
     if (days <= 7) {
@@ -1738,13 +1817,8 @@ async function loadVerlaufStrings(dateStr) {
   const today = new Date().toISOString().slice(0, 10);
   if (nextBtn) nextBtn.disabled = (_vStringsDate >= today);
   try {
-    const [dayData, ratioData] = await Promise.all([
-      api(`/api/history/hourly?for_date=${dateStr}`),
-      api("/api/strings/ratio?days=30"),
-    ]);
-    _cachedNormalRatio = ratioData.normal_ratio;
-    renderStringsDayChart(dayData.entries || []);
-    renderStringRatioChart(ratioData.entries || [], ratioData.normal_ratio);
+    const dayData = await api(`/api/history/hourly?for_date=${dateStr}`);
+    renderStringsDayChart(dayData.entries || [], sunWindow(dayData));
     const alertData = await api("/api/strings/alerts?days=30");
     renderStringAlertsList(alertData.entries || []);
   } catch (e) {
@@ -1752,7 +1826,8 @@ async function loadVerlaufStrings(dateStr) {
   }
 }
 
-function renderStringsDayChart(entries) {
+function renderStringsDayChart(entries, win = [5, 21]) {
+  const [xMin, xMax] = win;
   const wrap = document.getElementById("chart-strings-day-wrap");
   if (!wrap) return;
   if (!entries || !entries.length) {
@@ -1767,9 +1842,13 @@ function renderStringsDayChart(entries) {
     h: parseInt((e.ts || "").split(" ")[1]?.split(":")[0] || "0", 10),
     s1: e.str1_w || 0,
     s2: e.str2_w || 0,
-  }));
+  })).filter(p => p.h >= xMin && p.h <= xMax);
+  if (pts.length < 2) {
+    wrap.innerHTML = '<div class="chart-empty">Keine Daten im Sonnenfenster.</div>';
+    return;
+  }
   const maxV = Math.max(...pts.flatMap(p => [p.s1, p.s2]), 1);
-  const sx = h => pad.l + (h / 23) * cw;
+  const sx = h => pad.l + ((h - xMin) / (xMax - xMin)) * cw;
   const sy = v => pad.t + ch * (1 - v / maxV);
 
   let yElems = "";
@@ -1794,7 +1873,8 @@ function renderStringsDayChart(entries) {
     return `<path d="${d} L${sx(pts[pts.length-1].h).toFixed(1)},${bottom} L${sx(pts[0].h).toFixed(1)},${bottom} Z" fill="${fillColor}" stroke="none"/>`;
   };
 
-  const xLabels = [0, 6, 12, 18, 23].map(h =>
+  const xStep = xMax - xMin > 12 ? 3 : 2;
+  const xLabels = Array.from({ length: Math.floor((xMax - xMin) / xStep) + 1 }, (_, i) => xMin + i * xStep).map(h =>
     `<text x="${sx(h).toFixed(1)}" y="${VH - 2}" text-anchor="middle">${String(h).padStart(2, "0")}</text>`
   ).join("");
 
@@ -1804,69 +1884,6 @@ function renderStringsDayChart(entries) {
     ${mkArea("s1", "rgba(232,164,53,0.15)")}
     ${mkPath("s2", "#f5782a")}
     ${mkPath("s1", "#e8a435")}
-    <g class="axis-g">${xLabels}</g>
-  </svg>`;
-}
-
-function renderStringRatioChart(entries, normalRatio) {
-  const wrap = document.getElementById("chart-strings-ratio-wrap");
-  if (!wrap) return;
-  if (!entries || !entries.length) {
-    wrap.innerHTML = '<div class="chart-empty">Noch keine Verhältnis-Daten vorhanden.</div>';
-    return;
-  }
-  const VW = 460, VH = 100;
-  const pad = { t: 12, r: 8, b: 22, l: 36 };
-  const cw = VW - pad.l - pad.r;
-  const ch = VH - pad.t - pad.b;
-  const n = entries.length;
-  const allRatios = entries.map(e => e.avg).filter(v => v !== null);
-  const minR = Math.min(...allRatios, normalRatio != null ? normalRatio * 0.8 : Infinity);
-  const maxR = Math.max(...allRatios, normalRatio != null ? normalRatio * 1.2 : 0, 0.1);
-  const rRange = Math.max(maxR - minR, 0.3);
-  const sy = v => pad.t + ch * (1 - (v - minR) / rRange);
-  const sx = i => pad.l + (n > 1 ? (i / (n - 1)) * cw : cw / 2);
-
-  let bandElems = "";
-  if (normalRatio != null) {
-    const bandTop = sy(normalRatio * 1.15).toFixed(1);
-    const bandBot = sy(normalRatio * 0.85).toFixed(1);
-    bandElems = `<rect x="${pad.l}" y="${bandTop}" width="${cw}" height="${(parseFloat(bandBot) - parseFloat(bandTop)).toFixed(1)}" fill="rgba(255,255,255,0.05)"/>`;
-    const ny = sy(normalRatio).toFixed(1);
-    bandElems += `<line x1="${pad.l}" y1="${ny}" x2="${pad.l + cw}" y2="${ny}" stroke="rgba(255,255,255,0.2)" stroke-width="1" stroke-dasharray="4,3"/>`;
-  }
-
-  let line = "";
-  if (n >= 2) {
-    const segs = entries.map((e, i) => e.avg !== null
-      ? `${i === 0 ? "M" : "L"}${sx(i).toFixed(1)},${sy(e.avg).toFixed(1)}`
-      : null
-    ).filter(Boolean);
-    if (segs.length) {
-      line = `<path d="${segs.join(" ")}" fill="none" stroke="#2ed8a3" stroke-width="2.5" stroke-linejoin="round"/>`;
-    }
-  }
-
-  let anomalyDots = "";
-  if (normalRatio != null) {
-    entries.forEach((e, i) => {
-      if (e.avg === null) return;
-      if (Math.abs(e.avg - normalRatio) / normalRatio * 100 > 30) {
-        anomalyDots += `<circle cx="${sx(i).toFixed(1)}" cy="${sy(e.avg).toFixed(1)}" r="4" fill="#ff6b6b" opacity="0.9"/>`;
-      }
-    });
-  }
-
-  const step = Math.max(1, Math.floor(n / 6));
-  const xLabels = entries.map((e, i) => {
-    if (i % step !== 0 && i !== n - 1) return "";
-    return `<text x="${sx(i).toFixed(1)}" y="${VH - 2}" text-anchor="middle">${(e.day || "").slice(5)}</text>`;
-  }).join("");
-
-  wrap.innerHTML = `<svg viewBox="0 0 ${VW} ${VH}" class="spark-svg chart-svg">
-    ${bandElems}
-    ${line}
-    ${anomalyDots}
     <g class="axis-g">${xLabels}</g>
   </svg>`;
 }
@@ -1895,7 +1912,12 @@ async function _checkLiveStringAlert() {
   if (!el) return;
   try {
     const data = await api("/api/strings/alerts?days=1");
-    const active = (data.entries || []);
+    // Nur anzeigen, solange der Fehler live noch besteht (Alert-Log hält 24 h).
+    const live = await api("/api/solax").catch(() => null);
+    const p1 = live?.pv1_power_w, p2 = live?.pv2_power_w;
+    const stillFaulty = p1 == null || p2 == null ||
+      (p1 < 10 && p2 > 200) || (p2 < 10 && p1 > 200);
+    const active = stillFaulty ? (data.entries || []) : [];
     if (!active.length) { el.className = "string-dash-alert hidden"; return; }
     const top = active[0];
     el.className = `string-dash-alert ${top.level === "error" ? "error" : "warn"}`;
@@ -2444,16 +2466,34 @@ async function loadPhaseLogs() {
 }
 
 // ---------- refresh ----------
+// Jeder Bereich rendert, sobald SEINE Daten da sind – kein Warten auf den
+// langsamsten Call. Nur Status + Solax werden gemeinsam gerendert, damit
+// Energiefluss, PV&Netz und PV-Erzeugung dieselbe PV-Leistung zeigen.
 async function refreshStatus() {
+  const activeTab = document.querySelector(".tab.active")?.dataset.tab;
+  const statusP  = api("/api/status");
+  const solaxP   = api("/api/solax").catch(() => null);
+  const historyP = api("/api/temp-history").catch(() => ({ entries: [] }));
+  const cascadeP = api("/api/cascade/status").catch(() => null);
+  const hourlyP  = api("/api/history/hourly").catch(() => ({ entries: [] }));
+
+  loadPhaseLogs();
+  loadForecast();
+  drawHausverbrauchSparkline();
+  _checkLiveStringAlert();
+  if (activeTab === "prioritaeten") loadCascade();
+
+  cascadeP.then(cascadeStatus => {
+    if (!cascadeStatus) return;
+    lastCascadeStatus = cascadeStatus;
+    renderCascadeMini(cascadeStatus);
+    checkCascadeAlerts(cascadeStatus);
+  });
+  hourlyP.then(hourlyToday => renderStringChart(hourlyToday.entries || [], "pv-strings-chart-wrap", sunWindow(hourlyToday)));
+  historyP.then(history => renderWbChart(history.entries));
+
   try {
-    const activeTab = document.querySelector(".tab.active")?.dataset.tab;
-    const [data, history, solax, cascadeStatus, hourlyToday] = await Promise.all([
-      api("/api/status"),
-      api("/api/temp-history").catch(() => ({ entries: [] })),
-      api("/api/solax").catch(() => null),
-      api("/api/cascade/status").catch(() => null),
-      api("/api/history/hourly").catch(() => ({ entries: [] })),
-    ]);
+    const [data, solax] = await Promise.all([statusP, solaxP]);
     if (solax !== null) {
       lastSolaxData = solax;
     } else {
@@ -2461,26 +2501,14 @@ async function refreshStatus() {
     }
     const effectiveSolax = solax !== null ? solax : lastSolaxData;
     // Single source of truth: pv_total_w aus dem Solax-Call überschreibt pv_power
-    // im Status-Result, damit Energiefluss, PV&Netz und PV-Erzeugung identische
-    // Werte zeigen (beide Endpunkte nutzen ohnehin denselben Server-Cache).
+    // im Status-Result (beide Endpunkte nutzen ohnehin denselben Server-Cache).
     if (effectiveSolax != null && data?.heater != null) {
       data.heater.pv_power = effectiveSolax.pv_total_w;
     }
-    if (cascadeStatus) lastCascadeStatus = cascadeStatus;
     renderStatus(data);
     renderSolax(effectiveSolax);
+    const history = await historyP;
     renderTempChart(history.entries, data.heater?.storage_max_temp);
-    renderWbChart(history.entries);
-    renderStringChart(hourlyToday.entries || [], "pv-strings-chart-wrap");
-    loadPhaseLogs();
-    if (cascadeStatus) {
-      renderCascadeMini(cascadeStatus);
-      checkCascadeAlerts(cascadeStatus);
-    }
-    if (activeTab === "prioritaeten") loadCascade();
-    _checkLiveStringAlert();
-    loadForecast();
-    drawHausverbrauchSparkline();
   } catch (e) {
     showError("Status-Abfrage fehlgeschlagen: " + e.message);
   }
@@ -2508,7 +2536,7 @@ async function runOnce() {
       renderWbChart(h.entries);
     }).catch(() => {});
     api("/api/history/hourly").then(h => {
-      renderStringChart(h.entries || [], "pv-strings-chart-wrap");
+      renderStringChart(h.entries || [], "pv-strings-chart-wrap", sunWindow(h));
     }).catch(() => {});
     loadPhaseLogs();
     loadPeakTimeChart();
@@ -2535,6 +2563,10 @@ async function loadSettings() {
     setFormValue(f, "runtime.dry_run", lastConfig.runtime?.dry_run);
     setFormValue(f, "solax.url", lastConfig.solax?.url ?? "");
     setFormValue(f, "solax.pwd", lastConfig.solax?.pwd ?? "");
+    setFormValue(f, "solax2.enabled", lastConfig.solax2?.enabled ?? false);
+    setFormValue(f, "solax2.url", lastConfig.solax2?.url ?? "");
+    setFormValue(f, "solax2.pwd", lastConfig.solax2?.pwd ?? "");
+    setFormValue(f, "solax2.name", lastConfig.solax2?.name ?? "Pergola");
     setFormValue(f, "shelly.ph1_url", lastConfig.shelly?.ph1_url ?? "");
     setFormValue(f, "shelly.ph1_type", lastConfig.shelly?.ph1_type ?? "shelly_gen1");
     setFormValue(f, "shelly.ph1_channel", lastConfig.shelly?.ph1_channel ?? 0);
@@ -2552,6 +2584,7 @@ async function loadSettings() {
     setFormValue(f, "heater.min_pv_power_ph1", lastConfig.heater?.min_pv_power_ph1);
     setFormValue(f, "heater.min_pv_power_ph2", lastConfig.heater?.min_pv_power_ph2);
     setFormValue(f, "heater.min_pv_power_ph3", lastConfig.heater?.min_pv_power_ph3);
+    setFormValue(f, "heater.grid_assist_w", lastConfig.heater?.grid_assist_w ?? 0);
     setFormValue(f, "wallbox.enabled", lastConfig.wallbox?.enabled);
     setFormValue(f, "wallbox.url", lastConfig.wallbox?.url ?? "");
     setFormValue(f, "wallbox.only_control_when_pv_surplus_active", lastConfig.wallbox?.only_control_when_pv_surplus_active);
@@ -2612,6 +2645,12 @@ async function saveSettings(e) {
       url: strField("solax.url"),
       pwd: strField("solax.pwd"),
     },
+    solax2: {
+      enabled: boolField("solax2.enabled"),
+      url: strField("solax2.url"),
+      pwd: strField("solax2.pwd"),
+      name: strField("solax2.name"),
+    },
     shelly: {
       ph1_url: strField("shelly.ph1_url"),
       ph1_type: f.elements.namedItem("shelly.ph1_type")?.value,
@@ -2632,6 +2671,7 @@ async function saveSettings(e) {
       min_pv_power_ph1: numField("heater.min_pv_power_ph1"),
       min_pv_power_ph2: numField("heater.min_pv_power_ph2"),
       min_pv_power_ph3: numField("heater.min_pv_power_ph3"),
+      grid_assist_w: numField("heater.grid_assist_w"),
     },
     wallbox: {
       enabled: boolField("wallbox.enabled"),
@@ -2730,11 +2770,34 @@ async function setWallboxMode(mode) {
   }
 }
 
+// Verbindungstest Pergola-Wechselrichter mit den Formularwerten (ungespeichert)
+async function testSolax2() {
+  const f = $("#settings-form");
+  const msg = $("#solax2-test-msg");
+  const btn = $("#solax2-test-btn");
+  const url = f.elements.namedItem("solax2.url")?.value?.trim();
+  const pwd = f.elements.namedItem("solax2.pwd")?.value?.trim();
+  if (!url || !pwd) { msg.textContent = "URL und Passwort eintragen."; msg.className = "form-msg error"; return; }
+  btn.disabled = true;
+  msg.textContent = "teste …"; msg.className = "form-msg";
+  try {
+    const r = await api("/api/solax2/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, pwd }) });
+    msg.textContent = `OK – aktuell ${Math.round(r.power_w)} W, heute ${r.yield_today_kwh.toFixed(1)} kWh`;
+    msg.className = "form-msg ok";
+  } catch (e) {
+    msg.textContent = "Fehler: " + e.message;
+    msg.className = "form-msg error";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // ---------- boot ----------
 function boot() {
   $$(".tab").forEach(t => t.addEventListener("click", () => activateTab(t.dataset.tab)));
   $("#btn-run").addEventListener("click", runOnce);
   $("#settings-form").addEventListener("submit", saveSettings);
+  $("#solax2-test-btn")?.addEventListener("click", testSolax2);
   $("#btn-logs-refresh").addEventListener("click", refreshLogs);
   $("#log-lines").addEventListener("change", refreshLogs);
   $("#log-auto").addEventListener("change", setupLogAuto);
@@ -2839,16 +2902,9 @@ function boot() {
     if (_vNetzYear < new Date().getFullYear()) loadVerlaufNetzJahr(_vNetzYear + 1);
   });
 
-  refreshStatus().finally(hideLoadingOverlay);
+  refreshStatus();
   refreshTimer = setInterval(refreshStatus, REFRESH_MS);
   loadPeakTimeChart();
-}
-
-function hideLoadingOverlay() {
-  const overlay = document.getElementById("loading-overlay");
-  if (!overlay) return;
-  overlay.style.opacity = "0";
-  setTimeout(() => overlay.remove(), 300);
 }
 
 document.addEventListener("DOMContentLoaded", boot);

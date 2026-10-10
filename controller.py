@@ -78,6 +78,11 @@ class Controller:
         self.solax = SolaxClient(
             config.solax.url, config.solax.pwd, config.runtime.request_timeout_seconds
         )
+        self.solax2: Optional[SolaxClient] = None
+        if config.solax2_active:
+            self.solax2 = SolaxClient(
+                config.solax2.url, config.solax2.pwd, config.runtime.request_timeout_seconds
+            )
         timeout = config.runtime.request_timeout_seconds
         self.ph1 = ShellyPlugClient(
             config.shelly.ph1_url,
@@ -129,19 +134,62 @@ class Controller:
             ph3_on=bool(s.ph3_on),
         )
 
+    def _read_pergola(self, r: Readings) -> None:
+        """Pergola-PV (Solax 2) lesen und auf die Gesamt-PV-Leistung addieren.
+
+        Nicht kritisch: Lesefehler landen nur im Log, nicht in r.errors
+        (kein Fail-safe). Fällt der Haupt-WR aus, bleibt pv_power_w None.
+        """
+        if self.solax2 is None:
+            return
+        try:
+            d = self.solax2.get_realtime_data()
+        except Exception:
+            log.warning("Pergola-WR: Lesefehler", exc_info=True)
+            return
+        if d is None:
+            log.warning("Pergola-WR nicht erreichbar (n/a)")
+            return
+        r.pv2_power_w = d.pv_total_w
+        r.pv2_today_kwh = d.yield_today_kwh
+        if r.pv_power_w is not None:
+            r.pv_power_w += d.pv_total_w
+
     def _read_all(self) -> Readings:
         if self.cfg.simulation.enabled:
             return self._read_simulated()
 
         r = Readings()
 
-        r.pv_power_w = self.solax.get_pv_power_w()
+        r.pv1_power_w = self.solax.get_pv_power_w()
+        r.pv_power_w = r.pv1_power_w
         if r.pv_power_w is None:
             r.errors.append("pv_power")
+        else:
+            # kommt aus dem Cache des eben erfolgten Reads (kein zweiter HTTP-Call)
+            try:
+                sd = self.solax.get_realtime_data()
+                if sd is not None:
+                    r.solax_yield_today_kwh = sd.yield_today_kwh
+                    r.solax_grid_out_kwh = sd.grid_out_today_kwh
+                    r.solax_grid_in_kwh = sd.grid_in_today_kwh
+            except Exception:
+                log.warning("Solax-Tageszähler nicht lesbar", exc_info=True)
+        self._read_pergola(r)
 
         r.main_meter_power_w = self.main_meter.get_total_power_w()
         if r.main_meter_power_w is None:
             r.errors.append("main_meter")
+        else:
+            # Tagesenergie ist nicht kritisch: Fehler -> Solax-Fallback, kein Fail-safe
+            try:
+                energy = self.main_meter.get_energy_wh()
+                if energy is not None:
+                    r.main_import_wh, r.main_export_wh = energy
+                    from db import ensure_meter_snapshot
+                    ensure_meter_snapshot(*energy)
+            except Exception:
+                log.warning("Hauptzähler-Energie/Snapshot fehlgeschlagen", exc_info=True)
 
         r.heater_meter_power_w = self.heater_meter.get_total_power_w()
         if r.heater_meter_power_w is None:
@@ -825,22 +873,22 @@ class Controller:
                     name="PH1",
                     plug=self.ph1,
                     current_state=readings.ph1_on,
-                    surplus_threshold_w=-float(h.min_pv_power_ph1),
-                    min_pv_power_w=float(h.min_pv_power_ph1),
+                    surplus_threshold_w=-h.effective_min_pv(h.min_pv_power_ph1),
+                    min_pv_power_w=h.effective_min_pv(h.min_pv_power_ph1),
                 ),
                 _PhaseInput(
                     name="PH2",
                     plug=self.ph2,
                     current_state=readings.ph2_on,
-                    surplus_threshold_w=-float(h.min_pv_power_ph2),
-                    min_pv_power_w=float(h.min_pv_power_ph2),
+                    surplus_threshold_w=-h.effective_min_pv(h.min_pv_power_ph2),
+                    min_pv_power_w=h.effective_min_pv(h.min_pv_power_ph2),
                 ),
                 _PhaseInput(
                     name="PH3",
                     plug=self.ph3,
                     current_state=readings.ph3_on,
-                    surplus_threshold_w=-float(h.min_pv_power_ph3),
-                    min_pv_power_w=float(h.min_pv_power_ph3),
+                    surplus_threshold_w=-h.effective_min_pv(h.min_pv_power_ph3),
+                    min_pv_power_w=h.effective_min_pv(h.min_pv_power_ph3),
                 ),
             ]
             cascade_heizstab = get_cascade_permission("heizstab")

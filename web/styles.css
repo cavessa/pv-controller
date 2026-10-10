@@ -24,6 +24,7 @@
   --accent-2: #8af0c4;
 
   --c-str2: #f5782a;
+  --c-pergola: #2ed8a3;
 
   --radius: 20px;
 }
@@ -521,6 +522,23 @@ main {
 .temp-chart-wrap { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
 .temp-chart      { width: 100%; height: auto; display: block; overflow: visible; }
 .chart-empty     { color: var(--text-dim); font-size: 11px; text-align: center; padding: 10px 0 2px; }
+
+/* -------- Skeleton (Ladeplatzhalter, bis echte Daten da sind) -------- */
+.skeleton {
+  display: inline-block;
+  color: transparent;
+  background: linear-gradient(90deg, #252830 25%, #2a2d35 50%, #252830 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 4px;
+  user-select: none;
+  pointer-events: none;
+}
+.skeleton-chart { display: block; width: 100%; height: 90px; margin-top: 6px; }
+@keyframes shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
 .temp-chart .grid-line { stroke: rgba(255,255,255,0.06); stroke-width: 0.7; }
 .temp-chart text {
   fill: #a0a3ab;
@@ -629,7 +647,7 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 
 .pv-string {
   display: grid;
-  grid-template-columns: 36px 1fr 58px;
+  grid-template-columns: 70px 1fr 104px;
   grid-template-rows: auto auto;
   gap: 3px 8px;
   align-items: center;
@@ -642,7 +660,9 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
   letter-spacing: 0.1em;
   color: var(--text-muted);
   text-transform: uppercase;
-  text-align: center;
+  text-align: left;
+  white-space: normal;
+  line-height: 1.2;
 }
 .pv-string-bar-wrap {
   grid-column: 2; grid-row: 1;
@@ -661,12 +681,28 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 .pv-string-bar.str2 {
   background: var(--accent);
 }
+.pv-string-bar.str3 {
+  background: var(--c-pergola);
+}
+.pv-group {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 12px 0 6px;
+}
+.chart-legend-inline .hidden { display: none; }
+.pv-group:first-child { margin-top: 0; }
+.pv-group b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 .pv-string-val {
   grid-column: 3; grid-row: 1;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   text-align: right;
   line-height: 1;
+  white-space: nowrap;
 }
 .pv-string-sub {
   grid-column: 2; grid-row: 2;
@@ -708,6 +744,13 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
   letter-spacing: 0.04em;
   margin-top: 8px;
 }
+.hv-bought {
+  font-size: 12px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  margin-top: 2px;
+}
+.hv-bought:empty { display: none; }
 .hv-avg {
   font-size: 12px;
   color: var(--text-muted);
@@ -794,6 +837,7 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 .cl-str2    { color: var(--accent);    background: rgba(91,140,255,0.1); }
 .cl-selfuse { color: var(--c-storage); background: rgba(167,139,250,0.1); }
 .cl-str1-b  { color: #e8a435;         background: rgba(232,164,53,0.1); }
+.cl-str3    { color: var(--c-pergola); background: rgba(46,216,163,0.1); }
 .cl-str2-b  { color: var(--c-str2);   background: rgba(245,120,42,0.12); }
 
 /* -------- String alert -------- */

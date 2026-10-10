@@ -51,7 +51,7 @@ def fetch_weather(lat: float, lon: float, timeout: int = 10) -> Optional[dict]:
         "https://api.open-meteo.com/v1/forecast"
         f"?latitude={lat}&longitude={lon}"
         "&daily=sunshine_duration,shortwave_radiation_sum,"
-        "temperature_2m_max,temperature_2m_min,weathercode,sunset"
+        "temperature_2m_max,temperature_2m_min,weathercode,sunset,sunrise"
         "&timezone=Europe/Berlin"
         "&past_days=1&forecast_days=2"
     )
@@ -64,13 +64,13 @@ def fetch_weather(lat: float, lon: float, timeout: int = 10) -> Optional[dict]:
 
 
 def fetch_and_store(lat: float, lon: float) -> bool:
-    """Ruft Wetterdaten ab und speichert sie. Überspringt wenn morgen + heutiger Sonnenuntergang vorhanden."""
+    """Ruft Wetterdaten ab und speichert sie. Überspringt wenn morgen + heutiger Sonnenauf-/-untergang vorhanden."""
     if lat == 0.0 and lon == 0.0:
         return False
     today_str = date.today().isoformat()
     tomorrow = (date.today() + timedelta(days=1)).isoformat()
     today_w = db.get_weather(today_str)
-    if db.get_weather(tomorrow) is not None and today_w and today_w.get("sunset"):
+    if db.get_weather(tomorrow) is not None and today_w and today_w.get("sunset") and today_w.get("sunrise"):
         return False
     data = fetch_weather(lat, lon)
     if data is None:
@@ -85,6 +85,8 @@ def fetch_and_store(lat: float, lon: float) -> bool:
         rad = _get("shortwave_radiation_sum")
         sunset_raw = _get("sunset")
         sunset_str = sunset_raw[11:16] if sunset_raw and len(sunset_raw) >= 16 else None
+        sunrise_raw = _get("sunrise")
+        sunrise_str = sunrise_raw[11:16] if sunrise_raw and len(sunrise_raw) >= 16 else None
         db.upsert_weather(
             date_str=d_str,
             sunshine_hours=round(sh_sec / 3600.0, 2) if sh_sec is not None else None,
@@ -93,6 +95,7 @@ def fetch_and_store(lat: float, lon: float) -> bool:
             temp_min=_get("temperature_2m_min"),
             weathercode=_get("weathercode"),
             sunset=sunset_str,
+            sunrise=sunrise_str,
         )
     log.info("Wetterdaten gespeichert für %d Tage", len(dates))
     return True
@@ -121,6 +124,7 @@ def calculate_forecast() -> dict:
             "weathercode": today_weather.get("weathercode") if today_weather else None,
             "weather_icon": weathercode_icon(today_weather.get("weathercode") if today_weather else None),
             "sunset": today_weather.get("sunset") if today_weather else None,
+            "sunrise": today_weather.get("sunrise") if today_weather else None,
         },
         "tomorrow": None,
         "r2": None,
