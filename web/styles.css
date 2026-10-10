@@ -1478,3 +1478,60 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 @keyframes efUp    { to { stroke-dashoffset: 18 } }
 @keyframes efRight { to { stroke-dashoffset:-18 } }
 @keyframes efLeft  { to { stroke-dashoffset: 18 } }
+
+/* -------- Speicher-Card: Verlauf, Zoom, Umschalter -------- */
+.storage-card .card-head { align-items: center; }
+.storage-card .hidden { display: none !important; }
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.seg button {
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.seg button.on { background: rgba(167,139,250,0.16); color: var(--c-storage); }
+.storage-bigrow {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 4px 0 14px;
+}
+.storage-bigrow .big-temp { margin: 0; }
+.storage-rate { font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.storage-info { margin-top: 10px; font-size: 12px; color: var(--text-muted); line-height: 1.7; }
+.storage-info b { color: var(--text); font-weight: 500; }
+.storage-info .storage-heat { color: var(--ok); }
+.storage-hour { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.storage-hour-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--c-storage);
+}
+.storage-hour-head span:last-child { color: var(--text-muted); letter-spacing: 0.04em; text-transform: none; }
+.storage-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.storage-legend i { display: inline-block; vertical-align: middle; margin-right: 5px; }
+.storage-legend .lg-line { width: 14px; height: 2px; background: var(--c-storage); }
+.storage-legend .lg-box { width: 9px; height: 9px; border-radius: 2px; }
+.storage-legend .lg-dash { border: 1px dashed var(--c-storage); background: rgba(167,139,250,0.1); }

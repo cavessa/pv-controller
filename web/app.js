@@ -2218,92 +2218,291 @@ function xTickLabel(m) {
   return min === 0 ? `${h}h` : `${h}:${String(min).padStart(2, "0")}`;
 }
 
-function renderTempChart(entries, maxTemp) {
-  const wrap = $("#temp-chart-wrap");
-  const pts = (entries || [])
-    .filter(e => e.temp != null)
-    .map(e => {
-      const d = new Date(e.t);
-      return { x: d.getHours() * 60 + d.getMinutes(), y: e.temp };
-    }).sort((a, b) => a.x - b.x);
-  if (pts.length < 2) {
-    wrap.innerHTML = '<div class="chart-empty">Noch keine Verlaufsdaten für heute.</div>';
+// ---------- Speicher: Tagesverlauf + letzte Stunde + 7 Tage ----------
+let storageRange = "24h";
+try { storageRange = localStorage.getItem("storageRange") || "24h"; } catch (e) { /* ohne Storage */ }
+if (!["1h", "24h", "7d"].includes(storageRange)) storageRange = "24h";
+let storageLast = null;
+
+const ST = { temp: "#a78bfa", heat: "#2ed8a3", sun: "#fbbf24", max: "#f87171", resume: "#fbbf24" };
+const fmtHM = ts => new Date(ts * 1000).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+
+async function loadStorage() {
+  const d = await api(`/api/speicher/history?range=${storageRange}`);
+  storageLast = d;
+  renderStorage(d);
+}
+
+function setStorageRange(r) {
+  storageRange = r;
+  try { localStorage.setItem("storageRange", r); } catch (e) { /* ignorieren */ }
+  loadStorage().catch(() => {});
+}
+
+// Zeitreihen-Chart für Tag (0–24 h) und letzte Stunde; range="7d" -> Tagesband.
+// opts: {temps, power, events, resume, max, sun, range, xMin, xMax, now, current,
+//        rate, etaTs, zoomFrom, ticks, days}
+function renderStorageChart(el, opts) {
+  if (!el) return;
+  if (opts.range === "7d") { el.innerHTML = storage7dSvg(opts); return; }
+  const { temps = [], power = [], events = [], range } = opts;
+  const day = range === "day";
+  if (temps.length < 2) {
+    el.innerHTML = '<div class="chart-empty">Noch keine Verlaufsdaten.</div>';
     return;
   }
+  const VW = 360, VH = day ? 190 : 112;
+  const pad = { l: 30, r: 8, t: day ? 16 : 8, b: 18 };
+  const cw = VW - pad.l - pad.r, ch = VH - pad.t - pad.b;
+  const bandH = Math.round(ch * (day ? 0.2 : 0.28));
+  const tH = ch - bandH - 6;                       // Höhe des Temperaturbereichs
+  const { xMin, xMax } = opts;
+  const sx = t => pad.l + ((t - xMin) / (xMax - xMin)) * cw;
 
-  const VW = 480, VH = 82;
-  const pad = { t: 6, r: 6, b: 20, l: 34 };
-  const cw = VW - pad.l - pad.r;
-  const ch = VH - pad.t - pad.b;
+  // y-Skala Temperatur (Referenzlinien nur im Tageschart einbeziehen)
+  const vals = temps.map(p => p[1]);
+  if (day) { if (opts.resume != null) vals.push(opts.resume); if (opts.max != null) vals.push(opts.max); }
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  const span = Math.max(hi - lo, 3);
+  lo -= span * 0.08; hi += span * 0.08;
+  const sy = v => pad.t + tH - ((v - lo) / (hi - lo)) * tH;
+  const bandTop = pad.t + tH + 6, bandBot = pad.t + ch;
 
-  const now = new Date();
-  const nowMin = now.getHours() * 60 + now.getMinutes();
-  const xLo = Math.max(0, pts[0].x - 15);
-  const xHi = Math.max(pts[pts.length - 1].x, nowMin) + 15;
-  const xRange = xHi - xLo;
+  let g = "";
+  // Sonnenfenster
+  if (day && opts.sun) {
+    const a = Math.max(xMin, opts.sun.rise), b = Math.min(xMax, opts.sun.set);
+    if (b > a) {
+      g += `<rect x="${sx(a).toFixed(1)}" y="${pad.t}" width="${(sx(b) - sx(a)).toFixed(1)}" height="${ch}" fill="rgba(251,191,36,0.07)"/>`;
+      g += `<text x="${((sx(a) + sx(b)) / 2).toFixed(1)}" y="${pad.t - 4}" text-anchor="middle" font-size="7.5" style="fill:rgba(251,191,36,0.65)">☀ ${opts.sun.rise_label} – ${opts.sun.set_label}</text>`;
+    }
+  }
+  // y-Gitter + Labels
+  const yStep = niceStep(hi - lo, 3);
+  for (let v = Math.ceil(lo / yStep) * yStep; v <= hi; v += yStep) {
+    const y = sy(v).toFixed(1);
+    g += `<line x1="${pad.l}" y1="${y}" x2="${pad.l + cw}" y2="${y}" class="grid-line"/>`;
+    g += `<text x="${pad.l - 4}" y="${y}" text-anchor="end" dominant-baseline="middle" font-size="8">${Math.round(v)}°</text>`;
+  }
+  // x-Ticks
+  for (const t of opts.ticks) {
+    const x = sx(t.ts).toFixed(1);
+    g += `<line x1="${x}" y1="${pad.t}" x2="${x}" y2="${bandBot}" class="grid-line"/>`;
+    g += `<text x="${x}" y="${VH - 4}" text-anchor="${t.anchor || "middle"}" font-size="8">${t.label}</text>`;
+  }
+  // Referenzlinien
+  if (day) {
+    const ref = (v, color, label, dy) => {
+      if (v == null) return "";
+      const y = sy(v).toFixed(1);
+      return `<line x1="${pad.l}" y1="${y}" x2="${pad.l + cw}" y2="${y}" stroke="${color}" stroke-width="1" stroke-dasharray="4 3" opacity="0.7"/>`
+           + `<text x="${pad.l + 3}" y="${(+y + dy).toFixed(1)}" font-size="7.5" style="fill:${color}" text-anchor="start">${label}</text>`;
+    };
+    g += ref(opts.max, ST.max, `Max ${Math.round(opts.max)}`, -3);
+    g += ref(opts.resume, ST.resume, `Resume ${Math.round(opts.resume)}`, 8);
+  }
+  // Heizstab-Balken (eigene Skala 0 … max kW)
+  const pMax = Math.max(1000, ...power.map(p => p[1]));
+  const pTop = Math.ceil(pMax / 500) * 500;
+  const bw = Math.max(1, (cw / ((xMax - xMin) / (day ? 300 : 60))) * 0.8);
+  g += `<line x1="${pad.l}" y1="${bandBot}" x2="${pad.l + cw}" y2="${bandBot}" class="grid-line"/>`;
+  for (const [ts, w] of power) {
+    if (w <= 50 || ts < xMin || ts > xMax) continue;
+    const h = Math.max(1, (w / pTop) * bandH);
+    g += `<rect x="${(sx(ts) - bw / 2).toFixed(1)}" y="${(bandBot - h).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${ST.heat}" opacity="0.55"/>`;
+  }
+  g += `<text x="${pad.l + 3}" y="${bandBot - 3}" font-size="7.5" style="fill:rgba(255,255,255,0.45)">Heizstab</text>`;
+  g += `<text x="${pad.l + cw}" y="${bandTop + 7}" font-size="7" text-anchor="end" style="fill:rgba(255,255,255,0.35)">${(pTop / 1000).toFixed(1)} kW</text>`;
 
-  const allTemps = pts.map(p => p.y);
-  if (maxTemp != null) allTemps.push(maxTemp);
-  const yDataMin = Math.min(...allTemps);
-  const yDataMax = Math.max(...allTemps);
-  const yRange = Math.max(yDataMax - yDataMin, 5);
-  const yLo = yDataMin - yRange * 0.15;
-  const yHi = yDataMax + yRange * 0.15;
+  // Temperaturkurve (Lücken > 15 min trennen die Linie)
+  let line = "", area = "", prev = null, segStart = null;
+  const flush = () => {
+    if (segStart != null && prev != null) {
+      area += ` L${sx(prev[0]).toFixed(1)},${(pad.t + tH).toFixed(1)} L${sx(segStart[0]).toFixed(1)},${(pad.t + tH).toFixed(1)} Z`;
+    }
+  };
+  for (const p of temps) {
+    if (p[0] < xMin || p[0] > xMax) continue;
+    const gap = prev != null && (p[0] - prev[0]) > 900;
+    if (prev == null || gap) { if (gap) flush(); line += `M${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`; area += `M${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`; segStart = p; }
+    else { line += ` L${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`; area += ` L${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`; }
+    prev = p;
+  }
+  flush();
+  const gid = `stg-${range}`;
+  g += `<defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${ST.temp}" stop-opacity="0.28"/><stop offset="100%" stop-color="${ST.temp}" stop-opacity="0"/></linearGradient></defs>`;
+  g += `<path d="${area}" fill="url(#${gid})" stroke="none"/>`;
+  g += `<path d="${line}" fill="none" stroke="${ST.temp}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
 
-  const sx = x => pad.l + ((x - xLo) / xRange) * cw;
-  const sy = y => pad.t + ch - ((y - yLo) / (yHi - yLo)) * ch;
+  // Zoom-Fenster (letzte Stunde)
+  if (day && opts.zoomFrom != null) {
+    const x1 = sx(Math.max(xMin, opts.zoomFrom)), x2 = sx(Math.min(xMax, opts.now));
+    g += `<rect x="${x1.toFixed(1)}" y="${pad.t}" width="${Math.max(2, x2 - x1).toFixed(1)}" height="${ch}" fill="rgba(167,139,250,0.10)" stroke="${ST.temp}" stroke-width="1" stroke-dasharray="3 2"/>`;
+  }
+  // Schaltereignisse: nur „an" beschriften
+  const yAtTemp = e => sy(e.temp ?? temps[temps.length - 1][1]);
+  for (const e of events) {
+    if (e.ts < xMin || e.ts > xMax) continue;
+    const x = sx(e.ts), y = yAtTemp(e);
+    if (e.state === "on") {
+      const lx = Math.min(Math.max(x, pad.l + 18), VW - pad.r - 18);
+      // obere Hälfte des Temperaturbereichs: Label unter die Kurve, sonst darüber
+      const below = y < pad.t + tH / 2;
+      g += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="${ST.heat}" stroke="#14161b" stroke-width="1"/>`;
+      g += `<text x="${lx.toFixed(1)}" y="${(below ? y + 12 : y - 6).toFixed(1)}" text-anchor="middle" font-size="7.5" style="fill:${ST.heat}">${fmtHM(e.ts)} an</text>`;
+    } else {
+      g += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2" fill="#8a8d95" stroke="#14161b" stroke-width="1"/>`;
+    }
+  }
+  // Hochrechnung bis Resume (nur bei steigender Temperatur) + Live-Punkt
+  const cur = opts.current ?? temps[temps.length - 1][1];
+  const nx = sx(Math.min(opts.now, xMax)), ny = sy(cur);
+  // Ende der Hochrechnung: ETA, spätestens Sonnenuntergang (danach wird nicht mehr geheizt)
+  const xe = Math.min(opts.etaTs ?? xMax, opts.sun?.set ?? xMax, xMax);
+  if (day && opts.rate > 0 && opts.etaTs && xe > opts.now) {
+    const te = cur + opts.rate * (xe - opts.now) / 3600;
+    g += `<line x1="${nx.toFixed(1)}" y1="${ny.toFixed(1)}" x2="${sx(xe).toFixed(1)}" y2="${sy(te).toFixed(1)}" stroke="${ST.heat}" stroke-width="1.2" stroke-dasharray="2 2" opacity="0.8"/>`;
+  }
+  g += `<circle cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="3.5" fill="${ST.temp}" opacity="0.6"><animate attributeName="r" values="3.5;9;3.5" dur="2s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.6;0;0.6" dur="2s" repeatCount="indefinite"/></circle>`;
+  g += `<circle cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="3.5" fill="${ST.temp}" stroke="#14161b" stroke-width="1.5"/>`;
 
-  const linePts = pts.map((p, i) => `${i === 0 ? "M" : "L"}${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(" ");
-  const last = pts[pts.length - 1];
-  const areaPath = linePts
-    + ` L${sx(last.x).toFixed(1)},${(pad.t + ch).toFixed(1)}`
-    + ` L${sx(pts[0].x).toFixed(1)},${(pad.t + ch).toFixed(1)} Z`;
+  el.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">${g}</svg>`;
+}
 
-  // x grid + labels
-  const step = xTickStep(xRange);
-  let xElems = "";
-  for (let m = Math.ceil(xLo / step) * step; m <= xHi; m += step) {
-    const xv = sx(m).toFixed(1);
-    const yb = (pad.t + ch).toFixed(1);
-    xElems += `<line x1="${xv}" y1="${pad.t}" x2="${xv}" y2="${yb}" class="grid-line"/>`;
-    xElems += `<text x="${xv}" y="${VH - 3}" text-anchor="middle">${xTickLabel(m)}</text>`;
+function storage7dSvg(opts) {
+  const days = opts.days || [];
+  const have = days.filter(d => d.tmin != null);
+  if (!have.length) return '<div class="chart-empty">Noch keine Verlaufsdaten.</div>';
+  const VW = 360, VH = 170;
+  const pad = { l: 30, r: 8, t: 10, b: 18 };
+  const cw = VW - pad.l - pad.r, ch = VH - pad.t - pad.b;
+  const bandH = Math.round(ch * 0.26), tH = ch - bandH - 8;
+  const vals = have.flatMap(d => [d.tmin, d.tmax]);
+  if (opts.resume != null) vals.push(opts.resume);
+  if (opts.max != null) vals.push(opts.max);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  const span = Math.max(hi - lo, 3); lo -= span * 0.08; hi += span * 0.08;
+  const sy = v => pad.t + tH - ((v - lo) / (hi - lo)) * tH;
+  const slot = cw / days.length, bw = slot * 0.5;
+  const kMax = Math.max(1, ...days.map(d => d.kwh || 0));
+  const bandBot = pad.t + ch;
+  const WD = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"];
+  let g = "";
+  const yStep = niceStep(hi - lo, 3);
+  for (let v = Math.ceil(lo / yStep) * yStep; v <= hi; v += yStep) {
+    const y = sy(v).toFixed(1);
+    g += `<line x1="${pad.l}" y1="${y}" x2="${pad.l + cw}" y2="${y}" class="grid-line"/>`;
+    g += `<text x="${pad.l - 4}" y="${y}" text-anchor="end" dominant-baseline="middle" font-size="8">${Math.round(v)}°</text>`;
+  }
+  const ref = (v, color, label, dy) => v == null ? "" :
+    `<line x1="${pad.l}" y1="${sy(v).toFixed(1)}" x2="${pad.l + cw}" y2="${sy(v).toFixed(1)}" stroke="${color}" stroke-width="1" stroke-dasharray="4 3" opacity="0.7"/>`
+    + `<text x="${pad.l + cw - 3}" y="${(sy(v) + dy).toFixed(1)}" text-anchor="end" font-size="7.5" style="fill:${color}">${label}</text>`;
+  g += ref(opts.max, ST.max, `Max ${Math.round(opts.max)}`, -3) + ref(opts.resume, ST.resume, `Resume ${Math.round(opts.resume)}`, 8);
+  days.forEach((d, i) => {
+    const cx = pad.l + slot * (i + 0.5);
+    const dt = new Date(d.date + "T12:00:00");
+    const isToday = i === days.length - 1;
+    g += `<text x="${cx.toFixed(1)}" y="${VH - 4}" text-anchor="middle" font-size="8" style="fill:${isToday ? "#e0e2e6" : "#a0a3ab"}">${isToday ? "Heute" : WD[dt.getDay()]}</text>`;
+    if (d.tmin != null) {
+      const y1 = sy(d.tmax), y2 = sy(d.tmin);
+      g += `<rect x="${(cx - bw / 2).toFixed(1)}" y="${y1.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(3, y2 - y1).toFixed(1)}" rx="3" fill="rgba(167,139,250,0.35)" stroke="${ST.temp}" stroke-width="1"/>`;
+    }
+    if (d.kwh == null) {
+      g += `<text x="${cx.toFixed(1)}" y="${(bandBot - 3).toFixed(1)}" text-anchor="middle" font-size="8" style="fill:#6a6d75">–</text>`;
+    } else {
+      const h = Math.max(1, (d.kwh / kMax) * (bandH - 9));
+      g += `<rect x="${(cx - bw / 2).toFixed(1)}" y="${(bandBot - h).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${ST.heat}" opacity="0.55"/>`;
+      g += `<text x="${cx.toFixed(1)}" y="${(bandBot - h - 2).toFixed(1)}" text-anchor="middle" font-size="7.5" style="fill:${ST.heat}">${d.kwh.toFixed(1)}</text>`;
+    }
+  });
+  g += `<line x1="${pad.l}" y1="${bandBot}" x2="${pad.l + cw}" y2="${bandBot}" class="grid-line"/>`;
+  return `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">${g}</svg>`;
+}
+
+function renderStorage(d) {
+  const title = $("#storage-title");
+  if (title) title.textContent = storageRange === "7d" ? "Speicher · 7 Tage" : storageRange === "1h" ? "Speicher · letzte Stunde" : "Speicher · heute";
+  // Umschalter
+  $$("#storage-range button").forEach(b => b.classList.toggle("on", b.dataset.range === storageRange));
+
+  // Steigung (grün/grau/rot)
+  const rEl = $("#m-rate");
+  if (rEl) {
+    const r = d.rate_c_per_h;
+    if (r == null) { rEl.textContent = ""; }
+    else {
+      const up = r > 0.3, down = r < -0.3;
+      rEl.textContent = `${up ? "▲" : down ? "▼" : "▬"} ${r > 0 ? "+" : ""}${r.toFixed(1)} °C/h`;
+      rEl.style.color = up ? "var(--ok)" : down ? "var(--error)" : "var(--text-muted)";
+    }
   }
 
-  // y grid + labels
-  let yElems = "";
-  const yStep = niceStep(yHi - yLo, 3);
-  for (let yv = Math.ceil(yLo / yStep) * yStep; yv <= yHi; yv += yStep) {
-    const ypx = sy(yv).toFixed(1);
-    yElems += `<line x1="${pad.l}" y1="${ypx}" x2="${(pad.l + cw).toFixed(1)}" y2="${ypx}" class="grid-line"/>`;
-    yElems += `<text x="${pad.l - 4}" y="${ypx}" text-anchor="end" dominant-baseline="middle">${yv.toFixed(0)}°</text>`;
+  // Infozeile
+  const info = $("#storage-info");
+  if (info) {
+    const mm = (d.min?.v != null)
+      ? `Min <b>${d.min.v.toFixed(1)}</b> ${d.min.t}&nbsp;&nbsp;Max <b>${d.maxday.v.toFixed(1)}</b> ${d.maxday.t}` : "";
+    let heat = "";
+    if (storageRange === "7d") {
+      const known = (d.days || []).filter(x => x.kwh != null);
+      heat = known.length
+        ? `Heizstab 7 T · ${known.reduce((s, x) => s + x.kwh, 0).toFixed(1)} kWh`
+        : "Heizstab 7 T · –";
+    } else if (d.heating?.kwh != null) {
+      const n = d.heating.phases ?? 0;
+      heat = `Heizstab ${n} ${n === 1 ? "Phase" : "Phasen"} · ${d.heating.kwh.toFixed(1)} kWh`;
+    } else {
+      heat = "Heizstab –";
+    }
+    info.innerHTML = (storageRange === "7d" ? "" : `<div>${mm}</div>`) + `<div class="storage-heat">${heat}</div>`;
   }
 
-  // max temp threshold
-  let maxLine = "";
-  if (maxTemp != null) {
-    const ypx = sy(maxTemp).toFixed(1);
-    maxLine = `<line x1="${pad.l}" y1="${ypx}" x2="${(pad.l + cw).toFixed(1)}" y2="${ypx}" class="max-line"/>`;
+  const dayWrap = $("#storage-day"), hourBlock = $("#storage-hour-block"), hourEl = $("#storage-hour");
+  const nowD = new Date(d.now * 1000);
+  dayWrap.classList.toggle("hidden", storageRange === "1h");
+  hourBlock.classList.toggle("hidden", storageRange === "7d");
+
+  if (storageRange === "7d") {
+    renderStorageChart(dayWrap, { range: "7d", days: d.days, resume: d.resume, max: d.max });
+  } else if (storageRange === "24h") {
+    const ticks = [0, 4, 8, 12, 16, 20, 24].map(h => ({
+      ts: d.day_start + h * 3600, label: h + "h", anchor: h === 24 ? "end" : h === 0 ? "start" : "middle",
+    }));
+    renderStorageChart(dayWrap, {
+      range: "day", temps: d.temps, power: d.power, events: d.events,
+      resume: d.resume, max: d.max, sun: d.sun, xMin: d.day_start, xMax: d.day_end,
+      now: d.now, current: d.current, rate: d.rate_c_per_h, etaTs: d.eta_ts, sun: d.sun,
+      zoomFrom: d.now - 3600, ticks,
+    });
   }
 
-  // current time indicator
-  const nowX = sx(nowMin).toFixed(1);
-  const nowLine = `<line x1="${nowX}" y1="${pad.t}" x2="${nowX}" y2="${(pad.t + ch).toFixed(1)}" class="now-line"/>`;
+  if (storageRange !== "7d" && d.hour) {
+    const h = d.hour;
+    const ticks = [
+      { ts: h.from, label: fmtHM(h.from), anchor: "start" },
+      { ts: (h.from + h.to) / 2, label: fmtHM((h.from + h.to) / 2) },
+      { ts: h.to, label: "jetzt", anchor: "end" },
+    ];
+    renderStorageChart(hourEl, {
+      range: "hour", temps: h.temps, power: h.power, events: h.events,
+      xMin: h.from, xMax: h.to, now: h.to, current: d.current, ticks,
+    });
+    const eta = $("#storage-eta");
+    if (eta) {
+      eta.textContent = d.eta_label === "erreicht" ? "Resume erreicht"
+        : d.eta_label === "heute nicht" ? "ETA Resume: heute nicht"
+        : d.eta_label ? `ETA Resume ≈ ${d.eta_label}` : "ETA Resume –";
+    }
+  }
 
-  const lastDot = `<circle cx="${sx(last.x).toFixed(1)}" cy="${sy(last.y).toFixed(1)}" r="3" class="last-dot"/>`;
-
-  wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">
-  <defs>
-    <linearGradient id="tcg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#a78bfa" stop-opacity="1"/>
-      <stop offset="100%" stop-color="#a78bfa" stop-opacity="0"/>
-    </linearGradient>
-  </defs>
-  <g>${xElems}${yElems}</g>
-  ${maxLine}${nowLine}
-  <path d="${areaPath}" fill="url(#tcg)" class="temp-area"/>
-  <path d="${linePts}" fill="none" class="temp-line"/>
-  ${lastDot}
-</svg>`;
+  // Legende
+  const lg = $("#storage-legend");
+  if (lg) {
+    lg.innerHTML = storageRange === "7d"
+      ? `<span><i class="lg-line"></i>Min–Max</span><span><i class="lg-box" style="background:${ST.heat};opacity:.55"></i>Heizstab kWh</span>`
+      : `<span><i class="lg-line"></i>Temperatur</span><span><i class="lg-box" style="background:${ST.heat};opacity:.55"></i>Heizstab</span>`
+        + (storageRange === "24h" ? `<span><i class="lg-box" style="background:rgba(251,191,36,.35)"></i>Sonne</span><span><i class="lg-box lg-dash"></i>Zoom</span>` : "");
+  }
 }
 
 function renderWbChart(entries) {
@@ -2512,7 +2711,7 @@ async function refreshStatus() {
     renderStatus(data);
     renderSolax(effectiveSolax);
     const history = await historyP;
-    renderTempChart(history.entries, data.heater?.storage_max_temp);
+    loadStorage().catch(() => {});
   } catch (e) {
     showError("Status-Abfrage fehlgeschlagen: " + e.message);
   }
@@ -2535,8 +2734,8 @@ async function runOnce() {
     }
     renderStatus(data);
     renderSolax(effectiveSolax);
+    loadStorage().catch(() => {});
     api("/api/temp-history").then(h => {
-      renderTempChart(h.entries, data.heater?.storage_max_temp);
       renderWbChart(h.entries);
     }).catch(() => {});
     api("/api/history/hourly").then(h => {
@@ -2802,6 +3001,7 @@ function boot() {
   $("#btn-run").addEventListener("click", runOnce);
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#solax2-test-btn")?.addEventListener("click", testSolax2);
+  $$("#storage-range button").forEach(b => b.addEventListener("click", () => setStorageRange(b.dataset.range)));
   $("#btn-logs-refresh").addEventListener("click", refreshLogs);
   $("#log-lines").addEventListener("change", refreshLogs);
   $("#log-auto").addEventListener("change", setupLogAuto);

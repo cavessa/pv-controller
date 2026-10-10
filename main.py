@@ -71,7 +71,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             from db import append_temp_history
             wb_w = result.wallbox_status.power_w if result.wallbox_status else 0.0
-            append_temp_history(result.readings.storage_temp_c, wb_w)
+            append_temp_history(
+                result.readings.storage_temp_c, wb_w, result.readings.heater_meter_power_w
+            )
         except Exception:
             log.warning("append_temp_history fehlgeschlagen", exc_info=True)
         return 0

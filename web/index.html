@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=56">
+  <link rel="stylesheet" href="/static/styles.css?v=57">
 </head>
 <body>
   <div class="app-shell">
@@ -89,12 +89,19 @@
         <div id="cascade-mini-footer" class="cascade-mini-footer"></div>
       </div>
 
-      <div class="card">
+      <div class="card storage-card">
         <div class="card-head">
-          <h2>Speicher</h2>
-          <span class="dot hidden" id="storage-dot"></span>
+          <h2><span id="storage-title">Speicher · heute</span> <span class="dot hidden" id="storage-dot"></span></h2>
+          <div class="seg" id="storage-range" role="group" aria-label="Zeitraum">
+            <button type="button" data-range="1h">1 h</button>
+            <button type="button" data-range="24h" class="on">24 h</button>
+            <button type="button" data-range="7d">7 T</button>
+          </div>
         </div>
-        <div class="big-temp" id="m-temp"><span class="skeleton">52.8 °C</span></div>
+        <div class="storage-bigrow">
+          <div class="big-temp" id="m-temp"><span class="skeleton">52.8 °C</span></div>
+          <div class="storage-rate" id="m-rate"></div>
+        </div>
         <div class="progress">
           <div class="progress-bar" id="m-temp-bar"></div>
           <div class="progress-marker resume" id="m-temp-marker-resume"></div>
@@ -106,7 +113,13 @@
           <div><span>Status</span><b id="m-temp-status" class="badge"><span class="skeleton">Wartet auf PV</span></b></div>
         </div>
         <div id="summer-mode-hint" class="hidden" style="margin-top:8px;padding:6px 10px;background:rgba(232,164,53,0.12);border:1px solid rgba(232,164,53,0.35);border-radius:6px;font-size:12px;color:#e8a435;"></div>
-        <div id="temp-chart-wrap" class="temp-chart-wrap"><div class="skeleton skeleton-chart"></div></div>
+        <div class="storage-info" id="storage-info"></div>
+        <div id="storage-day" class="temp-chart-wrap"><div class="skeleton skeleton-chart"></div></div>
+        <div id="storage-hour-block" class="storage-hour">
+          <div class="storage-hour-head"><span>Letzte Stunde</span><span id="storage-eta">ETA Resume –</span></div>
+          <div id="storage-hour"></div>
+        </div>
+        <div class="storage-legend" id="storage-legend"></div>
       </div>
 
       <div class="card">
@@ -807,6 +820,6 @@
   </footer>
   </div>
 
-  <script src="/static/app.js?v=20261010j" defer></script>
+  <script src="/static/app.js?v=20261010m" defer></script>
 </body>
 </html>

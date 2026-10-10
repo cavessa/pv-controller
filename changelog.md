@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-10-10 – Speicher-Card: Tagesverlauf, Zoom auf die letzte Stunde, 7-Tage-Ansicht
+
+**Anlass (User):** Die Speicher-Card soll einen Tagesverlauf mit Heizstab-Leistung, Referenzlinien, Sonnenfenster, Schaltereignissen und einem Zoom auf die letzte Stunde zeigen, plus Umschalter 1 h / 24 h / 7 T.
+
+**Umsetzung:**
+- Neues Modul `storage_history.py` + Endpoint `GET /api/speicher/history?range=1h|24h|7d`: berechnet serverseitig 5-Minuten-Buckets (Tag), die 1-Minuten-Werte der letzten Stunde, Heizphasen (an = > 100 W, Mindestdauer 1 min, Lücken > 3 min trennen), Heizstab-kWh (Rechteckregel), Tagesmin/-max mit Uhrzeit, Steigung (lineare Regression über 10 min, °C/h), ETA bis Resume ((Resume − T) / Rate; „–" bei Rate ≤ 0) und Sonnenfenster (aus `weather_log`, kein suncalc nötig). 7 T liefert Min/Max und Heizstab-kWh pro Tag.
+- Persistenz: `temp_history.json` speichert jetzt zusätzlich `heater_w` (Heizstab-Leistung am Zähler); `append_temp_history()` bekommt den Wert von `web.py` und `main.py`. Neue Tabelle `storage_day` (Tagesmin/-max, kWh, Heizphasen) wird jede Minute fortgeschrieben, für die 7-Tage-Ansicht; fehlende Tage werden aus `pv_hourly_log` genähert.
+- ETA und Hochrechnung enden spätestens am Sonnenuntergang; liegt die ETA danach, zeigt die Card „ETA Resume: heute nicht" (Feld `eta_label`).
+- „an"-Labels der Schaltereignisse stehen unter der Kurve, wenn der Punkt in der oberen Hälfte des Temperaturbereichs liegt, sonst darüber.
+- 7 T: Tage ohne `heater_w`-Daten zeigen „–" statt 0,0 kWh (Summe nur über bekannte Tage; die Beschriftung „Heizstab kWh/Tag" im Chart entfiel, die Legende nennt sie).
+- Frontend (`web/app.js`, `index.html`, `styles.css`): `renderStorageChart()` rendert Tag, letzte Stunde und 7 Tage mit eigenem SVG (keine neue Bibliothek). Tageschart: Temperaturkurve + Fläche, Heizstab-Balken mit eigener kW-Skala, Max-/Resume-Linien, Sonnenfenster, „an"-Punkte mit Uhrzeit, pulsierender Live-Punkt, gestrichelte Hochrechnung bis Resume (nur bei steigender Temperatur), Zoom-Rahmen. Darunter „Letzte Stunde" mit ETA, Legende. Der gewählte Zeitraum wird im Browser gemerkt. Das alte `renderTempChart` ist ersetzt. Cache-Busting `app.js?v=20261010m`, `styles.css?v=57`.
+
+**Abweichungen / Hinweise:**
+- Die Persistenz hat nur **1-Minuten-Auflösung**, die letzte Stunde nutzt daher 1-Minuten- statt 30-s-Werte.
+- `heater_w` wird erst **ab dem Neustart** des Dienstes aufgezeichnet (und vom Cron-Lauf). Davor ist die Heizstab-Leistung unbekannt: heute zeigt die Card bis dahin „Heizstab –", keine Balken/Ereignisse.
+- „Heizphasen" = Heizzyklen (Heizstab an/aus), nicht die elektrischen Phasen PH1–PH3.
+- Dienst neu starten (neue API, Schema).
+
 ## 2026-10-10 – Heizstab-Punkte kleiner, mehr Abstand zum Rand
 
 **Anlass (User):** Der Abstand der 3 Punkte zum unteren Rand des Heizstab-Knotens war zu gering.

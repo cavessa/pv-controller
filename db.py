@@ -12,13 +12,17 @@ DB_PATH = Path(__file__).resolve().parent / "pvcontroller.db"
 TEMP_HISTORY_PATH = Path(__file__).resolve().parent / "temp_history.json"
 
 
-def append_temp_history(temp: float | None, wb_w: float | None) -> None:
+def append_temp_history(
+    temp: float | None, wb_w: float | None, heater_w: float | None = None
+) -> None:
     now = datetime.now()
     entry: dict = {"t": now.isoformat(timespec="minutes")}
     if temp is not None:
         entry["temp"] = round(temp, 1)
     if wb_w is not None:
         entry["wb_w"] = round(wb_w, 0)
+    if heater_w is not None:
+        entry["heater_w"] = round(heater_w, 0)
     if len(entry) == 1:
         return
     data: list[dict] = []
@@ -37,6 +41,11 @@ def append_temp_history(temp: float | None, wb_w: float | None) -> None:
     try:
         with open(TEMP_HISTORY_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f)
+    except Exception:
+        pass
+    try:
+        import storage_history
+        storage_history.persist_today()
     except Exception:
         pass
 
@@ -105,6 +114,15 @@ def init_pv_logging_tables() -> None:
                 import_wh_at_midnight REAL,
                 export_wh_at_midnight REAL,
                 taken_at              TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS storage_day (
+                date   TEXT PRIMARY KEY,
+                tmin   REAL,
+                tmax   REAL,
+                kwh    REAL,
+                phases INTEGER
             )
         """)
         conn.execute("""

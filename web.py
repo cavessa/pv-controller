@@ -322,9 +322,11 @@ def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
 # ---- Temperature history ---------------------------------------------------
 
 
-def _append_history(temp: float | None, wb_w: float | None) -> None:
+def _append_history(
+    temp: float | None, wb_w: float | None, heater_w: float | None = None
+) -> None:
     from db import append_temp_history
-    append_temp_history(temp, wb_w)
+    append_temp_history(temp, wb_w, heater_w)
 
 
 # ---- Status cache (Hintergrund-Poller) -------------------------------------
@@ -369,7 +371,11 @@ def _poll_status_once() -> None:
         _status_ready.set()
         return
     ws = result.wallbox_status
-    _append_history(result.readings.storage_temp_c, (ws.power_w or 0.0) if ws is not None else None)
+    _append_history(
+        result.readings.storage_temp_c,
+        (ws.power_w or 0.0) if ws is not None else None,
+        result.readings.heater_meter_power_w,
+    )
     _set_status_cache(result, cfg)
 
 
@@ -435,9 +441,31 @@ def api_run_once(response: Response) -> dict[str, Any]:
         log.exception("normal controller run failed")
         raise HTTPException(status_code=500, detail=f"controller error: {e}")
     ws = result.wallbox_status
-    _append_history(result.readings.storage_temp_c, (ws.power_w or 0.0) if ws is not None else None)
+    _append_history(
+        result.readings.storage_temp_c,
+        (ws.power_w or 0.0) if ws is not None else None,
+        result.readings.heater_meter_power_w,
+    )
     _set_status_cache(result, cfg)
     return _serialize_status(result, cfg)
+
+
+@app.get("/api/speicher/history")
+def api_speicher_history(
+    response: Response,
+    range: str = Query(default="24h", pattern="^(1h|24h|7d)$"),
+) -> dict[str, Any]:
+    """Speicher-Verlauf (Temperatur, Heizstab-Leistung, Ereignisse, Rate, ETA).
+
+    24h: 5-Minuten-Buckets des Tages + Stundenfenster; 1h: nur Stundenfenster
+    (1-Minuten-Werte); 7d: Tageswerte (Min/Max, Heizstab-kWh).
+    """
+    response.headers["Cache-Control"] = "no-store"
+    cfg = _load_cfg()
+    import storage_history
+    return storage_history.build(
+        range, cfg.heater.storage_max_temp, cfg.heater.heat_resume_temp
+    )
 
 
 @app.get("/api/temp-history")
