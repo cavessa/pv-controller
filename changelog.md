@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-10-10 – Heizstab-Punkte kleiner, mehr Abstand zum Rand
+
+**Anlass (User):** Der Abstand der 3 Punkte zum unteren Rand des Heizstab-Knotens war zu gering.
+
+**Umsetzung:** In `renderEnergyFlow` (`web/app.js`) Radius 3 → 2,3, Abstand 11 → 9, Mitte `nh-5` → `nh-8`; der Abstand zum Rand entspricht jetzt etwa dem der Textzeile in den anderen Knoten (z. B. „aktiv"). Cache-Busting `app.js?v=20261010j`.
+
+## 2026-10-10 – Sommermodus-Pill immer sichtbar (an/aus), Heizstab-Punkte höher
+
+**Anlass (User):** Oben soll stehen, ob der Sommermodus an oder aus ist (die Pill zeigte nur „Sommermodus …").
+
+**Umsetzung:** `renderStatus` (`web/app.js`): Die Pill ist jetzt immer sichtbar – „Sommermodus: an" (grün), „Sommermodus: aus" (grau), bei laufender Netz-Heizung „Sommermodus: an · Netz-Heizung" (gelb). Vorher war sie bei „aus" versteckt und der Platzhalter „…" blieb stehen, wenn kein Status geladen war. Zusätzlich sitzen die 3 Heizstab-Punkte im Energiefluss tiefer (`nh-5`), damit sie den Wert „0 W" nicht überlappen. Cache-Busting `app.js?v=20261010i`.
+
+## 2026-10-10 – Energiefluss: Heizstab zeigt 3 Phasen-Punkte
+
+**Anlass (User):** Im Heizstab-Knoten des Energieflusses sollen 3 Punkte die aktiven Phasen anzeigen.
+
+**Umsetzung:** In `renderEnergyFlow` (`web/app.js`) ersetzen drei Punkte den Text „N/3 Ph."; Punkt 1/2/3 ist gefüllt, wenn Phase 1/2/3 an ist (`heater.phases.ph1..ph3`), sonst nur ein Ring. `node()` hat dafür den optionalen Parameter `dots`. Cache-Busting `app.js?v=20261010h`.
+
 ## 2026-10-10 – PV-Card: Balken-Skala sichtbar, kein doppelter Wert, Label-Layout
 
 **Anlass (User):** Die Balken hatten unterschiedliche Skalen ohne Hinweis, der Pergola-Wert stand doppelt, und „PERGOLA" überlappte die V/A-Zeile.

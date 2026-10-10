@@ -96,12 +96,14 @@ function renderStatus(s) {
   const sm = s.summer_mode ?? {};
   const pillSummer = $("#pill-summer");
   if (pillSummer) {
+    // immer sichtbar: an (grün) / aus (grau); bei Netz-Heizung Warnfarbe
+    pillSummer.classList.remove("hidden");
     if (sm.enabled) {
-      pillSummer.classList.remove("hidden");
-      pillSummer.textContent = sm.heating ? "Sommermodus: Netz-Heizung" : "Sommermodus: aktiv";
-      pillSummer.className = "pill " + (sm.heating ? "warn" : "subtle");
+      pillSummer.textContent = sm.heating ? "Sommermodus: an · Netz-Heizung" : "Sommermodus: an";
+      pillSummer.className = "pill " + (sm.heating ? "warn" : "ok");
     } else {
-      pillSummer.classList.add("hidden");
+      pillSummer.textContent = "Sommermodus: aus";
+      pillSummer.className = "pill subtle";
     }
   }
 
@@ -420,7 +422,7 @@ function renderEnergyFlow(heater, wb, cs) {
   const L    = (x1, y1, x2, y2, d) =>
     `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="ef-line ef-${d}"/>`;
 
-  function node(x, y, w, nh, { icon, label, value, sub, aktiv, accent = ACTIVE, always = false }) {
+  function node(x, y, w, nh, { icon, label, value, sub, aktiv, accent = ACTIVE, always = false, dots = null }) {
     const op  = !aktiv && !always ? ' opacity="0.35"' : "";
     const bdr = aktiv || always ? accent : "rgba(255,255,255,0.12)";
     const bg  = aktiv || always ? rgba(accent, 0.07) : "rgba(255,255,255,0.04)";
@@ -430,7 +432,9 @@ function renderEnergyFlow(heater, wb, cs) {
   <text x="${w/2}" y="16" text-anchor="middle" font-size="14" font-family="'DM Mono',monospace">${icon}</text>
   <text x="${w/2}" y="27" text-anchor="middle" font-size="6.5" fill="rgba(255,255,255,0.5)" letter-spacing="1" font-family="'DM Mono',monospace">${esc(label)}</text>
   <text x="${w/2}" y="39" text-anchor="middle" font-size="12" font-weight="700" fill="${vc}" font-family="'DM Mono',monospace">${esc(value)}</text>
-  <text x="${w/2}" y="${nh-5}" text-anchor="middle" font-size="7.5" fill="rgba(255,255,255,0.4)" font-family="'DM Mono',monospace">${esc(sub)}</text>
+  ${dots
+    ? dots.map((on, i) => `<circle cx="${w/2 + (i - (dots.length - 1) / 2) * 9}" cy="${nh-8}" r="2.3" fill="${on ? accent : "none"}" stroke="${on ? accent : "rgba(255,255,255,0.4)"}" stroke-width="1"/>`).join("")
+    : `<text x="${w/2}" y="${nh-5}" text-anchor="middle" font-size="7.5" fill="rgba(255,255,255,0.4)" font-family="'DM Mono',monospace">${esc(sub)}</text>`}
 </g>`;
   }
 
@@ -477,7 +481,7 @@ ${node(pv.x, pv.y, NW, NH, { icon:"☀️", label:"PV", value:kwOrW(pv1W), sub:"
 ${pergolaOn_ ? node(pg.x, pg.y, PG_W, pg.nh, { icon:"☀️", label:pgName, value: heater.pv2_power == null ? "n/a" : kwOrW(pgW), sub:"", aktiv:pgOn, accent:PVC, always:true }) : ""}
 ${node(nz.x, nz.y, NW, NH, { icon:"⚡", label:"NETZ", value:nzVal, sub:nzSub, aktiv:gridOn })}
 ${hausNode()}
-${node(hz.x, hz.y, NW, NH, { icon:"🔥", label:"HEIZSTAB", value:hzKw, sub:`${phases}/3 Ph.`, aktiv:heatOn })}
+${node(hz.x, hz.y, NW, NH, { icon:"🔥", label:"HEIZSTAB", value:hzKw, sub:`${phases}/3 Ph.`, aktiv:heatOn, dots:["ph1","ph2","ph3"].map(k => heater.phases?.[k] === true) })}
 ${bots.map(b => node(b.x, b.y, b.w, NH, { icon:b.icon, label:b.label, value:b.value, sub:b.sub, aktiv:b.aktiv })).join("\n")}
 </svg>`;
 }
