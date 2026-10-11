@@ -135,6 +135,19 @@ def init_pv_logging_tables() -> None:
                 n            INTEGER NOT NULL
             )
         """)
+        # Zendure-Regelzustand (Phase 2): eine Zeile, überlebt Cron-Läufe
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS zendure_ctl (
+                id          INTEGER PRIMARY KEY CHECK (id = 1),
+                mode        TEXT NOT NULL DEFAULT 'idle',   -- idle | charge | discharge
+                limit_w     INTEGER NOT NULL DEFAULT 0,
+                changed_at  TEXT,                           -- letzter Moduswechsel
+                fail_count  INTEGER NOT NULL DEFAULT 0,
+                decision    TEXT,
+                decided_at  TEXT
+            )
+        """)
+        conn.execute("INSERT OR IGNORE INTO zendure_ctl (id) VALUES (1)")
         # Hauptzähler-Leistung (Shelly) pro Minute: Mittel/Max/Min der Messungen
         conn.execute("""
             CREATE TABLE IF NOT EXISTS main_meter_min (
@@ -385,6 +398,39 @@ def record_main_meter(power_w: float) -> None:
             conn.execute("DELETE FROM main_meter_min WHERE ts < date('now', '-35 days')")
     if power_w > 0:
         update_house_peak(power_w)
+
+
+def get_zendure_ctl() -> dict:
+    with sqlite3.connect(DB_PATH) as conn:
+        r = conn.execute(
+            "SELECT mode, limit_w, changed_at, fail_count, decision, decided_at FROM zendure_ctl WHERE id = 1"
+        ).fetchone()
+    return {"mode": r[0], "limit_w": r[1], "changed_at": r[2], "fail_count": r[3],
+            "decision": r[4], "decided_at": r[5]}
+
+
+def set_zendure_ctl(**kw) -> None:
+    """Regelzustand fortschreiben (mode, limit_w, changed_at, fail_count, decision, decided_at)."""
+    allowed = {"mode", "limit_w", "changed_at", "fail_count", "decision", "decided_at"}
+    kw = {k: v for k, v in kw.items() if k in allowed}
+    if not kw:
+        return
+    sets = ", ".join(f"{k} = ?" for k in kw)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(f"UPDATE zendure_ctl SET {sets} WHERE id = 1", list(kw.values()))
+
+
+def ensure_zendure_cascade_device(name: str, power_watts: int) -> None:
+    """Batterie als Kaskaden-Gerät anlegen (am Ende der Prioritätenliste), falls es fehlt."""
+    with sqlite3.connect(DB_PATH) as conn:
+        if conn.execute("SELECT 1 FROM cascade_devices WHERE id = 'zendure'").fetchone():
+            return
+        prio = (conn.execute("SELECT COALESCE(MAX(priority), 0) FROM cascade_devices").fetchone()[0]) + 1
+        conn.execute(
+            """INSERT INTO cascade_devices (id, name, type, power_watts, priority, hysteresis_watts)
+               VALUES ('zendure', ?, 'zendure', ?, ?, 100)""",
+            (name, int(power_watts), prio),
+        )
 
 
 def record_zendure(soc, charge_w: float, discharge_w: float) -> None:
@@ -824,7 +870,7 @@ backfill_historical_forecasts()
 
 # ── Kaskade ──────────────────────────────────────────────────────────────────
 
-PROTECTED_CASCADE_IDS: frozenset[str] = frozenset({"heizstab", "wallbox"})
+PROTECTED_CASCADE_IDS: frozenset[str] = frozenset({"heizstab", "wallbox", "zendure"})
 VALID_CASCADE_TYPES: frozenset[str] = frozenset(
     {"heizstab", "wallbox", "shelly_gen1", "shelly_gen2"}
 )

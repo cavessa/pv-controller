@@ -23,8 +23,10 @@ from clients.goe_client import GoeClient, GoeError
 from clients.shelly_cascade_client import ShellyCascadeClient, ShellyCascadeError
 from clients.shelly_client import Shelly3EMClient
 from clients.solax_client import SolaxClient
+from clients.zendure_client import ZendureClient
 from config import Config
 from db import (
+    ensure_zendure_cascade_device,
     auto_reenable_cascade_device,
     clear_cascade_override,
     get_cascade_device,
@@ -61,6 +63,15 @@ class CascadeService:
         self.goe: Optional[GoeClient] = None
         if config.wallbox.enabled and config.wallbox.url:
             self.goe = GoeClient(config.wallbox.url, config.wallbox.request_timeout_seconds)
+        # Batterie-Regelung (Phase 2): nur mit aktivem Gerät UND Master-Schalter
+        self.zendure_ctl = None
+        self.zendure_client: Optional[ZendureClient] = None
+        if config.zendure_active and config.zendure.control_enabled:
+            from zendure_control import ZendureControl
+            self.zendure_client = ZendureClient(config.zendure.ip, config.zendure.sn)
+            self.zendure_ctl = ZendureControl(
+                config, self.zendure_client, dry_run=config.runtime.dry_run
+            )
 
     # ── Hauptmethode ─────────────────────────────────────────────────────────
 
@@ -73,7 +84,15 @@ class CascadeService:
             return {"surplus_watts": 0, "devices": [], "disabled": True}
 
         self._poll_shelly_devices()
-        devices = [d for d in get_cascade_devices() if d["enabled"]]
+        if self.zendure_ctl is not None:
+            ensure_zendure_cascade_device(self.cfg.zendure.name, int(self.cfg.zendure.max_charge_w))
+        devices = [
+            d for d in get_cascade_devices()
+            if d["enabled"] and (d["type"] != "zendure" or self.zendure_ctl is not None)
+        ]
+        zd_status = None
+        if any(d["type"] == "zendure" for d in devices):
+            zd_status = self.zendure_client.get_status()
 
         # Primärquelle: Hauptzähler (sieht alle Lasten inkl. Wallbox im Basic-Modus).
         # Fallback auf Solax wenn Hauptzähler nicht erreichbar.
@@ -91,7 +110,13 @@ class CascadeService:
         # Nur Lasten addieren die die Kaskade selbst steuert (Heizstab; Wallbox nur
         # im Eco-Modus). Wallbox im Basic-Modus wird vom Hauptzähler bereits erfasst
         # und darf nicht doppelt angerechnet werden.
+        # Batterie: Ladeleistung ist eine kaskaden-gesteuerte Last (zurückrechnen);
+        # Entladeleistung ist kein PV-Überschuss (abziehen).
+        if zd_status is not None:
+            controlled_loads_w += zd_status.charge_w
         gross_feed_in = raw_feed_in + int(controlled_loads_w)
+        if zd_status is not None:
+            gross_feed_in -= int(zd_status.discharge_w)
         surplus = max(0, gross_feed_in)
 
         log.info(
@@ -126,6 +151,13 @@ class CascadeService:
 
         for device in devices:
             override = self._active_override(device)
+
+            if device["type"] == "zendure":
+                remaining = self._handle_zendure(
+                    device, remaining, surplus, zd_status, -raw_feed_in, override
+                )
+                results.append(self._result(device, device.get("_reason", "")))
+                continue
 
             if override is not None:
                 if device["is_on"]:
@@ -184,6 +216,56 @@ class CascadeService:
 
         log.info("=== Kaskade Ende: remaining=%d W ===", remaining)
         return {"surplus_watts": surplus, "devices": results}
+
+    # ── Batterie (stufenlos) ─────────────────────────────────────────────────
+
+    def _wallbox_charging(self) -> bool:
+        """Lädt gerade ein Auto (go-e car=2, > 100 W)? Bei Lesefehler konservativ True,
+        damit die Batterie nicht ungeprüft entladen wird."""
+        if self.goe is None:
+            return False
+        try:
+            raw = self.goe.get_status()
+            nrg = raw.get("nrg")
+            power = float(nrg[11]) if isinstance(nrg, list) and len(nrg) >= 12 else 0.0
+            return raw.get("car") == 2 and power > 100
+        except Exception:
+            log.warning("Kaskade: Wallbox-Status für Batterie unbekannt – Entladen vorsichtshalber gesperrt",
+                        exc_info=True)
+            return True
+
+    def _handle_zendure(
+        self, device: dict, remaining: int, surplus: int, st, import_w: float, override: Optional[str]
+    ) -> int:
+        """Batterie regeln; gibt das Restbudget nach der Ladeleistung zurück."""
+        wb = self._wallbox_charging() if self.cfg.zendure.block_discharge_while_wallbox_charging else False
+        # Netzbezug ohne die eigene Ladeleistung der Batterie (Laden zieht ja selbst am Zähler)
+        if st is not None:
+            import_w -= st.charge_w
+        p = self.zendure_ctl.run(
+            st, avail_w=max(0, remaining), import_w=import_w,
+            wallbox_charging=wb, override=override,
+            hysteresis_w=int(device["hysteresis_watts"]),
+        )
+        charge_w = p.limit_w if (p.mode == "charge" and st is not None) else 0
+        remaining -= charge_w
+
+        now = datetime.now()
+        active = p.mode != "idle" and st is not None
+        if active != device["is_on"]:
+            update_cascade_device_state(
+                device["id"], active,
+                turned_on_at=now if active else None, turned_off_at=None if active else now,
+            )
+        update_cascade_device_live_status(
+            device["id"],
+            (st.charge_w if st.state == "charging" else st.discharge_w) if st is not None else 0.0,
+            st is not None,
+        )
+        log_cascade_action(surplus, device["id"], p.action, p.reason, remaining)
+        log.info("Kaskade: %s → %s %d W, remaining=%d W | %s", device["name"], p.mode, p.limit_w, remaining, p.reason)
+        device["_reason"] = p.reason
+        return remaining
 
     # ── Entscheidungslogik ───────────────────────────────────────────────────
 

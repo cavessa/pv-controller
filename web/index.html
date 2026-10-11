@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=60">
+  <link rel="stylesheet" href="/static/styles.css?v=61">
 </head>
 <body>
   <div class="app-shell">
@@ -140,6 +140,7 @@
           <div><span>Entladen heute</span><b id="zd-discharged">–</b></div>
           <div><span>Temperatur</span><b id="zd-temp">–</b></div>
         </div>
+        <div class="zd-decision hidden" id="zd-decision"></div>
         <div id="zd-chart-wrap" class="temp-chart-wrap"></div>
       </div>
 
@@ -341,6 +342,18 @@
           <div class="house-foot" id="house-day-foot"></div>
         </div>
 
+        <div class="card hidden" id="zd-day-card">
+          <div class="card-head">
+            <h2>Batterie</h2>
+            <div class="chart-legend-inline">
+              <span class="cl-str3">Laden</span>
+              <span class="cl-zd-dis">Entladen</span>
+            </div>
+          </div>
+          <div id="chart-zd-day-wrap" class="temp-chart-wrap"><div class="chart-empty">Lade…</div></div>
+          <div class="house-foot" id="zd-day-foot"></div>
+        </div>
+
         <div class="card">
           <div class="card-head">
             <h2>String-Performance</h2>
@@ -397,6 +410,12 @@
           <div id="chart-month-wrap" class="temp-chart-wrap">
             <div class="chart-empty">Lade…</div>
           </div>
+        </div>
+
+        <div class="card hidden" id="zd-month-card">
+          <h2>Batterie</h2>
+          <div id="chart-zd-month-wrap" class="temp-chart-wrap"><div class="chart-empty">Lade…</div></div>
+          <div class="house-foot" id="zd-month-foot"></div>
         </div>
 
         <div class="card">
@@ -659,8 +678,10 @@
             <label>Mindest-SoC (%)<input type="number" step="1" min="0" max="50" name="zendure.min_soc"></label>
             <label>Ziel-SoC (%)<input type="number" step="1" min="70" max="100" name="zendure.target_soc"></label>
             <label class="check"><input type="checkbox" name="zendure.block_discharge_while_wallbox_charging"> Entladen sperren, solange die Wallbox lädt
-              <small class="field-hint">verhindert, dass das Auto den Hausspeicher leerzieht (greift mit der Steuerung, Phase 2)</small></label>
-            <p class="note" style="margin-top:4px">Steuerung (Laden/Entladen) folgt in Phase 2; aktuell wird nur gelesen. Lokale API aktivieren: In der Zendure-App „HEMS hinzufügen" und wieder verlassen.</p>
+              <small class="field-hint">verhindert, dass das Auto den Hausspeicher leerzieht (alle Lademodi)</small></label>
+            <label class="check"><input type="checkbox" name="zendure.control_enabled"> <b>Steuerung aktiv</b> (Laden aus PV-Überschuss, Entladen bei Netzbezug)
+              <small class="field-hint">erst einschalten, wenn der Verbindungstest und das acMode-Mapping (1 = Laden, 2 = Entladen) am Gerät geprüft sind. Bei Dry-Run (runtime) wird nur geloggt, nicht geschrieben. Die Kaskade muss aktiv sein.</small></label>
+            <p class="note" style="margin-top:4px">Lokale API aktivieren: In der Zendure-App „HEMS hinzufügen" und wieder verlassen.</p>
             <button type="button" id="zendure-test-btn">Verbindung testen</button>
             <div class="form-msg" id="zendure-test-msg"></div>
           </fieldset>
@@ -902,6 +923,6 @@
   </footer>
   </div>
 
-  <script src="/static/app.js?v=20261011i" defer></script>
+  <script src="/static/app.js?v=20261012b" defer></script>
 </body>
 </html>

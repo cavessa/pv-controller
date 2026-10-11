@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-10-12 – Zendure SolarFlow: Phase 2 (Steuerung)
+
+**Anlass (User):** Nach Phase 1 soll die Batterie gesteuert werden: Laden aus PV-Überschuss, Entladen bei Netzbezug, Wallbox-Schutz, Verlauf.
+
+**Umsetzung:**
+- **Master-Schalter** `zendure.control_enabled` (Default aus; setzt `zendure.enabled` voraus). Ohne ihn bleibt es bei Phase 1 (nur lesen). Bei `runtime.dry_run` wird nur geloggt (`[Dry-Run] … würde … schreiben`), nichts geschrieben.
+- **`zendure_control.py`:** reine Planungsfunktion `plan()` (12 Unit-Tests: `python -m unittest tests.test_zendure_control`) + `ZendureControl` mit persistiertem Zustand (Tabelle `zendure_ctl`: Modus, Limit, letzter Moduswechsel, Fehlerzähler, Entscheidungstext).
+  - *Laden:* nur aus dem Überschuss, der der Batterie in der Kaskade zusteht; stufenlos bis `max_charge_w`; Start ab 100 W + Hysterese des Geräts, danach weiter ab 100 W; nicht über `target_soc`; Limit wird nur bei > 50 W Änderung geschrieben.
+  - *Entladen:* nur ohne Laden, mit SoC > `min_soc` und Netzbezug > 50 W; Regelung auf Bezug ≈ 0 (Ziel = aktuelle Abgabe + Bezug, gedeckelt auf `max_discharge_w`), fällt bei Einspeisung wieder zurück.
+  - *Wallbox-Schutz:* lädt ein Auto (go-e `car = 2` und > 100 W, alle Lademodi), wird das Entladen sofort hart gesperrt (`outputLimit = 0`), Laden bleibt davon unberührt. Setting `block_discharge_while_wallbox_charging` (Default an). Ist der Wallbox-Status nicht lesbar, wird vorsichtshalber ebenfalls gesperrt.
+  - *Wechselsperre:* ein neuer Lade-/Entlademodus startet frühestens 2 min nach dem letzten Moduswechsel (dazwischen Standby, nie „weiterlaufen lassen"). `smartMode = 1` bei jedem Write.
+  - *Ausfall:* Lesefehler → letzter Befehl bleibt stehen; nach 3 Fehlern in Folge wird neutral gestellt (`inputLimit = outputLimit = 0`), sonst alle 1 min erneut versucht.
+- **Kaskade:** Batterie als Gerät `zendure` (wird beim ersten Lauf mit aktiver Steuerung am Ende der Prioritätenliste angelegt, nicht löschbar, per Drag & Drop sortierbar, nur sichtbar bei aktiver Steuerung). Für den Überschuss wird die Ladeleistung der Batterie zurückgerechnet und die Entladeleistung abgezogen, damit weder Laden noch Entladen den Überschuss verfälscht. Menü: „Laden erzwingen (30 Min)" / „Entladen sperren (30 Min)".
+- **UI:** Settings (Checkbox „Steuerung aktiv"), Batterie-Card mit Regelungs-Entscheidung, „Aktuelle Entscheidung" um den Batterie-Text ergänzt („Batterie lädt mit 1.20 kW aus PV-Überschuss", „Batterie deckt Hausverbrauch (420 W), SoC 73 %", „Batterie leer …", „Batterie-Entladung gesperrt: Wallbox lädt"), Verlauf → Tag: Card „Batterie" (SoC-Linie + Laden/Entladen als Balken), Verlauf → Monat: geladen/entladen pro Tag + Zyklen-Schätzung (Σ geladen / Kapazität). API: `GET /api/history/zendure/month/{monat}`. Cache-Busting `app.js?v=20261012b`, `styles.css?v=61`; `config.example.json` um den Block `zendure` ergänzt.
+
+**Test:** In einer Projektkopie mit eigener Datenbank gegen eine Fake-Welt (Zendure mit Schreibzugriff, Hauptzähler, go-e) durchgespielt: Entladen am Abend, Wallbox-Sperre und Freigabe, Laden aus Überschuss, Überschuss bricht ein, SoC 100 %, Mindest-SoC, Override ein/aus, Ausfall (3 Fehler), Dry-Run. Dabei gefunden und behoben: Der Netzbezug musste um die eigene Ladeleistung bereinigt werden, sonst hat die Batterie nach dem Moduswechsel Laden → Entladen zunächst überschossen. **Nicht gegen das echte Gerät getestet.**
+
+**Abweichungen / Hinweise:**
+- Die Setting `zendure_grid_charge_enabled` (Laden aus dem Netz) ist nicht umgesetzt: geladen wird ausschließlich aus Überschuss (oder per „Laden erzwingen").
+- Die Regelung läuft im Kaskaden-Durchlauf (Cron, 1×/min); bei deaktivierter Kaskade (`cascade_enabled = false`) wird die Batterie nicht geregelt.
+- Vor dem ersten Einschalten der Steuerung am echten Gerät: `acMode`-Mapping (1 = Laden, 2 = Entladen) und die Skalen von `socSet`/`minSoc` prüfen (Zendure liefert diese teils in 0,1 %); `socSet`/`minSoc` werden noch nicht geschrieben.
+- Dienst neu starten.
+
 ## 2026-10-11 – Wasserspeicher „Letzte Stunde": Y-Achse mit mindestens 4 °C Spanne
 
 **Anlass (User):** Bei konstanter Temperatur standen auf der Y-Achse mehrmals dieselben Werte.

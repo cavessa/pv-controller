@@ -3,8 +3,7 @@
 GET  http://{ip}/properties/report   -> alle Properties (JSON)
 POST http://{ip}/properties/write    -> {"sn": ..., "properties": {...}}
 
-Phase 1 nutzt nur das Lesen. `set_mode` ist vorbereitet (Phase 2), wird aber
-noch von nichts aufgerufen. Die Bedeutung von `acMode` / `packState` ist in der
+Lesen: `get_status`. Schreiben (`set_mode`) nur über zendure_control (Phase 2). Die Bedeutung von `acMode` / `packState` ist in der
 Zendure-Doku nicht eindeutig: Mapping beim ersten Test gegen das echte Gerät
 verifizieren und hier in den Konstanten festhalten.
 """
@@ -29,7 +28,7 @@ PROP_HOME_OUT_W = "outputHomePower"
 PROP_PACK_STATE = "packState"          # laut Vorgabe 0 idle / 1 laden / 2 entladen (unverifiziert)
 PROP_TEMP = "hyperTmp"
 
-# acMode (W) – UNVERIFIZIERT, erst in Phase 2 relevant
+# acMode (W) – UNVERIFIZIERT: vor dem ersten Regelbetrieb am echten Gerät prüfen
 AC_MODE_CHARGE = 1
 AC_MODE_DISCHARGE = 2
 
@@ -123,12 +122,15 @@ class ZendureClient:
 
     def set_mode(
         self,
-        ac_mode: int,
+        ac_mode: Optional[int],
         input_limit: Optional[int] = None,
         output_limit: Optional[int] = None,
     ) -> bool:
-        """acMode + Limits setzen. smartMode=1 immer mitsenden (kein Flash-Schreiben)."""
-        props: dict = {"acMode": ac_mode, "smartMode": 1}
+        """acMode (None = unverändert) + Limits setzen. smartMode=1 immer mitsenden
+        (kein Flash-Schreiben)."""
+        props: dict = {"smartMode": 1}
+        if ac_mode is not None:
+            props["acMode"] = ac_mode
         if input_limit is not None:
             props["inputLimit"] = int(input_limit)
         if output_limit is not None:

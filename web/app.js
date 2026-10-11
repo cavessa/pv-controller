@@ -1223,6 +1223,7 @@ async function loadVerlaufTag(dateStr) {
     renderStringChart(hourly.entries || [], "chart-strings-wrap", win);
     checkStringAlert(hourly.entries || []);
     api(`/api/history/house/day/${dateStr}`).then(renderHouseDayChart).catch(() => {});
+    loadZendureDay(dateStr).catch(() => {});
   } catch (e) {
     showError("Tagesverlauf konnte nicht geladen werden: " + e.message);
   }
@@ -1249,6 +1250,7 @@ async function loadVerlaufMonat(monthStr) {
     renderMonthChart(data.entries || []);
     _renderKpiRow("verlauf-monat-kpis", data.entries || []);
     api(`/api/history/house/month/${monthStr}`).then(renderHouseMonthChart).catch(() => {});
+    loadZendureMonth(monthStr).catch(() => {});
   } catch (e) {
     showError("Monatsverlauf konnte nicht geladen werden: " + e.message);
   }
@@ -2442,6 +2444,105 @@ function renderHouseMonthChart(d) {
   }
 }
 
+// ---------- Batterie: Verlauf Tag + Monat ----------
+async function loadZendureDay(dateStr) {
+  const card = document.getElementById("zd-day-card");
+  if (!card) return;
+  const on = lastZendure?.enabled === true;
+  card.classList.toggle("hidden", !on);
+  if (!on) return;
+  const d = await api(`/api/zendure/history?date=${dateStr}`);
+  const wrap = document.getElementById("chart-zd-day-wrap"), foot = document.getElementById("zd-day-foot");
+  const raw = (d.points || []).filter(p => p[1] != null);
+  if (raw.length < 2) {
+    wrap.innerHTML = '<div class="chart-empty">Noch keine Messwerte.</div>';
+    foot.textContent = "";
+    return;
+  }
+  // 5-Minuten-Buckets für die Leistungsbalken
+  const buckets = new Map();
+  for (const [m, soc, c, dis] of raw) {
+    const b = Math.floor(m / 5) * 5;
+    const e = buckets.get(b) ?? { n: 0, c: 0, d: 0 };
+    e.n++; e.c += c; e.d += dis; buckets.set(b, e);
+  }
+  const bars = [...buckets].map(([m, e]) => ({ m, c: e.c / e.n, d: e.d / e.n }));
+  const maxP = Math.max(500, ...bars.map(b => Math.max(b.c, b.d)));
+  const VW = 360, VH = 160;
+  const pad = { l: 34, r: 8, t: 8, b: 18 };
+  const cw = VW - pad.l - pad.r;
+  const socH = 78, gap = 8, pwrTop = pad.t + socH + gap, pwrH = VH - pad.b - pwrTop;
+  const sx = m => pad.l + (m / 1440) * cw;
+  const sy = v => pad.t + socH - (v / 100) * socH;
+  const y0 = pwrTop + pwrH / 2;
+  const sp = w => (w / maxP) * (pwrH / 2);
+  let g = "";
+  for (const v of [0, 50, 100]) {
+    g += `<line x1="${pad.l}" y1="${sy(v)}" x2="${pad.l + cw}" y2="${sy(v)}" class="grid-line"/>`;
+    g += `<text x="${pad.l - 4}" y="${sy(v)}" text-anchor="end" dominant-baseline="middle" font-size="8">${v}%</text>`;
+  }
+  for (let h = 0; h <= 24; h += 4) {
+    g += `<text x="${sx(h * 60)}" y="${VH - 4}" text-anchor="${h === 24 ? "end" : h === 0 ? "start" : "middle"}" font-size="8">${h}h</text>`;
+  }
+  const line = raw.map((p, i) => `${i ? "L" : "M"}${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`).join(" ");
+  const last = raw[raw.length - 1];
+  g += `<path d="${line} L${sx(last[0]).toFixed(1)},${sy(0)} L${sx(raw[0][0]).toFixed(1)},${sy(0)} Z" fill="rgba(167,139,250,0.15)" stroke="none"/>`;
+  g += `<path d="${line}" fill="none" stroke="#a78bfa" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  // Leistung: Laden nach oben (grün), Entladen nach unten (orange), eigene Skala ± maxP
+  g += `<line x1="${pad.l}" y1="${y0}" x2="${pad.l + cw}" y2="${y0}" stroke="rgba(255,255,255,0.25)" stroke-width="0.8"/>`;
+  g += `<text x="${pad.l - 4}" y="${pwrTop + 4}" text-anchor="end" font-size="7" style="fill:#6a6d75">${(maxP / 1000).toFixed(1)}k</text>`;
+  g += `<text x="${pad.l - 4}" y="${pwrTop + pwrH}" text-anchor="end" font-size="7" style="fill:#6a6d75">-${(maxP / 1000).toFixed(1)}k</text>`;
+  const bw = Math.max(1, (cw / 288) * 1.1);
+  for (const b of bars) {
+    if (b.c > 20) g += `<rect x="${(sx(b.m)).toFixed(1)}" y="${(y0 - sp(b.c)).toFixed(1)}" width="${bw.toFixed(1)}" height="${sp(b.c).toFixed(1)}" fill="#2ed8a3" opacity="0.7"/>`;
+    if (b.d > 20) g += `<rect x="${(sx(b.m)).toFixed(1)}" y="${y0}" width="${bw.toFixed(1)}" height="${sp(b.d).toFixed(1)}" fill="#e8a435" opacity="0.7"/>`;
+  }
+  wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">${g}</svg>`;
+  const k = v => v == null ? "–" : v.toFixed(1) + " kWh";
+  foot.innerHTML = `Geladen <b>${k(d.charged_kwh)}</b> · Entladen <b>${k(d.discharged_kwh)}</b> · SoC jetzt <b>${Math.round(last[1])} %</b>`;
+}
+
+async function loadZendureMonth(monthStr) {
+  const card = document.getElementById("zd-month-card");
+  if (!card) return;
+  const on = lastZendure?.enabled === true;
+  card.classList.toggle("hidden", !on);
+  if (!on) return;
+  const d = await api(`/api/history/zendure/month/${monthStr}`);
+  const wrap = document.getElementById("chart-zd-month-wrap"), foot = document.getElementById("zd-month-foot");
+  if (!d.days.length) {
+    wrap.innerHTML = '<div class="chart-empty">Noch keine Daten für diesen Monat.</div>';
+    foot.textContent = "";
+    return;
+  }
+  const [yr, mo] = d.month.split("-").map(Number);
+  const nDays = new Date(yr, mo, 0).getDate();
+  const VW = 360, VH = 140;
+  const pad = { l: 34, r: 8, t: 8, b: 18 };
+  const cw = VW - pad.l - pad.r, ch = VH - pad.t - pad.b;
+  const top = Math.max(1, ...d.days.flatMap(x => [x.charged_kwh, x.discharged_kwh]));
+  const yStep = niceStep(top, 3), yMax = Math.ceil(top / yStep) * yStep;
+  const sy = v => pad.t + ch - (v / yMax) * ch;
+  const slot = cw / nDays, bw = Math.max(1.5, slot * 0.38);
+  let g = "";
+  for (let v = 0; v <= yMax + 1e-9; v += yStep) {
+    g += `<line x1="${pad.l}" y1="${sy(v)}" x2="${pad.l + cw}" y2="${sy(v)}" class="grid-line"/>`;
+    g += `<text x="${pad.l - 4}" y="${sy(v)}" text-anchor="end" dominant-baseline="middle" font-size="8">${v}</text>`;
+  }
+  for (let day = 1; day <= nDays; day++) {
+    if (day !== 1 && day % 5 !== 0) continue;
+    g += `<text x="${(pad.l + slot * (day - 0.5)).toFixed(1)}" y="${VH - 4}" text-anchor="middle" font-size="8">${day}</text>`;
+  }
+  for (const x of d.days) {
+    const cx = pad.l + slot * (+x.date.slice(8, 10) - 0.5);
+    g += `<rect x="${(cx - bw).toFixed(1)}" y="${sy(x.charged_kwh).toFixed(1)}" width="${bw.toFixed(1)}" height="${(pad.t + ch - sy(x.charged_kwh)).toFixed(1)}" fill="#2ed8a3" opacity="0.8"><title>${x.date.slice(8, 10)}.${x.date.slice(5, 7)}.: geladen ${x.charged_kwh.toFixed(1)} kWh</title></rect>`;
+    g += `<rect x="${cx.toFixed(1)}" y="${sy(x.discharged_kwh).toFixed(1)}" width="${bw.toFixed(1)}" height="${(pad.t + ch - sy(x.discharged_kwh)).toFixed(1)}" fill="#e8a435" opacity="0.8"><title>${x.date.slice(8, 10)}.${x.date.slice(5, 7)}.: entladen ${x.discharged_kwh.toFixed(1)} kWh</title></rect>`;
+  }
+  wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">${g}</svg>`;
+  foot.innerHTML = `Geladen <b>${d.charged_kwh.toFixed(1)} kWh</b> · Entladen <b>${d.discharged_kwh.toFixed(1)} kWh</b>`
+    + (d.cycles != null ? `<br>≈ <b>${d.cycles.toFixed(1)}</b> Zyklen (Σ geladen / ${d.capacity_kwh.toFixed(1)} kWh)` : "");
+}
+
 // ---------- Batterie (Zendure SolarFlow) ----------
 function renderZendureCard(z) {
   const card = document.getElementById("zendure-card");
@@ -2469,6 +2570,9 @@ function renderZendureCard(z) {
   $("#zd-charged").textContent = k(z.charged_kwh);
   $("#zd-discharged").textContent = k(z.discharged_kwh);
   $("#zd-temp").textContent = z.temp_c != null ? Math.round(z.temp_c) + " °C" : "–";
+  const dec = $("#zd-decision");
+  dec.textContent = z.control_enabled && z.decision ? z.decision : "";
+  dec.classList.toggle("hidden", !(z.control_enabled && z.decision));
 }
 
 async function loadZendureChart() {
@@ -3109,6 +3213,7 @@ async function loadSettings() {
     setFormValue(f, "zendure.min_soc", zc.min_soc ?? 10);
     setFormValue(f, "zendure.target_soc", zc.target_soc ?? 100);
     setFormValue(f, "zendure.block_discharge_while_wallbox_charging", zc.block_discharge_while_wallbox_charging ?? true);
+    setFormValue(f, "zendure.control_enabled", zc.control_enabled ?? false);
     setFormValue(f, "location.latitude",  lastConfig.latitude  ?? "");
     setFormValue(f, "location.longitude", lastConfig.longitude ?? "");
     setFormValue(f, "location.name",      lastConfig.location_name ?? "");
@@ -3215,6 +3320,7 @@ async function saveSettings(e) {
       min_soc: numField("zendure.min_soc"),
       target_soc: numField("zendure.target_soc"),
       block_discharge_while_wallbox_charging: boolField("zendure.block_discharge_while_wallbox_charging"),
+      control_enabled: boolField("zendure.control_enabled"),
     },
     location: {
       latitude:  numField("location.latitude"),
@@ -3482,12 +3588,19 @@ function _cascadeActionText(action) {
     skip_min_on:    "Mindestlaufzeit",
     skip_min_off:   "Mindestpause",
     manual_override:"Manuell",
+    charge:         "lädt",
+    discharge:      "entlädt",
+    idle:           "Standby",
+    hold:           "Pause",
+    blocked:        "Entladen gesperrt",
+    unreachable:    "nicht erreichbar",
+    override:       "Laden erzwungen",
   };
   return map[action] || "–";
 }
 
 function _cascadeIcon(type) {
-  return { heizstab: "⚡", wallbox: "🚗", shelly_gen1: "🔌", shelly_gen2: "🔌" }[type] || "🔌";
+  return { heizstab: "⚡", wallbox: "🚗", zendure: "🔋", shelly_gen1: "🔌", shelly_gen2: "🔌" }[type] || "🔌";
 }
 
 // ── load ─────────────────────────────────────────────
@@ -3528,9 +3641,11 @@ function renderCascadeTab(devices, surplusW) {
 
   listEl.innerHTML = devices.map((d, i) => {
     const isShelly    = d.type.startsWith("shelly");
-    const isProtected = d.id === "heizstab" || d.id === "wallbox";
+    const isProtected = d.id === "heizstab" || d.id === "wallbox" || d.id === "zendure";
     const statusText  = d.manual_override_action
-      ? "Manuell " + (d.manual_override_action === "on" ? "EIN" : "AUS")
+      ? (d.type === "zendure"
+          ? (d.manual_override_action === "on" ? "Laden erzwungen" : "Entladen gesperrt")
+          : "Manuell " + (d.manual_override_action === "on" ? "EIN" : "AUS"))
       : (!d.is_on && d.last_reason ? d.last_reason : _cascadeActionText(d.last_action));
     const overrideDot = d.manual_override_action
       ? `<span class="cascade-override-dot" title="Manuelle Übersteuerung">●</span>` : "";
@@ -3546,6 +3661,7 @@ function renderCascadeTab(devices, surplusW) {
     return `<div class="cascade-card${d.enabled ? "" : " disabled-device"}"
         data-id="${escapeHtml(d.id)}"
         data-is-shelly="${isShelly}"
+        data-is-zendure="${d.type === "zendure"}"
         data-is-protected="${isProtected}">
       <div class="cascade-drag-handle" title="Ziehen zum Sortieren">
         <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor">
@@ -3612,6 +3728,7 @@ function _openCascadeMenu(btn) {
   const id        = card.dataset.id;
   const isShelly  = card.dataset.isShelly === "true";
   const isProt    = card.dataset.isProtected === "true";
+  const isZendure = card.dataset.isZendure === "true";
   const device    = cascadeDevicesData.find(d => d.id === id) || {};
   const enabled   = device.enabled ?? true;
 
@@ -3623,6 +3740,9 @@ function _openCascadeMenu(btn) {
     ${isShelly ? `
     <button class="cascade-menu-item" data-action="on">Manuell einschalten (30 Min)</button>
     <button class="cascade-menu-item" data-action="off">Manuell ausschalten (30 Min)</button>` : ""}
+    ${isZendure ? `
+    <button class="cascade-menu-item" data-action="on">Laden erzwingen (30 Min)</button>
+    <button class="cascade-menu-item" data-action="off">Entladen sperren (30 Min)</button>` : ""}
     <button class="cascade-menu-item danger" data-action="delete" ${isProt ? "disabled" : ""}>Löschen</button>
   `;
 
@@ -4092,6 +4212,13 @@ const _cascadeHistActionLabel = {
   skip_min_off:   { label: "Mindestpause",   cls: "cascade-hist-other" },
   manual_override:{ label: "Manuell",        cls: "cascade-hist-other" },
   auto_disabled:  { label: "deaktiviert",    cls: "cascade-hist-off" },
+  charge:         { label: "lädt",           cls: "cascade-hist-on" },
+  discharge:      { label: "entlädt",        cls: "cascade-hist-on" },
+  idle:           { label: "Standby",        cls: "cascade-hist-other" },
+  hold:           { label: "Pause",          cls: "cascade-hist-other" },
+  blocked:        { label: "Entladen gesperrt", cls: "cascade-hist-off" },
+  unreachable:    { label: "nicht erreichbar",  cls: "cascade-hist-off" },
+  override:       { label: "Laden erzwungen",   cls: "cascade-hist-on" },
 };
 
 function _cascadeHistIcon(action) {

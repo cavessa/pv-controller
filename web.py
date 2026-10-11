@@ -258,6 +258,18 @@ def _summary(result: ControllerResult, cfg: Config) -> dict[str, str]:
         ):
             reason += " Wallbox ist freigegeben."
 
+    # Batterie-Entscheidung (Phase 2) an die Begründung hängen
+    if cfg.zendure_active and cfg.zendure.control_enabled:
+        try:
+            from db import get_zendure_ctl
+            zc = get_zendure_ctl()
+            if zc["decision"] and zc["decided_at"] and (
+                datetime.now() - datetime.fromisoformat(zc["decided_at"])
+            ).total_seconds() < 600:
+                reason += " " + zc["decision"] + ("." if not zc["decision"].endswith((".", ")")) else "")
+        except Exception:
+            log.debug("Batterie-Entscheidung nicht lesbar", exc_info=True)
+
     return {"state": state, "reason": reason, "severity": severity}
 
 
@@ -269,8 +281,9 @@ def _zendure_status_block(cfg: Config, r) -> dict[str, Any]:
     z = cfg.zendure
     if not cfg.zendure_active:
         return {"enabled": False}
-    from db import get_zendure_energy
+    from db import get_zendure_ctl, get_zendure_energy
     energy = get_zendure_energy(datetime.now().strftime("%Y-%m-%d"))
+    ctl = get_zendure_ctl()
     st = r.zendure
     return {
         "enabled": True,
@@ -287,6 +300,9 @@ def _zendure_status_block(cfg: Config, r) -> dict[str, Any]:
         "target_soc": z.target_soc,
         "capacity_wh": z.capacity_wh,
         "control_enabled": z.control_enabled,
+        "decision": ctl["decision"] if z.control_enabled else None,
+        "ctl_mode": ctl["mode"] if z.control_enabled else None,
+        "limit_w": ctl["limit_w"] if z.control_enabled else None,
         **energy,
     }
 
@@ -514,6 +530,34 @@ def api_zendure_history(response: Response, date: Optional[str] = Query(default=
         raise HTTPException(400, "Format muss YYYY-MM-DD sein")
     from db import get_zendure_day, get_zendure_energy
     return {"date": day, "points": get_zendure_day(day), **get_zendure_energy(day)}
+
+
+@app.get("/api/history/zendure/month/{year_month}")
+def api_zendure_month(year_month: str, response: Response) -> dict[str, Any]:
+    """Batterie: geladen/entladen (kWh) pro Tag + Zyklen-Schätzung (Σ geladen / Kapazität)."""
+    response.headers["Cache-Control"] = "no-store"
+    import re, sqlite3
+    if not re.match(r"^\d{4}-\d{2}$", year_month):
+        raise HTTPException(400, "Format muss YYYY-MM sein")
+    from db import DB_PATH
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """SELECT date, zendure_charged_kwh, zendure_discharged_kwh FROM pv_daily_log
+               WHERE date LIKE ? AND (zendure_charged_kwh IS NOT NULL OR zendure_discharged_kwh IS NOT NULL)
+               ORDER BY date""",
+            (year_month + "-%",),
+        ).fetchall()
+    cfg = _load_cfg()
+    cap_kwh = (cfg.zendure.capacity_wh / 1000.0) if cfg.zendure is not None else None
+    days = [{"date": r[0], "charged_kwh": r[1] or 0.0, "discharged_kwh": r[2] or 0.0} for r in rows]
+    charged = sum(d["charged_kwh"] for d in days)
+    return {
+        "month": year_month, "days": days,
+        "charged_kwh": round(charged, 2),
+        "discharged_kwh": round(sum(d["discharged_kwh"] for d in days), 2),
+        "cycles": round(charged / cap_kwh, 2) if cap_kwh else None,
+        "capacity_kwh": cap_kwh,
+    }
 
 
 @app.get("/api/speicher/history")
@@ -779,8 +823,6 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
             if k in {"enabled", "control_enabled", "block_discharge_while_wallbox_charging"}:
                 if not isinstance(v, bool):
                     raise HTTPException(400, f"zendure.{k} must be boolean")
-                if k == "control_enabled" and v:
-                    raise HTTPException(400, "zendure.control_enabled: Steuerung (Phase 2) ist noch nicht implementiert")
             elif k in {"ip", "sn", "name"}:
                 if not isinstance(v, str) or (k == "name" and not v.strip()):
                     raise HTTPException(400, f"zendure.{k} must be a string")
@@ -794,6 +836,8 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
             block[k] = v
         if block.get("enabled") and not block.get("ip", "").strip():
             raise HTTPException(400, "zendure: ip erforderlich wenn aktiviert")
+        if block.get("control_enabled") and not block.get("enabled"):
+            raise HTTPException(400, "zendure.control_enabled setzt zendure.enabled voraus")
 
     if patch.house:
         bad = set(patch.house) - {"max_load_kw"}
@@ -1340,10 +1384,21 @@ def cascade_device_test(body: _ShellyTestRequest) -> dict[str, Any]:
     return client.test_connection(body.ip, body.type, body.channel)
 
 
+def _visible_cascade_devices() -> list[dict]:
+    """Kaskaden-Geräte; die Batterie nur bei aktivem Gerät mit Steuerung."""
+    cfg = _load_cfg()
+    show_zd = cfg.zendure_active and cfg.zendure.control_enabled
+    return [d for d in get_cascade_devices() if d["type"] != "zendure" or show_zd]
+
+
 @app.get("/api/cascade/devices")
 def cascade_devices_get(response: Response) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
-    return {"devices": get_cascade_devices()}
+    if _load_cfg().zendure_active and _load_cfg().zendure.control_enabled:
+        from db import ensure_zendure_cascade_device
+        c = _load_cfg().zendure
+        ensure_zendure_cascade_device(c.name, int(c.max_charge_w))
+    return {"devices": _visible_cascade_devices()}
 
 
 @app.post("/api/cascade/devices", status_code=201)
@@ -1424,9 +1479,11 @@ def cascade_status(response: Response) -> dict[str, Any]:
     wb_charging: bool = False
     wb_power_w: Optional[float] = None
     surplus_w: Optional[int] = None
+    zd_live = None
     try:
         result, _ = _cached_status()
         r = result.readings
+        zd_live = r.zendure
         heater_power_w = r.heater_meter_power_w
         # main_meter ist negativ bei Einspeisung → Überschuss = max(0, -main_meter)
         if r.main_meter_power_w is not None:
@@ -1438,7 +1495,7 @@ def cascade_status(response: Response) -> dict[str, Any]:
     except Exception:
         log.warning("cascade/status: Controller-Lesefehler", exc_info=True)
 
-    devices = get_cascade_devices()
+    devices = _visible_cascade_devices()
     recent_log = get_cascade_log(limit=50)
     # Letzten Logeintrag pro Gerät ermitteln
     last_action: dict[str, str] = {}
@@ -1472,6 +1529,9 @@ def cascade_status(response: Response) -> dict[str, Any]:
         if d["id"] == "heizstab" and heater_power_w is not None:
             entry["is_on"] = heater_power_w > 50
             entry["last_status_power_w"] = round(heater_power_w)
+        elif d["id"] == "zendure" and zd_live is not None:
+            entry["is_on"] = zd_live.state != "standby"
+            entry["last_status_power_w"] = round(max(zd_live.charge_w, zd_live.discharge_w))
         elif d["id"] == "wallbox":
             entry["is_on"] = wb_charging
             if wb_power_w is not None:
