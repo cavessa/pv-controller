@@ -2,7 +2,9 @@
   "solax": {
     "url": "http://192.168.x.x",
     "pwd": "YOUR_POCKET_WIFI_PASSWORD",
-    "max_w": 10000
+    "max_w": 10000,
+    "str1_max_w": 11500,
+    "str2_max_w": 6500
   },
   "solax2": {
     "enabled": false,

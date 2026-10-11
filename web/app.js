@@ -538,10 +538,10 @@ function renderSolax(d) {
     };
     // Summenwert im Kopf nur bei mehr als einem String (sonst steht er schon im Balken)
     const group = (name, w, nStrings) => `<div class="pv-group"><span>${name}</span>${nStrings > 1 ? `<b>${w == null ? "n/a" : Math.round(w) + " W"}</b>` : ""}</div>`;
-    const strMax = d.str_max_w ?? 10000;
+    const str1Max = d.str1_max_w ?? 11500, str2Max = d.str2_max_w ?? 6500;
     const strs = [
-      { n: "STR1 (Dach)", w: d.pv1_power_w, v: d.pv1_voltage_v, a: d.pv1_current_a, cls: "str1", max: strMax },
-      { n: "STR2 (Wand)", w: d.pv2_power_w, v: d.pv2_voltage_v, a: d.pv2_current_a, cls: "str2", max: strMax },
+      { n: "STR1 (Dach)", w: d.pv1_power_w, v: d.pv1_voltage_v, a: d.pv1_current_a, cls: "str1", max: str1Max },
+      { n: "STR2 (Wand)", w: d.pv2_power_w, v: d.pv2_voltage_v, a: d.pv2_current_a, cls: "str2", max: str2Max },
     ].map(row).join("");
     if (!pergola) {
       stringsEl.innerHTML = strs;
@@ -575,6 +575,21 @@ function renderSolax(d) {
   renderToday(d);
 }
 
+// Tageshoch Hausverbrauch: grau, ab 8 kW orange, ab Hausanschluss-Warnmarke rot
+function houseColor(w, maxLoadKw) {
+  if (w >= (maxLoadKw ?? 11) * 1000) return "#ff6b6b";
+  if (w >= 8000) return "#e8a435";
+  return "#8a8d95";
+}
+function fmtKw(w) { return (w / 1000).toFixed(1) + " kW"; }
+function renderHousePeak(d) {
+  const el = document.getElementById("hv-peak");
+  if (!el) return;
+  if (d == null || !(d.house_peak_w > 0)) { el.innerHTML = ""; return; }
+  const w = d.house_peak_w;
+  el.innerHTML = `Tageshoch: <span style="color:${houseColor(w, d.house_max_load_kw)}">${fmtKw(w)}</span> um ${d.house_peak_time}`;
+}
+
 function renderHausverbrauch(d) {
   const valEl   = document.getElementById("hv-val");
   const todayEl = document.getElementById("hv-today");
@@ -588,6 +603,7 @@ function renderHausverbrauch(d) {
     if (b0) b0.textContent = "";
     const p0 = document.getElementById("hv-pv");
     if (p0) p0.textContent = "";
+    renderHousePeak(null);
     if (avgEl) avgEl.textContent = "Ø – kW/h";
     return;
   }
@@ -599,6 +615,7 @@ function renderHausverbrauch(d) {
   }
   valEl.style.color = w > 3000 ? "var(--warn)" : "var(--text)";
   // Gesamtverbrauch heute (Hauptzähler bzw. Solax-Fallback); ohne meter_today alter Wert
+  renderHousePeak(d);
   const mt = d.meter_today;
   const kwh = mt?.verbrauch_kwh ?? d.self_consumption_kwh;
   todayEl.textContent = "Heute: " + (kwh != null ? kwh.toFixed(1) + " kWh" : "–");
@@ -746,6 +763,23 @@ function renderToday(d) {
     `<div style="width:${pct.toFixed(1)}%;background:${bg};display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;overflow:hidden;flex-shrink:0">${pct > 20 ? txt : ''}</div>`;
   const lbl = (txt) =>
     `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">${txt}</div>`;
+  // Großer Tagesertrag (zentriert) + optionale Aufteilung Dach / Balkonkraftwerk
+  const bigTotal = (kwh) => `
+    ${H2}
+    <div style="text-align:center;margin:12px 0 4px">
+      <span style="font-size:36px;font-weight:500;color:#e8a435">${kwh == null ? "–" : kwh.toFixed(1)}</span>
+      <span style="font-size:16px;color:#8a8d95;margin-left:4px">kWh</span>
+    </div>
+    <div style="text-align:center;font-size:11px;color:#6a6d75;letter-spacing:1.5px;margin-bottom:14px">ERZEUGT</div>`;
+  const splitRow = (label, kwh, pct, color) => `
+    <div style="display:flex;align-items:center;gap:10px;font-size:12px">
+      <span style="flex:0 0 118px;color:#8a8d95;white-space:nowrap">☀ ${label}</span>
+      <span style="flex:0 0 62px;text-align:right;color:#e0e2e6;white-space:nowrap">${kwh == null ? "–" : kwh.toFixed(1)} kWh</span>
+      <div style="flex:1;min-width:20px;height:6px;background:#1a1d23;border-radius:3px;overflow:hidden">
+        <div style="width:${pct}%;height:100%;background:${color}"></div>
+      </div>
+      <span style="flex:0 0 32px;text-align:right;color:#6a6d75">${pct}%</span>
+    </div>`;
   const barWrap = (inner) =>
     `<div style="height:28px;background:#1a1d23;border-radius:6px;overflow:hidden;display:flex;margin-bottom:6px">${inner}</div>`;
 
@@ -753,7 +787,7 @@ function renderToday(d) {
     const pvZero = barWrap(`<div style="width:100%;background:rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center;font-size:10px;color:rgba(255,255,255,0.3)">kein PV</div>`);
     const netzFull = barWrap(seg(100, 'rgba(255,107,107,0.5)', 'Netz 100%'));
     el.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">${H2}<span style="color:#e8a435;font-size:13px">– kWh erzeugt</span></div>
+      ${bigTotal(null)}
       ${lbl('Wohin ging der PV-Strom?')}${pvZero}
       ${lbl('Woher kam der Hausstrom?')}${netzFull}
       <div style="display:flex;gap:8px;margin-top:14px">
@@ -775,14 +809,25 @@ function renderToday(d) {
   const pvAntPct  = gesamtKwh > 0 ? Math.min(100, eigenKwh / gesamtKwh * 100) : 0;
   const bezugPct  = Math.max(0, 100 - pvAntPct);
 
+  // Aufteilung nur mit aktivem zweiten Wechselrichter (Anteil am Gesamtertrag)
+  let splitHtml = "";
+  if (d.pergola_enabled === true) {
+    const pv2Kwh = d.pergola_ok ? (d.pergola_yield_today_kwh ?? 0) : null;
+    const pv1Kwh = d.main_yield_today_kwh ?? Math.max(0, pvKwh - (pv2Kwh ?? 0));
+    const pv1Pct = pvKwh > 0 ? Math.min(100, Math.round(pv1Kwh / pvKwh * 100)) : 0;
+    const pv2Pct = pv2Kwh == null ? 0 : 100 - pv1Pct;
+    splitHtml = `<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">
+      ${splitRow("PV-Anlage", pv1Kwh, pv1Pct, "#e8a435")}
+      ${splitRow("Balkonkraftwerk", pv2Kwh, pv2Pct, "#2ed8a3")}
+    </div>`;
+  }
+
   const evQuote = pvKwh > 0 ? Math.round(eigenKwh / pvKwh * 100) : 0;
   const autarkie = gesamtKwh > 0 ? Math.round(eigenKwh / gesamtKwh * 100) : 0;
 
   el.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-      ${H2}
-      <span style="color:#e8a435;font-size:13px">${pvKwh.toFixed(1)} kWh erzeugt</span>
-    </div>
+    ${bigTotal(pvKwh)}
+    ${splitHtml}
     ${lbl('Wohin ging der PV-Strom?')}
     ${barWrap(
       seg(eigenPct,  '#2ed8a3',               `Eigenverbr. ${eigenKwh.toFixed(1)}`) +
@@ -1157,6 +1202,7 @@ async function loadVerlaufTag(dateStr) {
     renderDailyChart(hourly.entries || [], win);
     renderStringChart(hourly.entries || [], "chart-strings-wrap", win);
     checkStringAlert(hourly.entries || []);
+    api(`/api/history/house/day/${dateStr}`).then(renderHouseDayChart).catch(() => {});
   } catch (e) {
     showError("Tagesverlauf konnte nicht geladen werden: " + e.message);
   }
@@ -1182,6 +1228,7 @@ async function loadVerlaufMonat(monthStr) {
     const data = await api(`/api/history/month/${monthStr}`);
     renderMonthChart(data.entries || []);
     _renderKpiRow("verlauf-monat-kpis", data.entries || []);
+    api(`/api/history/house/month/${monthStr}`).then(renderHouseMonthChart).catch(() => {});
   } catch (e) {
     showError("Monatsverlauf konnte nicht geladen werden: " + e.message);
   }
@@ -2218,6 +2265,163 @@ function xTickLabel(m) {
   return min === 0 ? `${h}h` : `${h}:${String(min).padStart(2, "0")}`;
 }
 
+// ---------- Hausverbrauch: Tagesverlauf + Lastspitzen ----------
+// Hauptzähler-Leistung (Shelly, Minutenwerte): + Bezug (hell), − Einspeisung (grün)
+function meterChartSvg(pts, xMin, xMax, d, o) {
+  const VW = 360, VH = o.h;
+  const pad = { l: 34, r: 8, t: 10, b: 18 };
+  const cw = VW - pad.l - pad.r, ch = VH - pad.t - pad.b;
+  const inWin = pts.filter(p => p[0] >= xMin && p[0] <= xMax);
+  if (inWin.length < 2) return '<div class="chart-empty">Noch keine Messwerte.</div>';
+  const hiW = Math.max(1000, ...inWin.map(p => p[2]));
+  const loW = Math.min(0, ...inWin.map(p => p[3]));
+  const yStep = niceStep((hiW - loW) / 1000, 3) * 1000;
+  const yTop = Math.ceil(hiW / yStep) * yStep, yBot = Math.floor(loW / yStep) * yStep;
+  const sx = m => pad.l + ((m - xMin) / (xMax - xMin)) * cw;
+  const sy = w => pad.t + ch - ((w - yBot) / (yTop - yBot)) * ch;
+  const y0 = sy(0);
+  let g = "";
+  for (let v = yBot; v <= yTop + 1; v += yStep) {
+    const y = sy(v).toFixed(1);
+    g += `<line x1="${pad.l}" y1="${y}" x2="${pad.l + cw}" y2="${y}" class="grid-line"/>`;
+    g += `<text x="${pad.l - 4}" y="${y}" text-anchor="end" dominant-baseline="middle" font-size="8">${(v / 1000).toFixed(v % 1000 ? 1 : 0)}k</text>`;
+  }
+  for (const t of o.ticks) {
+    const x = sx(t.m).toFixed(1);
+    g += `<line x1="${x}" y1="${pad.t}" x2="${x}" y2="${pad.t + ch}" class="grid-line"/>`;
+    g += `<text x="${x}" y="${VH - 4}" text-anchor="${t.anchor || "middle"}" font-size="8">${t.label}</text>`;
+  }
+  // Linie in Segmenten (Lücken > 5 min trennen)
+  const segs = [];
+  let cur = [];
+  for (const p of inWin) {
+    if (cur.length && p[0] - cur[cur.length - 1][0] > 5) { segs.push(cur); cur = []; }
+    cur.push(p);
+  }
+  segs.push(cur);
+  const cid = o.id;
+  g += `<defs><clipPath id="${cid}-p"><rect x="${pad.l}" y="${pad.t}" width="${cw}" height="${Math.max(0, y0 - pad.t).toFixed(1)}"/></clipPath>`
+     + `<clipPath id="${cid}-n"><rect x="${pad.l}" y="${y0.toFixed(1)}" width="${cw}" height="${Math.max(0, pad.t + ch - y0).toFixed(1)}"/></clipPath></defs>`;
+  for (const sg of segs) {
+    if (sg.length < 2) continue;
+    const line = sg.map((p, i) => `${i ? "L" : "M"}${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`).join(" ");
+    const area = `${line} L${sx(sg[sg.length - 1][0]).toFixed(1)},${y0.toFixed(1)} L${sx(sg[0][0]).toFixed(1)},${y0.toFixed(1)} Z`;
+    g += `<path d="${area}" fill="rgba(224,226,230,0.1)" clip-path="url(#${cid}-p)"/>`;
+    g += `<path d="${area}" fill="rgba(46,216,163,0.18)" clip-path="url(#${cid}-n)"/>`;
+    g += `<path d="${line}" fill="none" stroke="#e0e2e6" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>`;
+  }
+  g += `<line x1="${pad.l}" y1="${y0.toFixed(1)}" x2="${pad.l + cw}" y2="${y0.toFixed(1)}" stroke="rgba(255,255,255,0.25)" stroke-width="0.8"/>`;
+  // Spitze Bezug (rot), Spitze Einspeisung (grün)
+  const mark = (timeStr, w, color, txt) => {
+    if (w == null || !timeStr) return "";
+    const [h, mi] = timeStr.split(":").map(Number);
+    const m = h * 60 + mi;
+    if (m < xMin || m > xMax) return "";
+    return `<circle cx="${sx(m).toFixed(1)}" cy="${sy(w).toFixed(1)}" r="3.5" fill="${color}" stroke="#14161b" stroke-width="1.5"><title>${txt}</title></circle>`;
+  };
+  g += mark(d.peak_time, d.peak_w, "#ff6b6b", `${fmtKw(d.peak_w)} Bezug um ${d.peak_time}`);
+  g += mark(d.feed_time, d.feed_w != null ? -d.feed_w : null, "#2ed8a3", `${fmtKw(d.feed_w)} Einspeisung um ${d.feed_time}`);
+  return `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">${g}</svg>`;
+}
+
+// ids: Element-IDs der Card (Verlauf→Tag oder Dashboard); pre: Präfix für clipPath-IDs
+const HOUSE_IDS_DAY  = { wrap: "chart-house-day-wrap",  max: "house-day-max",  foot: "house-day-foot",  hourBlock: "house-hour-block",      hour: "chart-house-hour-wrap",      pre: "v" };
+const HOUSE_IDS_DASH = { wrap: "chart-house-dash-wrap", max: "house-dash-max", foot: "house-dash-foot", hourBlock: "house-dash-hour-block", hour: "chart-house-dash-hour-wrap", pre: "d" };
+function renderHouseDayChart(d, ids = HOUSE_IDS_DAY) {
+  const wrap = document.getElementById(ids.wrap);
+  const maxEl = document.getElementById(ids.max);
+  const foot = document.getElementById(ids.foot);
+  const hourBlock = document.getElementById(ids.hourBlock);
+  const hourEl = document.getElementById(ids.hour);
+  if (!wrap) return;
+  const pts = d.points || [];
+  if (maxEl) maxEl.textContent = d.peak_w ? `Spitze: ${fmtKw(d.peak_w)}` : "";
+  if (pts.length < 2) {
+    wrap.innerHTML = '<div class="chart-empty">Noch keine Messwerte (Aufzeichnung läuft seit dem letzten Neustart).</div>';
+    if (foot) foot.textContent = "";
+    if (hourBlock) hourBlock.classList.add("hidden");
+    return;
+  }
+  const ticks = [0, 3, 6, 9, 12, 15, 18, 21, 24].map(h => ({
+    m: h * 60, label: h + "h", anchor: h === 24 ? "end" : h === 0 ? "start" : "middle",
+  }));
+  wrap.innerHTML = meterChartSvg(pts, 0, 1440, d, { h: 150, ticks, id: ids.pre + "mmd" });
+
+  // Letzte Stunde nur für heute
+  const isToday = d.date === new Date().toLocaleDateString("sv-SE");
+  if (hourBlock) hourBlock.classList.toggle("hidden", !isToday);
+  if (isToday && hourEl) {
+    const now = new Date();
+    const nm = now.getHours() * 60 + now.getMinutes();
+    const lo = Math.max(0, nm - 60);
+    const lab = m => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+    const hd = { ...d, peak_w: null, feed_w: null };   // Spitzen der Stunde: eigener Max-Wert
+    const hp = pts.filter(p => p[0] >= lo && p[0] <= nm);
+    if (hp.length) {
+      const top = hp.reduce((a, b) => (b[2] > a[2] ? b : a));
+      if (top[2] > 0) { hd.peak_w = top[2]; hd.peak_time = lab(top[0]); }
+    }
+    hourEl.innerHTML = meterChartSvg(pts, lo, nm, hd, {
+      h: 110, id: ids.pre + "mmh",
+      ticks: [{ m: lo, label: lab(lo), anchor: "start" }, { m: (lo + nm) / 2, label: lab(Math.round((lo + nm) / 2)) }, { m: nm, label: "jetzt", anchor: "end" }],
+    });
+  }
+  if (foot) {
+    foot.innerHTML = `Ø <b>${fmtKw(d.avg_w)}</b>`
+      + (d.peak_w ? ` · Spitze Bezug <b>${fmtKw(d.peak_w)}</b> um ${d.peak_time}` : "")
+      + (d.feed_w ? `<br>Max. Einspeisung <b>${fmtKw(d.feed_w)}</b> um ${d.feed_time}` : "");
+  }
+}
+
+function renderHouseMonthChart(d) {
+  const wrap = document.getElementById("chart-house-month-wrap");
+  const foot = document.getElementById("house-month-foot");
+  if (!wrap) return;
+  const days = d.days || [];
+  if (!days.length) {
+    wrap.innerHTML = '<div class="chart-empty">Noch keine Lastspitzen für diesen Monat.</div>';
+    if (foot) foot.textContent = "";
+    return;
+  }
+  const maxLoad = d.max_load_kw ?? 11;
+  const [yr, mo] = d.month.split("-").map(Number);
+  const nDays = new Date(yr, mo, 0).getDate();
+  const VW = 360, VH = 150;
+  const pad = { l: 34, r: 8, t: 10, b: 18 };
+  const cw = VW - pad.l - pad.r, ch = VH - pad.t - pad.b;
+  const topW = Math.max(...days.map(x => x.peak_w), maxLoad * 1000);
+  const yStep = niceStep(topW / 1000, 4) * 1000;
+  const yMax = Math.ceil(topW / yStep) * yStep;
+  const sy = w => pad.t + ch - (w / yMax) * ch;
+  const slot = cw / nDays, bw = Math.max(2, slot * 0.7);
+  let g = "";
+  for (let v = 0; v <= yMax + 1; v += yStep) {
+    const y = sy(v).toFixed(1);
+    g += `<line x1="${pad.l}" y1="${y}" x2="${pad.l + cw}" y2="${y}" class="grid-line"/>`;
+    g += `<text x="${pad.l - 4}" y="${y}" text-anchor="end" dominant-baseline="middle" font-size="8">${(v / 1000).toFixed(v % 1000 ? 1 : 0)}k</text>`;
+  }
+  for (let day = 1; day <= nDays; day++) {
+    if (day !== 1 && day % 5 !== 0) continue;
+    g += `<text x="${(pad.l + slot * (day - 0.5)).toFixed(1)}" y="${VH - 4}" text-anchor="middle" font-size="8">${day}</text>`;
+  }
+  for (const x of days) {
+    const day = +x.date.slice(8, 10);
+    const color = x.peak_w >= maxLoad * 1000 ? "#ff6b6b" : x.peak_w >= 8000 ? "#e8a435" : "#6a6d75";
+    const cx = pad.l + slot * (day - 0.5);
+    const y = sy(x.peak_w);
+    g += `<rect x="${(cx - bw / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${(pad.t + ch - y).toFixed(1)}" rx="1.5" fill="${color}"><title>${x.date.slice(8, 10)}.${x.date.slice(5, 7)}.: ${fmtKw(x.peak_w)} um ${x.peak_time}</title></rect>`;
+  }
+  // Warnmarke Hausanschluss
+  const ly = sy(maxLoad * 1000).toFixed(1);
+  g += `<line x1="${pad.l}" y1="${ly}" x2="${pad.l + cw}" y2="${ly}" stroke="#ff6b6b" stroke-width="1" stroke-dasharray="4 3" opacity="0.7"/>`;
+  g += `<text x="${pad.l + cw}" y="${(+ly - 3).toFixed(1)}" text-anchor="end" font-size="7.5" style="fill:#ff6b6b">${maxLoad} kW</text>`;
+  wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">${g}</svg>`;
+  if (foot && d.max) {
+    const m = d.max;
+    foot.innerHTML = `Höchste Spitze: <b>${fmtKw(m.peak_w)}</b> am ${m.date.slice(8, 10)}.${m.date.slice(5, 7)}. um ${m.peak_time}<br>Ø Tagesspitze: <b>${fmtKw(d.avg_peak_w)}</b>`;
+  }
+}
+
 // ---------- Speicher: Tagesverlauf + letzte Stunde + 7 Tage ----------
 let storageRange = "24h";
 try { storageRange = localStorage.getItem("storageRange") || "24h"; } catch (e) { /* ohne Storage */ }
@@ -2226,6 +2430,12 @@ let storageLast = null;
 
 const ST = { temp: "#a78bfa", heat: "#2ed8a3", sun: "#fbbf24", max: "#f87171", resume: "#fbbf24" };
 const fmtHM = ts => new Date(ts * 1000).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+
+async function loadHouseDash() {
+  const day = new Date().toLocaleDateString("sv-SE");
+  const d = await api(`/api/history/house/day/${day}`);
+  renderHouseDayChart(d, HOUSE_IDS_DASH);
+}
 
 async function loadStorage() {
   const d = await api(`/api/speicher/history?range=${storageRange}`);
@@ -2712,6 +2922,7 @@ async function refreshStatus() {
     renderSolax(effectiveSolax);
     const history = await historyP;
     loadStorage().catch(() => {});
+    loadHouseDash().catch(() => {});
   } catch (e) {
     showError("Status-Abfrage fehlgeschlagen: " + e.message);
   }
@@ -2735,6 +2946,7 @@ async function runOnce() {
     renderStatus(data);
     renderSolax(effectiveSolax);
     loadStorage().catch(() => {});
+    loadHouseDash().catch(() => {});
     api("/api/temp-history").then(h => {
       renderWbChart(h.entries);
     }).catch(() => {});
@@ -2802,6 +3014,7 @@ async function loadSettings() {
     setFormValue(f, "auth.enabled", lastConfig.auth_enabled ?? false);
     setFormValue(f, "auth.user", lastConfig.auth_user ?? "admin");
     // Passwort-Feld bewusst leer lassen
+    setFormValue(f, "house.max_load_kw", lastConfig.house_max_load_kw ?? 11);
     setFormValue(f, "location.latitude",  lastConfig.latitude  ?? "");
     setFormValue(f, "location.longitude", lastConfig.longitude ?? "");
     setFormValue(f, "location.name",      lastConfig.location_name ?? "");
@@ -2893,6 +3106,9 @@ async function saveSettings(e) {
       enabled: boolField("auth.enabled"),
       user: strField("auth.user"),
       password: f.elements.namedItem("auth.password")?.value ?? "",
+    },
+    house: {
+      max_load_kw: numField("house.max_load_kw"),
     },
     location: {
       latitude:  numField("location.latitude"),

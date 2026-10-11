@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=57">
+  <link rel="stylesheet" href="/static/styles.css?v=59">
 </head>
 <body>
   <div class="app-shell">
@@ -71,6 +71,7 @@
         <div class="hv-body">
           <div class="hv-left">
             <div class="hv-val" id="hv-val"><span class="skeleton">1234 W</span></div>
+            <div class="hv-peak" id="hv-peak"></div>
             <div class="hv-today" id="hv-today"><span class="skeleton">Heute: 12.3 kWh</span></div>
             <div class="hv-bought" id="hv-pv"></div>
             <div class="hv-bought" id="hv-bought"></div>
@@ -79,6 +80,7 @@
           <canvas id="hausverbrauch-sparkline" width="110" height="50" class="hv-sparkline"></canvas>
         </div>
       </div>
+
 
       <div class="card cascade-mini-card" id="cascade-mini">
         <div class="card-head">
@@ -252,6 +254,21 @@
       </div><!-- .grid -->
       </div><!-- .dashboard-right -->
       </div><!-- .dashboard-cols -->
+
+      <div class="dashboard-bottom">
+        <div class="card">
+        <div class="card-head">
+          <h2>Hauptzähler</h2>
+          <span class="house-max" id="house-dash-max"></span>
+        </div>
+        <div id="chart-house-dash-wrap" class="temp-chart-wrap"><div class="skeleton skeleton-chart"></div></div>
+        <div id="house-dash-hour-block" class="storage-hour hidden">
+          <div class="storage-hour-head"><span>Letzte Stunde</span></div>
+          <div id="chart-house-dash-hour-wrap"></div>
+        </div>
+        <div class="house-foot" id="house-dash-foot"></div>
+      </div>
+      </div>
     </section>
 
     <!-- ========= Verlauf ========= -->
@@ -288,6 +305,21 @@
           <div id="chart-daily-wrap" class="temp-chart-wrap">
             <div class="chart-empty">Lade…</div>
           </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Hauptzähler</h2>
+            <span class="house-max" id="house-day-max"></span>
+          </div>
+          <div id="chart-house-day-wrap" class="temp-chart-wrap">
+            <div class="chart-empty">Lade…</div>
+          </div>
+          <div id="house-hour-block" class="storage-hour hidden">
+            <div class="storage-hour-head"><span>Letzte Stunde</span></div>
+            <div id="chart-house-hour-wrap"></div>
+          </div>
+          <div class="house-foot" id="house-day-foot"></div>
         </div>
 
         <div class="card">
@@ -346,6 +378,14 @@
           <div id="chart-month-wrap" class="temp-chart-wrap">
             <div class="chart-empty">Lade…</div>
           </div>
+        </div>
+
+        <div class="card">
+          <h2>Lastspitzen pro Tag</h2>
+          <div id="chart-house-month-wrap" class="temp-chart-wrap">
+            <div class="chart-empty">Lade…</div>
+          </div>
+          <div class="house-foot" id="house-month-foot"></div>
         </div>
       </div>
 
@@ -589,6 +629,11 @@
           </fieldset>
 
           <fieldset>
+            <legend>Hausanschluss</legend>
+            <label>Max. Last (kW, Warnmarke)<input type="number" step="0.5" min="1" max="100" name="house.max_load_kw" placeholder="11"></label>
+          </fieldset>
+
+          <fieldset>
             <legend>Shelly IPs</legend>
             <label>Phase 1 (ph1_url)<input type="text" name="shelly.ph1_url" placeholder="http://192.168.x.x"></label>
             <label>Phase 1 Typ/Kanal
@@ -820,6 +865,6 @@
   </footer>
   </div>
 
-  <script src="/static/app.js?v=20261010m" defer></script>
+  <script src="/static/app.js?v=20261011e" defer></script>
 </body>
 </html>

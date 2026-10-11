@@ -1,5 +1,55 @@
 # Changelog
 
+## 2026-10-11 – PV-Balken: eigene Skala je String (STR1 11,5 kW, STR2 6,5 kW)
+
+**Anlass (User):** Maximalwerte der Strings sind STR1 11500 W und STR2 6500 W; die Balken sollen darauf skaliert werden (statt beide auf 10 kW).
+
+**Umsetzung:** `SolaxConfig` hat neu `str1_max_w` (Default 11500) und `str2_max_w` (Default 6500), in `config.json`/`config.example.json` gesetzt. `/api/solax` liefert `str1_max_w`/`str2_max_w` (statt `str_max_w`), `renderSolax` skaliert und beschriftet damit („/ 11.5 kW", „/ 6.5 kW"). `solax.max_w` entfällt für die Strings, `solax2.max_w` (Pergola, 1 kW) bleibt. `app.js?v=20261011e`.
+
+**Hinweis:** Dienst neu starten (Config-Feld, API).
+
+## 2026-10-11 – Lastspitzen jetzt vom Shelly-Hauptzähler, Verlauf in Minutenwerten
+
+**Anlass (User):** Die Spitzen sollen vom Shelly-Hauptzähler kommen (nicht aus dem Solax-Verbrauch), und der Verlauf soll wie im openHAB-Chart aussehen (Tag mit Spitzen, Zoom auf die letzte Stunde, Bezug positiv, Einspeisung negativ).
+
+**Umsetzung:**
+- `db.py`: neue Tabelle `main_meter_min` (Minutenwerte: Mittel/Max/Min/Anzahl der Hauptzähler-Leistung, 35 Tage Aufbewahrung). `record_main_meter()` rechnet jede Messung ein und schreibt das Tageshoch (max. Netzbezug) in `house_peak_day` fort. Aufgerufen aus `Controller._read_all` – also vom Web-Poller (alle 10 s bei offenem Dashboard) und vom Cron (jede Minute). Der bisherige Solax-Verbrauch speist das Tageshoch nicht mehr (`pv_logger`, `/api/solax`).
+- `web.py`: `/api/history/house/day/{datum}` liefert die Minutenwerte (`points` = [Minute, Mittel, Max, Min]) plus Spitze Bezug / max. Einspeisung (nur ab 50 W) und Ø; die Monatsübersicht liest weiter `house_peak_day`.
+- Web-UI: Card „Hauptzähler" im Verlauf → Tag: 0–24 h mit Nulllinie (Bezug hell, Einspeisung grün unterlegt), roter Punkt = Spitze Bezug, grüner Punkt = max. Einspeisung, darunter „Letzte Stunde" (nur für heute). Cache-Busting `app.js?v=20261011b`.
+- Dashboard: dieselbe Card „Hauptzähler" (Tag + letzte Stunde) steht auch auf dem Dashboard ganz unten (volle Breite unter beiden Spalten) und wird mit jedem Refresh aktualisiert (`loadHouseDash`, `app.js?v=20261011d`, `styles.css?v=59`).
+- Die zuvor angelegten Test-Spitzen in `house_peak_day` (aus dem Solax-Verbrauch) wurden gelöscht.
+
+**Hinweise:**
+- Das Tageshoch ist der **Netzbezug** am Hauptzähler (relevant für den Hausanschluss), nicht der Hausverbrauch: Was die PV direkt deckt, zählt nicht mit.
+- Kurze Spitzen werden nur erfasst, wenn eine Messung in diese Zeit fällt (Cron: 1/min, Dashboard offen: alle 10 s). Aufzeichnung beginnt mit dem Neustart; ältere Tage zeigen „Noch keine Messwerte".
+- Dienst neu starten.
+
+## 2026-10-11 – Hausverbrauch: Lastspitzen (Tageshoch, Tagesverlauf, Monatsübersicht)
+
+**Anlass (User):** Sehen, wie hoch die Spitzenlast im Haus ist – heute und über die letzten Wochen (Hausanschluss-Grenze).
+
+**Umsetzung:**
+- **Persistenz:** neue Tabelle `house_peak_day` (`date`, `peak_w`, `peak_time`), fortgeschrieben bei jedem Cron-Lauf (`pv_logger._log_hourly`, minütlich) und bei jedem `/api/solax`-Abruf (`db.update_house_peak`). Hausverbrauch = Solax-Verbrauch + Pergola-Leistung (wie bisher im Stunden-Log). Nach Mitternacht beginnt automatisch ein neuer Tag.
+- **API:** `/api/solax` liefert `house_peak_w`, `house_peak_time`, `house_max_load_kw`; `/api/status` liefert `house_peak_watts`/`house_peak_time`; neu `GET /api/history/house/day/{YYYY-MM-DD}` (stündliche Werte, Ø, Tageshoch) und `GET /api/history/house/month/{YYYY-MM}` (Spitze pro Tag, höchste Spitze, Ø Tagesspitze, Warnmarke).
+- **Config:** neuer Schlüssel `house_max_load_kw` (Default 11), einstellbar unter Settings → „Hausanschluss" (`PUT /api/config` Sektion `house.max_load_kw`).
+- **Hausverbrauch-Card:** Zeile „Tageshoch: X kW um HH:MM"; Wert grau, ab 8 kW orange, ab `house_max_load_kw` rot.
+- **Verlauf → Tag:** neue Card „Hausverbrauch" (0–24 h, weiße Linie + Fläche, roter Max-Punkt mit Tooltip, „Ø … · Max … um …").
+- **Verlauf → Monat:** neue Card „Lastspitzen pro Tag" (Balken grau < 8 kW, gold ab 8 kW, rot ab Warnmarke, gestrichelte Warnmarke, „Höchste Spitze" und „Ø Tagesspitze"). Cache-Busting `app.js?v=20261011a`, `styles.css?v=58`.
+
+**Abweichungen / Hinweise:**
+- Die Spitzen liegen in einer eigenen Tabelle statt in `daily_log` (`pv_daily_log`): dessen `INSERT OR REPLACE` würde die Spalten jede Minute überschreiben. Die Stundenwerte stammen aus `pv_hourly_log.consumption_w`.
+- Das Tageshoch kommt vom Server; ein zusätzliches Tracking im Browser entfällt (überlebt so Reload und Neustart). Spitzen gibt es erst ab dem Neustart – frühere Tage zeigen im Tag-Chart das Maximum der Stundenwerte, im Monat fehlen sie.
+- Die Monats-Navigation ist die bestehende des Sub-Tabs (nicht in der Card). Der Max-Punkt im Tag-Chart liegt auf der echten Spitzenminute und kann daher über der Stundenlinie liegen.
+- Dienst neu starten (neue Endpunkte, neue Tabelle).
+
+## 2026-10-10 – HEUTE-Card: Tagesertrag groß, Aufteilung PV-Anlage / Balkonkraftwerk
+
+**Anlass (User):** „10.8 kWh erzeugt" stand klein im Header; mit zwei Anlagen fehlte die Aufteilung.
+
+**Umsetzung:** `renderToday` (`web/app.js`): Header nur noch „HEUTE"; darunter der Gesamtertrag groß und zentriert mit „ERZEUGT". Bei aktivem zweiten Wechselrichter zwei Zeilen „☀ PV-Anlage" (gold) und „☀ Balkonkraftwerk" (grün) mit kWh, Balken und Prozentanteil am Gesamtertrag; ohne zweiten WR nur der Gesamtwert. Der Rest ab „Wohin ging der PV-Strom?" ist unverändert. Cache-Busting `app.js?v=20261010n`.
+
+**Hinweise:** Die Werte kommen aus `/api/solax` (`main_yield_today_kwh`, `pergola_yield_today_kwh`, Summe `yield_today_kwh`), das die HEUTE-Card ohnehin nutzt, nicht aus `/api/status`. Die Zeilenbeschriftung ist fest „PV-Anlage"/„Balkonkraftwerk" (wie in der PV-Card), nicht der Config-Name (`Dach`/`Pergola`). Ist der Balkon-WR nicht erreichbar, zeigt seine Zeile „–".
+
 ## 2026-10-10 – Speicher-Card: Tagesverlauf, Zoom auf die letzte Stunde, 7-Tage-Ansicht
 
 **Anlass (User):** Die Speicher-Card soll einen Tagesverlauf mit Heizstab-Leistung, Referenzlinien, Sonnenfenster, Schaltereignissen und einem Zoom auf die letzte Stunde zeigen, plus Umschalter 1 h / 24 h / 7 T.

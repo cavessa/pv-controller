@@ -125,6 +125,25 @@ def init_pv_logging_tables() -> None:
                 phases INTEGER
             )
         """)
+        # Hauptzähler-Leistung (Shelly) pro Minute: Mittel/Max/Min der Messungen
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS main_meter_min (
+                ts     TEXT PRIMARY KEY,   -- YYYY-MM-DD HH:MM
+                avg_w  REAL NOT NULL,
+                max_w  REAL NOT NULL,
+                min_w  REAL NOT NULL,
+                n      INTEGER NOT NULL
+            )
+        """)
+        # Lastspitze (Netzbezug am Hauptzähler) pro Tag; eigene Tabelle, damit das
+        # INSERT OR REPLACE in pv_daily_log sie nicht überschreibt
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS house_peak_day (
+                date      TEXT PRIMARY KEY,
+                peak_w    INTEGER NOT NULL,
+                peak_time TEXT NOT NULL
+            )
+        """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS pv_peak_day (
                 date     TEXT PRIMARY KEY,
@@ -323,6 +342,75 @@ def ensure_meter_snapshot(import_wh: float, export_wh: float) -> dict:
             (day,),
         ).fetchone()
     return {"import_wh": row[0], "export_wh": row[1], "taken_at": row[2]}
+
+
+def record_main_meter(power_w: float) -> None:
+    """Hauptzähler-Messwert (W, + Bezug / − Einspeisung) in die Minutenwerte einrechnen
+    und das Tageshoch (max. Netzbezug) fortschreiben."""
+    now = datetime.now()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """INSERT INTO main_meter_min (ts, avg_w, max_w, min_w, n) VALUES (?,?,?,?,1)
+               ON CONFLICT(ts) DO UPDATE SET
+                 avg_w = (avg_w * n + excluded.avg_w) / (n + 1),
+                 max_w = MAX(max_w, excluded.max_w),
+                 min_w = MIN(min_w, excluded.min_w),
+                 n = n + 1""",
+            (now.strftime("%Y-%m-%d %H:%M"), power_w, power_w, power_w),
+        )
+        if now.minute == 0 and now.second < 20:
+            conn.execute("DELETE FROM main_meter_min WHERE ts < date('now', '-35 days')")
+    if power_w > 0:
+        update_house_peak(power_w)
+
+
+def get_main_meter_day(date_str: str) -> list[list]:
+    """[[Minute des Tages, Mittel, Max, Min], …] für einen Tag."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT ts, avg_w, max_w, min_w FROM main_meter_min WHERE ts LIKE ? ORDER BY ts",
+            (date_str + " %",),
+        ).fetchall()
+    return [
+        [int(r[0][11:13]) * 60 + int(r[0][14:16]), round(r[1]), round(r[2]), round(r[3])]
+        for r in rows
+    ]
+
+
+def update_house_peak(house_w: float) -> dict:
+    """Tageshoch (max. Netzbezug) fortschreiben und aktuellen Stand liefern."""
+    now = datetime.now()
+    day, hhmm, w = now.strftime("%Y-%m-%d"), now.strftime("%H:%M"), int(round(house_w))
+    with sqlite3.connect(DB_PATH) as conn:
+        if w > 0:
+            conn.execute(
+                """INSERT INTO house_peak_day(date, peak_w, peak_time) VALUES (?,?,?)
+                   ON CONFLICT(date) DO UPDATE SET peak_w=excluded.peak_w, peak_time=excluded.peak_time
+                   WHERE excluded.peak_w > house_peak_day.peak_w""",
+                (day, w, hhmm),
+            )
+        row = conn.execute(
+            "SELECT peak_w, peak_time FROM house_peak_day WHERE date=?", (day,)
+        ).fetchone()
+    return {"peak_w": row[0] if row else None, "peak_time": row[1] if row else None}
+
+
+def get_house_peak(date_str: str) -> dict:
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT peak_w, peak_time FROM house_peak_day WHERE date=?", (date_str,)
+        ).fetchone()
+    return {"peak_w": row[0] if row else None, "peak_time": row[1] if row else None}
+
+
+def get_house_peaks_month(year_month: str) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """SELECT date, peak_w, peak_time FROM house_peak_day
+               WHERE date LIKE ? ORDER BY date ASC""",
+            (year_month + "-%",),
+        ).fetchall()
+    return [{"date": r[0], "peak_w": r[1], "peak_time": r[2]} for r in rows]
 
 
 def update_pv_peak(pv_w: float) -> dict:

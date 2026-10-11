@@ -181,6 +181,11 @@ class Controller:
         if r.main_meter_power_w is None:
             r.errors.append("main_meter")
         else:
+            try:
+                from db import record_main_meter
+                record_main_meter(r.main_meter_power_w)
+            except Exception:
+                log.warning("Hauptzähler-Leistung nicht gespeichert", exc_info=True)
             # Tagesenergie ist nicht kritisch: Fehler -> Solax-Fallback, kein Fail-safe
             try:
                 energy = self.main_meter.get_energy_wh()

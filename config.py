@@ -14,8 +14,11 @@ class SolaxConfig:
     pwd: str
     enabled: bool = True
     name: str = "Dach"
-    # Skalenende der PV-Balken (W): bei `solax` pro String, bei `solax2` für das Gerät
+    # Skalenende der PV-Balken (W): `max_w` gilt für das ganze Gerät (solax2),
+    # bei `solax` je String über str1_max_w / str2_max_w
     max_w: float = 10000.0
+    str1_max_w: float = 11500.0
+    str2_max_w: float = 6500.0
 
 
 @dataclass
@@ -170,6 +173,8 @@ class Config:
     summer_mode: SummerModeConfig = field(default_factory=SummerModeConfig)
     # Zweiter Wechselrichter (Pergola-PV); None = nicht konfiguriert
     solax2: Optional[SolaxConfig] = None
+    # Warnmarke für die Hausanschluss-Belastung (kW), Lastspitzen-Anzeige
+    house_max_load_kw: float = 11.0
 
     @property
     def solax2_active(self) -> bool:
@@ -211,4 +216,5 @@ def load_config(path: str | Path) -> Config:
             if k != "max_phases"
         }),
         solax2=parse_solax2(raw),
+        house_max_load_kw=float(raw.get("house_max_load_kw", 11.0)),
     )

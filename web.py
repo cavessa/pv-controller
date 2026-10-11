@@ -264,8 +264,14 @@ def _summary(result: ControllerResult, cfg: Config) -> dict[str, str]:
 from meter import compute_meter_today  # noqa: E402
 
 
+def _house_peak_today() -> dict[str, Any]:
+    from db import get_house_peak
+    return get_house_peak(datetime.now().strftime("%Y-%m-%d"))
+
+
 def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
     r = result.readings
+    hp = _house_peak_today()
     return {
         "timestamp": result.timestamp.isoformat(timespec="seconds"),
         "runtime": {
@@ -316,6 +322,8 @@ def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
         },
         "summary": _summary(result, cfg),
         "meter_today": compute_meter_today(r),
+        "house_peak_watts": hp["peak_w"],
+        "house_peak_time": hp["peak_time"],
     }
 
 
@@ -559,6 +567,7 @@ class ConfigUpdate(BaseModel):
     auth: dict[str, Any] | None = None
     location: dict[str, Any] | None = None
     summer_mode: dict[str, Any] | None = None
+    house: dict[str, Any] | None = None
 
 
 def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str, Any]:
@@ -699,6 +708,15 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
                 raise HTTPException(400, "location.name must be a string")
             new_cfg["location_name"] = v
 
+    if patch.house:
+        bad = set(patch.house) - {"max_load_kw"}
+        if bad:
+            raise HTTPException(400, f"house keys not allowed: {sorted(bad)}")
+        v = patch.house.get("max_load_kw")
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not 1 <= v <= 100:
+            raise HTTPException(400, "house.max_load_kw must be a number between 1 and 100")
+        new_cfg["house_max_load_kw"] = float(v)
+
     if patch.summer_mode:
         bad = set(patch.summer_mode) - _ALLOWED_SUMMER_MODE_KEYS
         if bad:
@@ -753,6 +771,7 @@ def load_config_from_dict(raw: dict[str, Any]) -> Config:
             if k != "max_phases"
         }),
         solax2=parse_solax2(raw),
+        house_max_load_kw=float(raw.get("house_max_load_kw", 11.0)),
     )
 
 
@@ -839,6 +858,8 @@ def api_solax(response: Response) -> dict[str, Any]:
     selfuse = round(max(0.0, yield_today - grid_out), 2)
     from db import update_pv_peak
     peak = update_pv_peak(pv_total_w)
+    from db import get_house_peak
+    house_peak = get_house_peak(datetime.now().strftime("%Y-%m-%d"))
     return {
         "pv_peak_w": peak["peak_w"],
         "pv_peak_time": peak["peak_time"],
@@ -858,8 +879,12 @@ def api_solax(response: Response) -> dict[str, Any]:
         "grid_in_today_kwh": grid_in,
         "self_consumption_kwh": selfuse,
         "meter_today": meter,
+        "house_peak_w": house_peak["peak_w"],
+        "house_peak_time": house_peak["peak_time"],
+        "house_max_load_kw": cfg.house_max_load_kw,
         "mode": data.mode,
-        "str_max_w": cfg.solax.max_w,
+        "str1_max_w": cfg.solax.str1_max_w,
+        "str2_max_w": cfg.solax.str2_max_w,
         "pergola_max_w": cfg.solax2.max_w if cfg.solax2 is not None else None,
         "pergola_enabled": cfg.solax2_active,
         "pergola_name": cfg.solax2.name if cfg.solax2 is not None else None,
@@ -912,6 +937,54 @@ def api_hourly_history(
         "entries": get_hourly_data(date_str),
         "sunrise": w.get("sunrise"),
         "sunset": w.get("sunset"),
+    }
+
+
+@app.get("/api/history/house/day/{date_str}")
+def api_house_day(date_str: str, response: Response) -> dict[str, Any]:
+    """Hauptzähler-Leistung (Shelly) eines Tages in Minutenwerten + Spitzen.
+
+    points: [[Minute des Tages, Mittel W, Max W, Min W], …]; + Bezug, − Einspeisung.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    import re
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
+        raise HTTPException(400, "Format muss YYYY-MM-DD sein")
+    from db import get_main_meter_day
+    pts = get_main_meter_day(date_str)
+    peak_w = peak_time = feed_w = feed_time = None
+    if pts:
+        top = max(pts, key=lambda p: p[2])
+        low = min(pts, key=lambda p: p[3])
+        if top[2] > 0:
+            peak_w, peak_time = top[2], f"{top[0] // 60:02d}:{top[0] % 60:02d}"
+        if low[3] < -50:
+            feed_w, feed_time = -low[3], f"{low[0] // 60:02d}:{low[0] % 60:02d}"
+    avg = round(sum(p[1] for p in pts) / len(pts)) if pts else None
+    return {
+        "date": date_str, "points": pts, "avg_w": avg,
+        "peak_w": peak_w, "peak_time": peak_time,
+        "feed_w": feed_w, "feed_time": feed_time,
+    }
+
+
+@app.get("/api/history/house/month/{year_month}")
+def api_house_month(year_month: str, response: Response) -> dict[str, Any]:
+    """Lastspitze pro Tag eines Monats."""
+    response.headers["Cache-Control"] = "no-store"
+    import re
+    if not re.match(r"^\d{4}-\d{2}$", year_month):
+        raise HTTPException(400, "Format muss YYYY-MM sein")
+    from db import get_house_peaks_month
+    days = get_house_peaks_month(year_month)
+    top = max(days, key=lambda d: d["peak_w"]) if days else None
+    avg = round(sum(d["peak_w"] for d in days) / len(days)) if days else None
+    return {
+        "month": year_month,
+        "days": days,
+        "max": top,
+        "avg_peak_w": avg,
+        "max_load_kw": _load_cfg().house_max_load_kw,
     }
 
 
