@@ -2549,8 +2549,13 @@ function renderStorageChart(el, opts) {
   const vals = temps.map(p => p[1]);
   if (day) { if (opts.resume != null) vals.push(opts.resume); if (opts.max != null) vals.push(opts.max); }
   let lo = Math.min(...vals), hi = Math.max(...vals);
-  const span = Math.max(hi - lo, 3);
-  lo -= span * 0.08; hi += span * 0.08;
+  if (day) {
+    const span = Math.max(hi - lo, 3);
+    lo -= span * 0.08; hi += span * 0.08;
+  } else {
+    // Letzte Stunde: ganze Grad ± 2 → mindestens 4 °C Spanne, auch bei konstanter Temperatur
+    lo = Math.floor(lo) - 2; hi = Math.ceil(hi) + 2;
+  }
   const sy = v => pad.t + tH - ((v - lo) / (hi - lo)) * tH;
   const bandTop = pad.t + tH + 6, bandBot = pad.t + ch;
 

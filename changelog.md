@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-11 – Wasserspeicher „Letzte Stunde": Y-Achse mit mindestens 4 °C Spanne
+
+**Anlass (User):** Bei konstanter Temperatur standen auf der Y-Achse mehrmals dieselben Werte.
+
+**Umsetzung:** In `renderStorageChart` (`web/app.js`) gilt für das Stundenfenster `min = floor(minTemp) − 2`, `max = ceil(maxTemp) + 2` (Spanne ≥ 4 °C). Das Tageschart behält die bisherige Skala. Cache-Busting `app.js?v=20261011i`.
+
 ## 2026-10-11 – Zendure SolarFlow 2400 AC: Phase 1 (nur lesen, Anzeige)
 
 **Anlass (User):** Ein Zendure SolarFlow 2400 AC (Batteriespeicher) soll lokal über die zenSDK-HTTP-API eingebunden werden. Phase 1 = Client + Anzeige, Steuerung folgt in Phase 2 nach dem Test am echten Gerät.
