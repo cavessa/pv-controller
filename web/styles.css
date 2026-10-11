@@ -1552,3 +1552,17 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 
 /* Hauptzähler-Card: volle Breite ganz unten im Dashboard */
 .dashboard-bottom { margin-top: 20px; }
+
+/* -------- Batterie-Card (Zendure) -------- */
+.zendure-card.hidden { display: none; }
+.zd-bar {
+  position: relative;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: linear-gradient(90deg, #f87171 0%, #fbbf24 35%, #34d399 70%);
+  margin-bottom: 14px;
+}
+.zd-cover { position: absolute; top: 0; right: 0; bottom: 0; width: 100%; background: #23262d; transition: width 0.5s ease; }
+.zd-minmark { position: absolute; top: -2px; bottom: -2px; width: 2px; background: rgba(255,255,255,0.75); }
+.badge.zd-orange { color: #e8a435; border-color: rgba(232,164,53,0.4); }

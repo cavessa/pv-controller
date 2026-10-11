@@ -1,4 +1,4 @@
-"""Speicher-Verlauf: Temperatur + Heizstab-Leistung aus temp_history.json.
+"""Wasserspeicher-Verlauf: Temperatur + Heizstab-Leistung aus temp_history.json.
 
 Liefert fertig berechnete Daten (Buckets, Heizphasen, Min/Max, Steigung, ETA)
 für /api/speicher/history; das Frontend rendert nur.

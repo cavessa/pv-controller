@@ -22,6 +22,23 @@ class SolaxConfig:
 
 
 @dataclass
+class ZendureConfig:
+    """Zendure SolarFlow 2400 AC (lokale zenSDK-API)."""
+    enabled: bool = False
+    ip: str = ""
+    sn: str = ""                  # leer = aus dem Report übernehmen
+    name: str = "Batterie"
+    capacity_wh: float = 2400.0
+    max_charge_w: float = 2400.0
+    max_discharge_w: float = 2400.0
+    min_soc: float = 10.0
+    target_soc: float = 100.0
+    control_enabled: bool = False  # Master-Schalter für Phase 2 (Steuerung)
+    # Phase 2: Entladen hart sperren, solange die Wallbox lädt (alle Lademodi)
+    block_discharge_while_wallbox_charging: bool = True
+
+
+@dataclass
 class ShellyConfig:
     ph1_url: str
     ph2_url: str
@@ -175,10 +192,22 @@ class Config:
     solax2: Optional[SolaxConfig] = None
     # Warnmarke für die Hausanschluss-Belastung (kW), Lastspitzen-Anzeige
     house_max_load_kw: float = 11.0
+    zendure: Optional[ZendureConfig] = None
+
+    @property
+    def zendure_active(self) -> bool:
+        return self.zendure is not None and self.zendure.enabled and bool(self.zendure.ip)
 
     @property
     def solax2_active(self) -> bool:
         return self.solax2 is not None and self.solax2.enabled and bool(self.solax2.url)
+
+
+def parse_zendure(raw: dict) -> Optional[ZendureConfig]:
+    block = raw.get("zendure")
+    if not block:
+        return None
+    return ZendureConfig(**{k: v for k, v in block.items() if k in ZendureConfig.__dataclass_fields__})
 
 
 def parse_solax2(raw: dict) -> Optional[SolaxConfig]:
@@ -217,4 +246,5 @@ def load_config(path: str | Path) -> Config:
         }),
         solax2=parse_solax2(raw),
         house_max_load_kw=float(raw.get("house_max_load_kw", 11.0)),
+        zendure=parse_zendure(raw),
     )

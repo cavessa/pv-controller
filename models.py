@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 
 class PhaseAction(str, Enum):
@@ -47,6 +47,7 @@ class Readings:
     solax_grid_in_kwh: Optional[float] = None
     main_import_wh: Optional[float] = None
     main_export_wh: Optional[float] = None
+    zendure: Optional[Any] = None  # ZendureStatus oder None (aus / nicht erreichbar)
     main_meter_power_w: Optional[float] = None
     heater_meter_power_w: Optional[float] = None
     storage_temp_c: Optional[float] = None

@@ -26,6 +26,7 @@ from typing import Optional
 
 from clients.goe_client import GoeClient, GoeError
 from clients.solax_client import SolaxClient
+from clients.zendure_client import ZendureClient
 from clients.shelly_client import (
     Shelly3EMClient,
     ShellyPlugClient,
@@ -83,6 +84,9 @@ class Controller:
             self.solax2 = SolaxClient(
                 config.solax2.url, config.solax2.pwd, config.runtime.request_timeout_seconds
             )
+        self.zendure: Optional[ZendureClient] = None
+        if config.zendure_active:
+            self.zendure = ZendureClient(config.zendure.ip, config.zendure.sn)
         timeout = config.runtime.request_timeout_seconds
         self.ph1 = ShellyPlugClient(
             config.shelly.ph1_url,
@@ -155,6 +159,20 @@ class Controller:
         if r.pv_power_w is not None:
             r.pv_power_w += d.pv_total_w
 
+    def _read_zendure(self, r: Readings) -> None:
+        """Batterie lesen (nicht kritisch: Fehler -> None, kein Fail-safe)."""
+        if self.zendure is None:
+            return
+        try:
+            st = self.zendure.get_status()
+            if st is None:
+                return
+            r.zendure = st
+            from db import record_zendure
+            record_zendure(st.soc, st.charge_w, st.discharge_w)
+        except Exception:
+            log.warning("Zendure-Lesen fehlgeschlagen", exc_info=True)
+
     def _read_all(self) -> Readings:
         if self.cfg.simulation.enabled:
             return self._read_simulated()
@@ -176,6 +194,7 @@ class Controller:
             except Exception:
                 log.warning("Solax-Tageszähler nicht lesbar", exc_info=True)
         self._read_pergola(r)
+        self._read_zendure(r)
 
         r.main_meter_power_w = self.main_meter.get_total_power_w()
         if r.main_meter_power_w is None:
@@ -428,7 +447,7 @@ class Controller:
 
         if temp < sm.min_temp:
             reason = (
-                f"Sommermodus: Speicher {temp:.1f} °C < Minimum {sm.min_temp:.0f} °C "
+                f"Sommermodus: Wasserspeicher {temp:.1f} °C < Minimum {sm.min_temp:.0f} °C "
                 f"– alle 3 Phasen aus Netz"
             )
             log.info("SOMMERMODUS: %s", reason)
@@ -564,7 +583,7 @@ class Controller:
         seinen eigenen Hauszähler den echten Hausverbrauch inkl. Heizstab
         und drosselt/pausiert seinen Ladestrom von selbst, sobald der
         Heizstab eine Phase zuschaltet und dadurch weniger Überschuss
-        übrig bleibt. Priorität Speicher vor Wallbox ergibt sich also
+        übrig bleibt. Priorität Wasserspeicher vor Wallbox ergibt sich also
         automatisch daraus, dass der Heizstab zuerst zuschaltet – ohne
         dass der Controller dafür extra frc=1 setzen muss (das
         `frc`-Umschalten war genau der Grund für die Ladeprobleme am
@@ -1028,7 +1047,7 @@ class Controller:
             "Überschuss o. Heizstab+Wallbox: %s",
             fmt(r.true_surplus_w, " W"),
         )
-        log.info("Speicher-Temp:      %s", fmt(r.storage_temp_c, " °C"))
+        log.info("Wasserspeicher-Temp:      %s", fmt(r.storage_temp_c, " °C"))
         log.info(
             "Temperaturstatus:   %s",
             temp_status.value if temp_status is not None else "n/a",

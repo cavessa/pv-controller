@@ -49,6 +49,7 @@ def _log_hourly(result: ControllerResult) -> None:
     r = result.readings
     if r.pv_power_w is None:
         return
+    zd = r.zendure
 
     pv2_w = _pergola_w(result)
     feed_in_w = int(sc._signed16(raw[34]))
@@ -73,6 +74,9 @@ def _log_hourly(result: ControllerResult) -> None:
         heater_w=heater_w,
         wallbox_w=wallbox_w,
         pv2_w=pv2_w,
+        zendure_soc=zd.soc if zd is not None else None,
+        zendure_charge_w=int(zd.charge_w) if zd is not None else None,
+        zendure_discharge_w=int(zd.discharge_w) if zd is not None else None,
     )
 
 
@@ -140,10 +144,13 @@ def _log_daily(result: ControllerResult) -> None:
     if mt is not None and mt["source"] == "shelly":
         feed_out_kwh, feed_in_kwh = mt["einspeisung_kwh"], mt["bezug_kwh"]
 
+    zen = db.get_zendure_energy(today)
     db.log_daily_summary(
         date_str=today,
         pv_kwh=pv_kwh,
         pv2_kwh=pv2_kwh,
+        zendure_charged_kwh=zen["charged_kwh"],
+        zendure_discharged_kwh=zen["discharged_kwh"],
         feed_out_kwh=feed_out_kwh,
         feed_in_kwh=feed_in_kwh,
         sunshine_h=today_weather.get("sunshine_hours") if today_weather else None,

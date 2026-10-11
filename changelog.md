@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-10-11 – Zendure SolarFlow 2400 AC: Phase 1 (nur lesen, Anzeige)
+
+**Anlass (User):** Ein Zendure SolarFlow 2400 AC (Batteriespeicher) soll lokal über die zenSDK-HTTP-API eingebunden werden. Phase 1 = Client + Anzeige, Steuerung folgt in Phase 2 nach dem Test am echten Gerät.
+
+**Umsetzung:**
+- `clients/zendure_client.py`: `get_status()` (GET `/properties/report`, Timeout 3 s, 20 s Backoff nach Fehler, `None` = nicht erreichbar, kein Fail-safe), `test_connection()`, `set_mode()` (mit `smartMode=1`, vorbereitet, noch ungenutzt). Laden = `outputPackPower`, Entladen = `packInputPower`; der Zustand wird aus den Leistungen abgeleitet, nicht aus `packState`. Temperatur: `hyperTmp` wird als Kelvin×10 gedeutet (> 1000 → (v − 2731)/10). `acMode`-Konstanten (1 = Laden, 2 = Entladen) sind unverifiziert.
+- Config: Block `zendure` (`enabled`, `ip`, `sn`, `name`, `capacity_wh`, `max_charge_w`, `max_discharge_w`, `min_soc`, `target_soc`, `control_enabled`, `block_discharge_while_wallbox_charging`) statt flacher `zendure_*`-Schlüssel; Standard aus. `control_enabled=true` wird noch abgelehnt (Phase 2). Settings → „Batteriespeicher (Zendure SolarFlow)" mit „Verbindung testen" (SoC, Leistung, SN, Produkt, Version, `packState`).
+- Daten: Tabelle `zendure_min` (Minutenwerte SoC/Laden/Entladen); `pv_hourly_log` + `zendure_soc/charge_w/discharge_w`; `pv_daily_log` + `zendure_charged_kwh/discharged_kwh`. Tagesenergie = Minutenmittel × 1 min aufsummiert. API: `/api/status` → `zendure`, `GET /api/zendure/history`, `POST /api/zendure/test`.
+- Dashboard: Card „Batterie" unter „Wasserspeicher" (SoC groß, Balken rot→grün mit Mindest-SoC-Marke, Status-Badge, geladen/entladen heute, Temperatur, SoC-Verlauf) und Energiefluss-Knoten „BATTERIE" (zwischen Wasserspeicher und Wallbox; Laden Haus → Batterie, Entladen Batterie → Haus, Standby gedimmt). Beide nur sichtbar bei `zendure.enabled`.
+- Zusatzregel (Phase 2) schon als Setting angelegt: `block_discharge_while_wallbox_charging` (Default an) – Entladen sperren, solange die Wallbox lädt (alle Lademodi).
+
+**Abweichungen:** SoC-Chart als eigenes SVG (keine Chart.js, wie die übrigen Charts); Knoten zeigt „73 %" mit Untertitel „lädt 1,20 kW" statt „73 % · 420 W".
+
+**Test:** Gegen einen Fake-zenSDK-Server (laden 1200 W / entladen 420 W / Standby) in einer Projektkopie auf Port 8001 im Headless-Browser geprüft. Dabei aufgefallen und behoben: die Card-Funktionen fehlten wegen der Umbenennung „Speicher → Wasserspeicher" an der Einfügemarke zunächst in `app.js`. **Nicht gegen das echte Gerät getestet.** Cache-Busting `app.js?v=20261011h`, `styles.css?v=60`.
+
+**Hinweis:** Dienst neu starten (neue Config-Felder, API, Tabellen).
+
+## 2026-10-11 – „Speicher" heißt überall „Wasserspeicher"
+
+**Anlass (User):** Alles, was „Speicher" heißt, soll in „Wasserspeicher" umbenannt werden (Abgrenzung zu einem Batteriespeicher).
+
+**Umsetzung:** Nur sichtbare Texte: Dashboard und Settings (`web/index.html`, `web/app.js`: Karten-Titel „Wasserspeicher · heute/· 7 Tage/· letzte Stunde", Energiefluss-Knoten „WASSERSPEICHER" – bei langen Labels etwas kleinere Schrift –, Status „Wasserspeicher lädt/bereit", Settings-Labels), die Entscheidungstexte (`web.py`: „Wasserspeicher priorisiert/voll …"), die Sommermodus-Begründung und das Log (`controller.py`), die Kaskaden-Voreinstellung „Wasserspeicher (Heizstab)" (`db.py`; der vorhandene Eintrag in `cascade_devices` wurde umbenannt) sowie `README.md`. Nicht geändert: Config-Schlüssel (`storage_*`, `shelly.storage_url`), API-Pfade (`/api/speicher/history`), Tabellen und Code-Bezeichner sowie ältere Changelog-Einträge. `app.js?v=20261011f`.
+
+**Hinweis:** Dienst neu starten (Texte in `web.py`/`controller.py`).
+
 ## 2026-10-11 – PV-Balken: eigene Skala je String (STR1 11,5 kW, STR2 6,5 kW)
 
 **Anlass (User):** Maximalwerte der Strings sind STR1 11500 W und STR2 6500 W; die Balken sollen darauf skaliert werden (statt beide auf 10 kW).

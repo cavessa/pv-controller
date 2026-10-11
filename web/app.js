@@ -80,8 +80,12 @@ async function api(path, opts = {}) {
 }
 
 // ---------- render ----------
+let lastZendure = null;
+
 function renderStatus(s) {
   hideError();
+  lastZendure = s.zendure ?? null;
+  renderZendureCard(lastZendure);
 
   // pills
   $("#pill-enabled").textContent = "Automatik: " + (s.runtime.enabled ? "aktiv" : "aus");
@@ -121,7 +125,7 @@ function renderStatus(s) {
   const h = s.heater;
   renderPvNetz(h, s.wallbox);
 
-  // Speicher
+  // Wasserspeicher
   const heaterAktiv = (h.heater_meter_power ?? 0) > 50
     || ["ph1","ph2","ph3"].some(k => h.phases?.[k] === true);
   $("#m-temp").textContent       = fmtTemp(h.storage_temp);
@@ -153,7 +157,7 @@ function renderStatus(s) {
   // active card glow
   storageDot.closest?.(".card")?.classList.toggle("active-storage", storageHeating);
 
-  // Sommermodus-Hinweis in Speicher-Card
+  // Sommermodus-Hinweis in Wasserspeicher-Card
   const summerHint = $("#summer-mode-hint");
   if (summerHint) {
     if (sm.enabled) {
@@ -310,13 +314,13 @@ function renderStatus(s) {
 
   const wbCard = document.getElementById("wallbox-card");
   if (wbCard) wbCard.style.display = wb.enabled ? "" : "none";
-  renderEnergyFlow(h, wb, lastCascadeStatus);
+  renderEnergyFlow(h, wb, lastCascadeStatus, lastZendure);
 }
 
 // ══════════════════════════════════════════════════════════════════
 // Energiefluss – haus-zentriertes Layout
 // ══════════════════════════════════════════════════════════════════
-function renderEnergyFlow(heater, wb, cs) {
+function renderEnergyFlow(heater, wb, cs, zd) {
   const el = document.getElementById("flow-diagram");
   if (!el) return;
 
@@ -374,11 +378,24 @@ function renderEnergyFlow(heater, wb, cs) {
   const bots = [];
   const speicherStatusLabel = st => translateStatus(st);
   bots.push({
-    icon: "🌡️", label: "SPEICHER",
+    icon: "🌡️", label: "WASSERSPEICHER",
     value: heater.storage_temp != null ? fmtTemp(heater.storage_temp) : "–",
     sub: speicherStatusLabel(heater.temperature_status),
     aktiv: heatOn, flow: heatOn,
   });
+  if (zd?.enabled) {
+    // Batterie: Laden = Linie Haus → Batterie, Entladen = Batterie → Haus
+    const ch = zd.charge_w ?? 0, dis = zd.discharge_w ?? 0;
+    const st = zd.state;
+    const pw = st === "charging" ? ch : st === "discharging" ? dis : 0;
+    bots.push({
+      icon: "🔋", label: (zd.name || "Batterie").toUpperCase().slice(0, 12),
+      value: !zd.reachable ? "n/a" : zd.soc != null ? Math.round(zd.soc) + " %" : "–",
+      sub: !zd.reachable ? "offline" : st === "charging" ? `lädt ${kwOrW(pw)}` : st === "discharging" ? `entlädt ${kwOrW(pw)}` : "Standby",
+      aktiv: st === "charging" || st === "discharging", flow: st === "charging" || st === "discharging",
+      rev: st === "discharging",
+    });
+  }
   if (wb.enabled) {
     let wbV = "–", wbS = "";
     if (wbSt.frc != null) {
@@ -430,7 +447,7 @@ function renderEnergyFlow(heater, wb, cs) {
     return `<g transform="translate(${x},${y})"${op}>
   <rect width="${w}" height="${nh}" rx="10" fill="${bg}" stroke="${bdr}" stroke-width="1.5"/>
   <text x="${w/2}" y="16" text-anchor="middle" font-size="14" font-family="'DM Mono',monospace">${icon}</text>
-  <text x="${w/2}" y="27" text-anchor="middle" font-size="6.5" fill="rgba(255,255,255,0.5)" letter-spacing="1" font-family="'DM Mono',monospace">${esc(label)}</text>
+  <text x="${w/2}" y="27" text-anchor="middle" font-size="${label.length > 11 ? 5.4 : 6.5}" fill="rgba(255,255,255,0.5)" letter-spacing="${label.length > 11 ? 0.4 : 1}" font-family="'DM Mono',monospace">${esc(label)}</text>
   <text x="${w/2}" y="39" text-anchor="middle" font-size="12" font-weight="700" fill="${vc}" font-family="'DM Mono',monospace">${esc(value)}</text>
   ${dots
     ? dots.map((on, i) => `<circle cx="${w/2 + (i - (dots.length - 1) / 2) * 9}" cy="${nh-8}" r="2.3" fill="${on ? accent : "none"}" stroke="${on ? accent : "rgba(255,255,255,0.4)"}" stroke-width="1"/>`).join("")
@@ -464,7 +481,10 @@ function renderEnergyFlow(heater, wb, cs) {
   const fb = bots.filter(b => b.flow);
   fb.forEach(b => {
     if (b.cx === hs.cx) {
-      conn.push(L(hs.cx, hs.by, b.cx, b.y, "down"));
+      conn.push(b.rev ? L(b.cx, b.y, hs.cx, hs.by, "down") : L(hs.cx, hs.by, b.cx, b.y, "down"));
+    } else if (b.rev) {
+      // Entladen: Pfad von der Batterie zum Haus (Animation läuft in Pfadrichtung = nach oben)
+      conn.push(`<path d="M ${b.cx} ${b.y} L ${b.cx} ${BUS_Y} L ${hs.cx} ${BUS_Y} L ${hs.cx} ${hs.by}" class="ef-line ef-down"/>`);
     } else {
       conn.push(`<path d="M ${hs.cx} ${hs.by} L ${hs.cx} ${BUS_Y} L ${b.cx} ${BUS_Y} L ${b.cx} ${b.y}" class="ef-line ef-down"/>`);
     }
@@ -2229,10 +2249,10 @@ function translateStatus(status) {
 }
 
 function storageBadge(tempStatus, heaterActive) {
-  if (heaterActive) return { label: "Speicher lädt", cls: "ok" };
+  if (heaterActive) return { label: "Wasserspeicher lädt", cls: "ok" };
   switch (tempStatus) {
     case "AT_OR_ABOVE_MAX": return { label: "Max erreicht",    cls: "warn" };
-    case "HYSTERESIS_BAND": return { label: "Speicher bereit", cls: "ok" };
+    case "HYSTERESIS_BAND": return { label: "Wasserspeicher bereit", cls: "ok" };
     case "BELOW_RESUME":    return { label: "Wartet auf PV",   cls: "" };
     default:                return { label: translateStatus(tempStatus) ?? "–", cls: "" };
   }
@@ -2422,7 +2442,63 @@ function renderHouseMonthChart(d) {
   }
 }
 
-// ---------- Speicher: Tagesverlauf + letzte Stunde + 7 Tage ----------
+// ---------- Batterie (Zendure SolarFlow) ----------
+function renderZendureCard(z) {
+  const card = document.getElementById("zendure-card");
+  if (!card) return;
+  const on = z?.enabled === true;
+  card.classList.toggle("hidden", !on);
+  if (!on) return;
+  $("#zd-title").textContent = z.name || "Batterie";
+  const dot = $("#zd-dot");
+  dot.className = "dot " + (z.reachable ? (z.state === "standby" ? "off" : "on") : "off");
+
+  $("#zd-soc").textContent = z.soc != null ? `${Math.round(z.soc)} %` : "–";
+  const soc = Math.max(0, Math.min(100, z.soc ?? 0));
+  $("#zd-cover").style.width = (100 - soc) + "%";
+  $("#zd-minmark").style.left = (z.min_soc ?? 0) + "%";
+
+  const kw = w => w >= 1000 ? (w / 1000).toFixed(2) + " kW" : Math.round(w) + " W";
+  const st = $("#zd-status");
+  if (!z.reachable) { st.textContent = "nicht erreichbar"; st.className = "badge error"; }
+  else if (z.state === "charging") { st.textContent = `lädt ${kw(z.charge_w)}`; st.className = "badge ok"; }
+  else if (z.state === "discharging") { st.textContent = `entlädt ${kw(z.discharge_w)}`; st.className = "badge warn zd-orange"; }
+  else { st.textContent = "Standby"; st.className = "badge"; }
+
+  const k = v => v == null ? "–" : v.toFixed(1) + " kWh";
+  $("#zd-charged").textContent = k(z.charged_kwh);
+  $("#zd-discharged").textContent = k(z.discharged_kwh);
+  $("#zd-temp").textContent = z.temp_c != null ? Math.round(z.temp_c) + " °C" : "–";
+}
+
+async function loadZendureChart() {
+  const wrap = document.getElementById("zd-chart-wrap");
+  const card = document.getElementById("zendure-card");
+  if (!wrap || !card || card.classList.contains("hidden")) return;
+  const d = await api("/api/zendure/history");
+  const pts = (d.points || []).filter(p => p[1] != null);
+  if (pts.length < 2) { wrap.innerHTML = '<div class="chart-empty">Noch keine Verlaufsdaten.</div>'; return; }
+  const VW = 360, VH = 110;
+  const pad = { l: 30, r: 8, t: 8, b: 18 };
+  const cw = VW - pad.l - pad.r, ch = VH - pad.t - pad.b;
+  const sx = m => pad.l + (m / 1440) * cw, sy = v => pad.t + ch - (v / 100) * ch;
+  let g = "";
+  for (const v of [0, 50, 100]) {
+    g += `<line x1="${pad.l}" y1="${sy(v)}" x2="${pad.l + cw}" y2="${sy(v)}" class="grid-line"/>`;
+    g += `<text x="${pad.l - 4}" y="${sy(v)}" text-anchor="end" dominant-baseline="middle" font-size="8">${v}%</text>`;
+  }
+  for (let h = 0; h <= 24; h += 4) {
+    g += `<text x="${sx(h * 60)}" y="${VH - 4}" text-anchor="${h === 24 ? "end" : h === 0 ? "start" : "middle"}" font-size="8">${h}h</text>`;
+  }
+  const line = pts.map((p, i) => `${i ? "L" : "M"}${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`).join(" ");
+  const last = pts[pts.length - 1];
+  g += `<path d="${line} L${sx(last[0]).toFixed(1)},${sy(0)} L${sx(pts[0][0]).toFixed(1)},${sy(0)} Z" fill="rgba(167,139,250,0.18)" stroke="none"/>`;
+  g += `<path d="${line}" fill="none" stroke="#a78bfa" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  g += `<circle cx="${sx(last[0]).toFixed(1)}" cy="${sy(last[1]).toFixed(1)}" r="3.5" fill="#a78bfa" stroke="#14161b" stroke-width="1.5"/>`;
+  wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">${g}</svg>`;
+}
+
+// ---------- Wasserspeicher: Tagesverlauf + letzte Stunde + 7 Tage ----------
 let storageRange = "24h";
 try { storageRange = localStorage.getItem("storageRange") || "24h"; } catch (e) { /* ohne Storage */ }
 if (!["1h", "24h", "7d"].includes(storageRange)) storageRange = "24h";
@@ -2631,7 +2707,7 @@ function storage7dSvg(opts) {
 
 function renderStorage(d) {
   const title = $("#storage-title");
-  if (title) title.textContent = storageRange === "7d" ? "Speicher · 7 Tage" : storageRange === "1h" ? "Speicher · letzte Stunde" : "Speicher · heute";
+  if (title) title.textContent = storageRange === "7d" ? "Wasserspeicher · 7 Tage" : storageRange === "1h" ? "Wasserspeicher · letzte Stunde" : "Wasserspeicher · heute";
   // Umschalter
   $$("#storage-range button").forEach(b => b.classList.toggle("on", b.dataset.range === storageRange));
 
@@ -2923,6 +2999,7 @@ async function refreshStatus() {
     const history = await historyP;
     loadStorage().catch(() => {});
     loadHouseDash().catch(() => {});
+    loadZendureChart().catch(() => {});
   } catch (e) {
     showError("Status-Abfrage fehlgeschlagen: " + e.message);
   }
@@ -2947,6 +3024,7 @@ async function runOnce() {
     renderSolax(effectiveSolax);
     loadStorage().catch(() => {});
     loadHouseDash().catch(() => {});
+    loadZendureChart().catch(() => {});
     api("/api/temp-history").then(h => {
       renderWbChart(h.entries);
     }).catch(() => {});
@@ -3015,6 +3093,17 @@ async function loadSettings() {
     setFormValue(f, "auth.user", lastConfig.auth_user ?? "admin");
     // Passwort-Feld bewusst leer lassen
     setFormValue(f, "house.max_load_kw", lastConfig.house_max_load_kw ?? 11);
+    const zc = lastConfig.zendure ?? {};
+    setFormValue(f, "zendure.enabled", zc.enabled ?? false);
+    setFormValue(f, "zendure.ip", zc.ip ?? "");
+    setFormValue(f, "zendure.sn", zc.sn ?? "");
+    setFormValue(f, "zendure.name", zc.name ?? "Batterie");
+    setFormValue(f, "zendure.capacity_wh", zc.capacity_wh ?? 2400);
+    setFormValue(f, "zendure.max_charge_w", zc.max_charge_w ?? 2400);
+    setFormValue(f, "zendure.max_discharge_w", zc.max_discharge_w ?? 2400);
+    setFormValue(f, "zendure.min_soc", zc.min_soc ?? 10);
+    setFormValue(f, "zendure.target_soc", zc.target_soc ?? 100);
+    setFormValue(f, "zendure.block_discharge_while_wallbox_charging", zc.block_discharge_while_wallbox_charging ?? true);
     setFormValue(f, "location.latitude",  lastConfig.latitude  ?? "");
     setFormValue(f, "location.longitude", lastConfig.longitude ?? "");
     setFormValue(f, "location.name",      lastConfig.location_name ?? "");
@@ -3109,6 +3198,18 @@ async function saveSettings(e) {
     },
     house: {
       max_load_kw: numField("house.max_load_kw"),
+    },
+    zendure: {
+      enabled: boolField("zendure.enabled"),
+      ip: f.elements.namedItem("zendure.ip")?.value?.trim(),
+      sn: f.elements.namedItem("zendure.sn")?.value?.trim(),
+      name: strField("zendure.name"),
+      capacity_wh: numField("zendure.capacity_wh"),
+      max_charge_w: numField("zendure.max_charge_w"),
+      max_discharge_w: numField("zendure.max_discharge_w"),
+      min_soc: numField("zendure.min_soc"),
+      target_soc: numField("zendure.target_soc"),
+      block_discharge_while_wallbox_charging: boolField("zendure.block_discharge_while_wallbox_charging"),
     },
     location: {
       latitude:  numField("location.latitude"),
@@ -3211,12 +3312,38 @@ async function testSolax2() {
   }
 }
 
+// Verbindungstest Zendure mit den Formularwerten (ungespeichert)
+async function testZendure() {
+  const f = $("#settings-form");
+  const msg = $("#zendure-test-msg");
+  const btn = $("#zendure-test-btn");
+  const ip = f.elements.namedItem("zendure.ip")?.value?.trim();
+  if (!ip) { msg.textContent = "IP eintragen."; msg.className = "form-msg error"; return; }
+  btn.disabled = true;
+  msg.textContent = "teste …"; msg.className = "form-msg";
+  try {
+    const r = await api("/api/zendure/test", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ip, sn: f.elements.namedItem("zendure.sn")?.value?.trim() ?? "" }),
+    });
+    const ac = r.state === "charging" ? `lädt ${Math.round(r.charge_w)} W` : r.state === "discharging" ? `entlädt ${Math.round(r.discharge_w)} W` : "Standby";
+    msg.textContent = `OK – SoC ${r.soc ?? "?"} %, ${ac}${r.temp_c != null ? ", " + r.temp_c + " °C" : ""} · SN ${r.sn ?? "?"} · ${r.product ?? "?"} v${r.version ?? "?"} · packState=${r.pack_state ?? "?"}`;
+    msg.className = "form-msg ok";
+  } catch (e) {
+    msg.textContent = "Fehler: " + e.message;
+    msg.className = "form-msg error";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // ---------- boot ----------
 function boot() {
   $$(".tab").forEach(t => t.addEventListener("click", () => activateTab(t.dataset.tab)));
   $("#btn-run").addEventListener("click", runOnce);
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#solax2-test-btn")?.addEventListener("click", testSolax2);
+  $("#zendure-test-btn")?.addEventListener("click", testZendure);
   $$("#storage-range button").forEach(b => b.addEventListener("click", () => setStorageRange(b.dataset.range)));
   $("#btn-logs-refresh").addEventListener("click", refreshLogs);
   $("#log-lines").addEventListener("change", refreshLogs);

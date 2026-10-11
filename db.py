@@ -125,6 +125,16 @@ def init_pv_logging_tables() -> None:
                 phases INTEGER
             )
         """)
+        # Zendure-Batterie pro Minute: SoC und mittlere Lade-/Entladeleistung
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS zendure_min (
+                ts           TEXT PRIMARY KEY,   -- YYYY-MM-DD HH:MM
+                soc          REAL,
+                charge_w     REAL NOT NULL,
+                discharge_w  REAL NOT NULL,
+                n            INTEGER NOT NULL
+            )
+        """)
         # Hauptzähler-Leistung (Shelly) pro Minute: Mittel/Max/Min der Messungen
         conn.execute("""
             CREATE TABLE IF NOT EXISTS main_meter_min (
@@ -155,7 +165,10 @@ def init_pv_logging_tables() -> None:
             ("storage_temp_c", "REAL"),
             ("heater_w",       "INTEGER"),
             ("wallbox_w",      "INTEGER"),
-            ("pv2_w",          "INTEGER"),  # Pergola-PV (Solax 2)
+            ("pv2_w",          "INTEGER"),
+            ("zendure_soc",         "REAL"),
+            ("zendure_charge_w",    "INTEGER"),
+            ("zendure_discharge_w", "INTEGER"),  # Pergola-PV (Solax 2)
         ):
             try:
                 conn.execute(
@@ -206,7 +219,9 @@ def init_pv_logging_tables() -> None:
         """)
         for col, definition in (
             ("forecast_ghi", "REAL"),
-            ("pv2_kwh", "REAL"),  # Pergola-PV-Anteil an pv_kwh
+            ("pv2_kwh", "REAL"),
+            ("zendure_charged_kwh",    "REAL"),
+            ("zendure_discharged_kwh", "REAL"),  # Pergola-PV-Anteil an pv_kwh
         ):
             try:
                 conn.execute(
@@ -235,6 +250,9 @@ def log_hourly_snapshot(
     heater_w: Optional[int] = None,
     wallbox_w: Optional[int] = None,
     pv2_w: Optional[int] = None,
+    zendure_soc: Optional[float] = None,
+    zendure_charge_w: Optional[int] = None,
+    zendure_discharge_w: Optional[int] = None,
 ) -> None:
     ratio = round(str1_w / str2_w, 3) if str2_w > 0 else None
     ts = datetime.now().strftime("%Y-%m-%d %H:00")
@@ -243,11 +261,13 @@ def log_hourly_snapshot(
             """INSERT OR REPLACE INTO pv_hourly_log
                (timestamp, pv_w, feed_in_w, consumption_w,
                 str1_w, str2_w, str1_v, str1_a, str2_v, str2_a, string_ratio,
-                storage_temp_c, heater_w, wallbox_w, pv2_w)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                storage_temp_c, heater_w, wallbox_w, pv2_w,
+                zendure_soc, zendure_charge_w, zendure_discharge_w)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (ts, pv_w, feed_in_w, consumption_w,
              str1_w, str2_w, str1_v, str1_a, str2_v, str2_a, ratio,
-             storage_temp_c, heater_w, wallbox_w, pv2_w),
+             storage_temp_c, heater_w, wallbox_w, pv2_w,
+             zendure_soc, zendure_charge_w, zendure_discharge_w),
         )
 
 
@@ -257,6 +277,8 @@ def log_daily_summary(
     cloud_cover_pct: float | None = None, temp_avg_c: float | None = None,
     forecast_kwh: float | None = None, forecast_ghi: float | None = None,
     pv2_kwh: float | None = None,
+    zendure_charged_kwh: float | None = None,
+    zendure_discharged_kwh: float | None = None,
 ) -> None:
     """pv_kwh ist die Gesamt-Erzeugung (inkl. Pergola); pv2_kwh nur dessen Anteil."""
     selfuse = max(0.0, pv_kwh - feed_out_kwh)
@@ -269,12 +291,13 @@ def log_daily_summary(
                (date, pv_kwh, feed_out_kwh, feed_in_kwh,
                 selfuse_kwh, selfuse_pct, autarky_pct,
                 sunshine_h, ghi_kwh_m2, cloud_cover_pct, temp_avg_c, forecast_kwh, forecast_ghi,
-                pv2_kwh)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                pv2_kwh, zendure_charged_kwh, zendure_discharged_kwh)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (date_str, round(pv_kwh, 2), round(feed_out_kwh, 2), round(feed_in_kwh, 2),
              round(selfuse, 2), selfuse_pct, autarky_pct,
              sunshine_h, ghi_kwh_m2, cloud_cover_pct, temp_avg_c, forecast_kwh, forecast_ghi,
-             None if pv2_kwh is None else round(pv2_kwh, 2)),
+             None if pv2_kwh is None else round(pv2_kwh, 2),
+             zendure_charged_kwh, zendure_discharged_kwh),
         )
 
 
@@ -362,6 +385,51 @@ def record_main_meter(power_w: float) -> None:
             conn.execute("DELETE FROM main_meter_min WHERE ts < date('now', '-35 days')")
     if power_w > 0:
         update_house_peak(power_w)
+
+
+def record_zendure(soc, charge_w: float, discharge_w: float) -> None:
+    """Zendure-Messwert in die Minutenwerte einrechnen (Mittel der Leistungen)."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """INSERT INTO zendure_min (ts, soc, charge_w, discharge_w, n) VALUES (?,?,?,?,1)
+               ON CONFLICT(ts) DO UPDATE SET
+                 soc = excluded.soc,
+                 charge_w = (charge_w * n + excluded.charge_w) / (n + 1),
+                 discharge_w = (discharge_w * n + excluded.discharge_w) / (n + 1),
+                 n = n + 1""",
+            (ts, soc, charge_w, discharge_w),
+        )
+        if ts.endswith(":00"):
+            conn.execute("DELETE FROM zendure_min WHERE ts < date('now', '-35 days')")
+
+
+def get_zendure_day(date_str: str) -> list[list]:
+    """[[Minute, SoC, Laden W, Entladen W], …] eines Tages."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT ts, soc, charge_w, discharge_w FROM zendure_min WHERE ts LIKE ? ORDER BY ts",
+            (date_str + " %",),
+        ).fetchall()
+    return [
+        [int(r[0][11:13]) * 60 + int(r[0][14:16]), r[1], round(r[2]), round(r[3])]
+        for r in rows
+    ]
+
+
+def get_zendure_energy(date_str: str) -> dict:
+    """Geladen/Entladen (kWh) eines Tages: Minutenmittel × 1 min aufsummiert."""
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT SUM(charge_w), SUM(discharge_w), COUNT(*) FROM zendure_min WHERE ts LIKE ?",
+            (date_str + " %",),
+        ).fetchone()
+    if not row or not row[2]:
+        return {"charged_kwh": None, "discharged_kwh": None}
+    return {
+        "charged_kwh": round(row[0] / 60000.0, 2),
+        "discharged_kwh": round(row[1] / 60000.0, 2),
+    }
 
 
 def get_main_meter_day(date_str: str) -> list[list]:
@@ -828,7 +896,7 @@ def init_cascade_tables() -> None:
             INSERT OR IGNORE INTO cascade_devices
                 (id, name, type, power_watts, priority)
             VALUES
-                ('heizstab', 'Speicher (Heizstab)', 'heizstab', 1500, 1),
+                ('heizstab', 'Wasserspeicher (Heizstab)', 'heizstab', 1500, 1),
                 ('wallbox',  'Wallbox',              'wallbox',  2300, 2)
         """)
 

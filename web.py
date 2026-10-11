@@ -223,24 +223,24 @@ def _summary(result: ControllerResult, cfg: Config) -> dict[str, str]:
         )
         severity = "warn"
     elif result.temp_status is TempStatus.AT_OR_ABOVE_MAX:
-        state = "Speicher voll"
+        state = "Wasserspeicher voll"
         reason = (
-            f"Speicher {temp:.1f} °C ≥ {cfg.heater.storage_max_temp:.0f} °C. "
+            f"Wasserspeicher {temp:.1f} °C ≥ {cfg.heater.storage_max_temp:.0f} °C. "
             "Heizstab aus."
         )
         severity = "ok"
     elif result.temp_status is TempStatus.HYSTERESIS_BAND:
         state = "Hysterese"
         reason = (
-            f"Speicher {temp:.1f} °C im Hysteresefenster "
+            f"Wasserspeicher {temp:.1f} °C im Hysteresefenster "
             f"({cfg.heater.heat_resume_temp:.0f}–{cfg.heater.storage_max_temp:.0f} °C). "
             "Keine neuen Phasen."
         )
         severity = "ok"
     else:  # BELOW_RESUME
-        state = "Speicher priorisiert"
+        state = "Wasserspeicher priorisiert"
         reason = (
-            f"Speicher {temp:.1f} °C unter "
+            f"Wasserspeicher {temp:.1f} °C unter "
             f"{cfg.heater.heat_resume_temp:.0f} °C. "
             "Heizstab darf per PV-Überschuss laden."
         )
@@ -262,6 +262,33 @@ def _summary(result: ControllerResult, cfg: Config) -> dict[str, str]:
 
 
 from meter import compute_meter_today  # noqa: E402
+
+
+def _zendure_status_block(cfg: Config, r) -> dict[str, Any]:
+    """Batterie für das Dashboard; enabled=False wenn nicht konfiguriert."""
+    z = cfg.zendure
+    if not cfg.zendure_active:
+        return {"enabled": False}
+    from db import get_zendure_energy
+    energy = get_zendure_energy(datetime.now().strftime("%Y-%m-%d"))
+    st = r.zendure
+    return {
+        "enabled": True,
+        "name": z.name,
+        "reachable": st is not None,
+        "state": st.state if st is not None else "unreachable",
+        "soc": st.soc if st is not None else None,
+        "charge_w": st.charge_w if st is not None else None,
+        "discharge_w": st.discharge_w if st is not None else None,
+        "grid_in_w": st.grid_in_w if st is not None else None,
+        "home_out_w": st.home_out_w if st is not None else None,
+        "temp_c": st.temp_c if st is not None else None,
+        "min_soc": z.min_soc,
+        "target_soc": z.target_soc,
+        "capacity_wh": z.capacity_wh,
+        "control_enabled": z.control_enabled,
+        **energy,
+    }
 
 
 def _house_peak_today() -> dict[str, Any]:
@@ -322,6 +349,7 @@ def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
         },
         "summary": _summary(result, cfg),
         "meter_today": compute_meter_today(r),
+        "zendure": _zendure_status_block(cfg, r),
         "house_peak_watts": hp["peak_w"],
         "house_peak_time": hp["peak_time"],
     }
@@ -458,12 +486,42 @@ def api_run_once(response: Response) -> dict[str, Any]:
     return _serialize_status(result, cfg)
 
 
+class ZendureTestRequest(BaseModel):
+    ip: str
+    sn: str = ""
+
+
+@app.post("/api/zendure/test")
+def api_zendure_test(req: ZendureTestRequest, response: Response) -> dict[str, Any]:
+    """Verbindungstest mit den (noch ungespeicherten) Formularwerten."""
+    response.headers["Cache-Control"] = "no-store"
+    if not req.ip.strip():
+        raise HTTPException(400, "ip must not be empty")
+    from clients.zendure_client import ZendureClient
+    res = ZendureClient(req.ip, req.sn, timeout=5.0).test_connection()
+    if not res.get("ok"):
+        raise HTTPException(503, res.get("error", "Zendure nicht erreichbar"))
+    return res
+
+
+@app.get("/api/zendure/history")
+def api_zendure_history(response: Response, date: Optional[str] = Query(default=None)) -> dict[str, Any]:
+    """SoC- und Leistungsverlauf eines Tages in Minutenwerten: [Minute, SoC, Laden W, Entladen W]."""
+    response.headers["Cache-Control"] = "no-store"
+    import re
+    day = date or datetime.now().strftime("%Y-%m-%d")
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", day):
+        raise HTTPException(400, "Format muss YYYY-MM-DD sein")
+    from db import get_zendure_day, get_zendure_energy
+    return {"date": day, "points": get_zendure_day(day), **get_zendure_energy(day)}
+
+
 @app.get("/api/speicher/history")
 def api_speicher_history(
     response: Response,
     range: str = Query(default="24h", pattern="^(1h|24h|7d)$"),
 ) -> dict[str, Any]:
-    """Speicher-Verlauf (Temperatur, Heizstab-Leistung, Ereignisse, Rate, ETA).
+    """Wasserspeicher-Verlauf (Temperatur, Heizstab-Leistung, Ereignisse, Rate, ETA).
 
     24h: 5-Minuten-Buckets des Tages + Stundenfenster; 1h: nur Stundenfenster
     (1-Minuten-Werte); 7d: Tageswerte (Min/Max, Heizstab-kWh).
@@ -568,6 +626,7 @@ class ConfigUpdate(BaseModel):
     location: dict[str, Any] | None = None
     summer_mode: dict[str, Any] | None = None
     house: dict[str, Any] | None = None
+    zendure: dict[str, Any] | None = None
 
 
 def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str, Any]:
@@ -708,6 +767,34 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
                 raise HTTPException(400, "location.name must be a string")
             new_cfg["location_name"] = v
 
+    if patch.zendure:
+        allowed = {"enabled", "ip", "sn", "name", "capacity_wh", "max_charge_w", "max_discharge_w",
+                   "min_soc", "target_soc", "control_enabled",
+                   "block_discharge_while_wallbox_charging"}
+        bad = set(patch.zendure) - allowed
+        if bad:
+            raise HTTPException(400, f"zendure keys not allowed: {sorted(bad)}")
+        block = new_cfg.setdefault("zendure", {})
+        for k, v in patch.zendure.items():
+            if k in {"enabled", "control_enabled", "block_discharge_while_wallbox_charging"}:
+                if not isinstance(v, bool):
+                    raise HTTPException(400, f"zendure.{k} must be boolean")
+                if k == "control_enabled" and v:
+                    raise HTTPException(400, "zendure.control_enabled: Steuerung (Phase 2) ist noch nicht implementiert")
+            elif k in {"ip", "sn", "name"}:
+                if not isinstance(v, str) or (k == "name" and not v.strip()):
+                    raise HTTPException(400, f"zendure.{k} must be a string")
+            else:
+                if not isinstance(v, (int, float)) or isinstance(v, bool):
+                    raise HTTPException(400, f"zendure.{k} must be a number")
+                lim = {"capacity_wh": (100, 100000), "max_charge_w": (0, 2400), "max_discharge_w": (0, 2400),
+                       "min_soc": (0, 50), "target_soc": (70, 100)}[k]
+                if not lim[0] <= v <= lim[1]:
+                    raise HTTPException(400, f"zendure.{k} must be between {lim[0]} and {lim[1]}")
+            block[k] = v
+        if block.get("enabled") and not block.get("ip", "").strip():
+            raise HTTPException(400, "zendure: ip erforderlich wenn aktiviert")
+
     if patch.house:
         bad = set(patch.house) - {"max_load_kw"}
         if bad:
@@ -752,6 +839,7 @@ def load_config_from_dict(raw: dict[str, Any]) -> Config:
         SummerModeConfig,
         WallboxConfig,
         parse_solax2,
+        parse_zendure,
     )
 
     return Config(
@@ -772,6 +860,7 @@ def load_config_from_dict(raw: dict[str, Any]) -> Config:
         }),
         solax2=parse_solax2(raw),
         house_max_load_kw=float(raw.get("house_max_load_kw", 11.0)),
+        zendure=parse_zendure(raw),
     )
 
 

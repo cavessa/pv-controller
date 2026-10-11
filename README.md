@@ -15,7 +15,7 @@
 - Energiefluss-Diagramm mit Haus in der Mitte – alle Flüsse auf einen Blick
 - PV-Erzeugung, Netzeinspeisung/-bezug, Hausverbrauch live
 - Eigenverbrauchsquote & Autarkiegrad als Gauges
-- Speichertemperatur mit Verlaufsgraph
+- Wasserspeichertemperatur mit Verlaufsgraph
 - Heizstab-Phasen-Visualisierung
 - Wallbox-Status und Ladehistorie
 
@@ -34,7 +34,7 @@
 **Heizstab-Steuerung (3 Phasen)**
 - Steuert bis zu 3 Shelly-Schaltrelais für den Heizstab
 - Phasenweise Zuschaltung je nach Überschuss
-- Speicher-Temperaturüberwachung mit Hysterese
+- Wasserspeicher-Temperaturüberwachung mit Hysterese
 
 **Wallbox go-eCharger**
 - Eco/PV-Überschuss-Laden
@@ -92,17 +92,17 @@ docker compose down      # Stoppen
 Pro Lauf (Cron):
 
 1. Liest OpenHAB (PV-Leistung).
-2. Liest Shelly Hauptzähler, Heizstab-3EM, Speichertemperatur,
+2. Liest Shelly Hauptzähler, Heizstab-3EM, Wasserspeichertemperatur,
    Phasenstatus PH1/PH2/PH3.
 3. Berechnet den realen Netzüberschuss ohne Heizstab:
    `surplus = main_meter_total_power - heater_meter_total_power`
    (negative Werte = Einspeisung).
-4. Klassifiziert die Speichertemperatur (`BELOW_RESUME` /
+4. Klassifiziert die Wasserspeichertemperatur (`BELOW_RESUME` /
    `HYSTERESIS_BAND` / `AT_OR_ABOVE_MAX`).
 5. Entscheidet pro Phase AN/AUS/UNCHANGED nach den Schwellen aus
    `config.json` und führt die Schaltbefehle aus.
 6. Liest den go-eCharger-Status (`fup`, `frc`, `alw`, `car`, `amp`) und
-   pausiert/freigibt die Wallbox abhängig von Speichertemperatur und
+   pausiert/freigibt die Wallbox abhängig von Wasserspeichertemperatur und
    Eco/PV-Modus.
 
 ## Aktivierung des Controllers
@@ -132,7 +132,7 @@ Der Controller kennt **keine Tageszeit-/Morgenfensterlogik** mehr. Es gibt
 genau zwei Temperaturwerte:
 
 - `storage_max_temp` – harte Obergrenze.
-- `storage_temp_hysteresis` – wie weit der Speicher abkühlen muss, bevor
+- `storage_temp_hysteresis` – wie weit der Wasserspeicher abkühlen muss, bevor
   wieder neue Phasen eingeschaltet werden dürfen.
 
 Daraus ergibt sich `heat_resume_temp = storage_max_temp - storage_temp_hysteresis`.
@@ -183,7 +183,7 @@ Bedeutung der go-e-Felder:
   Standard/Basic-Modus.
 
 Regeln: Der Controller pausiert/freigibt die Wallbox ausschließlich
-über die Speichertemperatur-Hysterese (`frc`), **nicht** über den
+über die Wasserspeichertemperatur-Hysterese (`frc`), **nicht** über den
 Live-Zustand der Heizstab-Phasen. Die Priorisierung gegenüber dem
 Heizstab und die Feinregelung des Ladestroms übernimmt der go-e im
 Eco-Modus (`lmo=4`) selbst über seinen eigenen Hauszähler — er
@@ -202,8 +202,8 @@ erst nach Aus-/Einstecken des Fahrzeugs wieder lud.
 - Dazwischen (Mittelband) → Zustand beibehalten.
 - Zusätzliches Kaskaden-Gate: Ist laut Prioritäts-Kaskade (s.o.) zu
   wenig Überschuss für die Wallbox da, pausiert sie zusätzlich –
-  unabhängig von der Speichertemperatur. Die Kaskade kann nur
-  blockieren, nie eine Pause wegen zu kaltem Speicher übersteuern.
+  unabhängig von der Wasserspeichertemperatur. Die Kaskade kann nur
+  blockieren, nie eine Pause wegen zu kaltem Wasserspeicher übersteuern.
 - `dry_run` → kein `set`-Request, nur `DRY-RUN: would set go-e
   forceState to X`.
 - `runtime.enabled = false` → keine `set`-Requests.
@@ -218,11 +218,11 @@ Empfohlene Schwellen (passen 1:1 zur Speicherlogik mit
 
 Damit ergibt sich:
 
-- Speicher `< 62 °C` → Wallbox pausieren (`frc=1`). Speicher hat
+- Wasserspeicher `< 62 °C` → Wallbox pausieren (`frc=1`). Wasserspeicher hat
   Vorrang, Heizstablogik darf parallel weiter laden.
-- Speicher `>= 63 °C` → Wallbox freigeben (`frc=0`). Speicher ist warm,
+- Wasserspeicher `>= 63 °C` → Wallbox freigeben (`frc=0`). Wasserspeicher ist warm,
   PV-Überschuss kann ans Auto.
-- Speicher `62 … 63 °C` → Wallboxzustand halten (Mittelband). Vermeidet
+- Wasserspeicher `62 … 63 °C` → Wallboxzustand halten (Mittelband). Vermeidet
   Schaltspielen genau am Übergang, an dem auch die Heizstäbe in der
   Hysterese hängen.
 
@@ -274,7 +274,7 @@ Beispiel: alle 2 Minuten ausführen.
 | `shelly.ph1_url` … `ph3_url`      | Shelly Plugs der drei Heizstab-Phasen                    |
 | `shelly.ph[1-3]_type`             | `shelly_gen1` (Default, 1 Kanal, z. B. Plug S/1PM) oder `shelly_gen2` (Plus/Pro, RPC-API) |
 | `shelly.ph[1-3]_channel`          | Kanal-Index (Default `0`). Ein Gen2-Gerät mit mehreren Kanälen (z. B. Pro 2PM) kann für zwei Phasen mit gleicher `url` und `channel` 0/1 verwendet werden |
-| `shelly.storage_url`              | Shelly Plus mit Speicher-Temp-Add-On                     |
+| `shelly.storage_url`              | Shelly Plus mit Wasserspeicher-Temp-Add-On                     |
 | `shelly.main_meter_url`           | Shelly 3EM Hauptzähler                                   |
 | `shelly.heater_meter_url`         | Shelly 3EM nur am Heizstab                               |
 | `heater.phase_power_w`            | nominale Leistung pro Phase (~1500 W)                    |
@@ -289,13 +289,13 @@ Beispiel: alle 2 Minuten ausführen.
 | `simulation.pv_power`             | simulierte PV-Leistung in W                              |
 | `simulation.main_meter_power`     | simulierte Hauptzähler-Leistung in W (negativ = Einspeisung) |
 | `simulation.heater_meter_power`   | simulierte Heizstab-Leistung in W                        |
-| `simulation.storage_temp`         | simulierte Speichertemperatur in °C                      |
+| `simulation.storage_temp`         | simulierte Wasserspeichertemperatur in °C                      |
 | `simulation.ph1_on/ph2_on/ph3_on` | simulierter Schaltzustand der Phasen                     |
 | `wallbox.enabled`                 | wenn `false`, Wallbox wird nicht angefasst               |
 | `wallbox.url`                     | Basis-URL des go-eCharger (z. B. `http://192.168.x.x`) |
 | `wallbox.only_control_when_pv_surplus_active` | wenn `true`, Wallbox nur bei `fup=true` schalten |
-| `wallbox.pause_below_storage_temp` | Speicher-Temp, unter der die Wallbox pausiert wird (`frc=1`) |
-| `wallbox.release_above_storage_temp` | Speicher-Temp, ab der die Wallbox freigegeben wird (`frc=0`) |
+| `wallbox.pause_below_storage_temp` | Wasserspeicher-Temp, unter der die Wallbox pausiert wird (`frc=1`) |
+| `wallbox.release_above_storage_temp` | Wasserspeicher-Temp, ab der die Wallbox freigegeben wird (`frc=0`) |
 | `wallbox.request_timeout_seconds` | HTTP-Timeout für go-e Requests                          |
 | `wallbox.fail_safe`               | aktuell `no_change` — bei Fehlern keine Schaltbefehle    |
 
@@ -323,7 +323,7 @@ enthält pro Lauf u. a.:
 - `Runtime: enabled=… dry_run=… simulation=…`
 - `Temperaturlogik: max=… °C, hysteresis=… °C, resume<=… °C`
 - Alle Messwerte (PV, Hauptzähler, Heizstab, Überschuss ohne Heizstab,
-  Speicher-Temp, Phasenstatus PH1/PH2/PH3)
+  Wasserspeicher-Temp, Phasenstatus PH1/PH2/PH3)
 - `Temperaturstatus: BELOW_RESUME | HYSTERESIS_BAND | AT_OR_ABOVE_MAX`
 - Pro Phase: `Decision PHx: state=… -> ACTION` plus zweite Zeile `Reason: …`
 - Wallbox-Block: `Wallbox: enabled=… url=…`, `Wallbox-Status: fup=… frc=… alw=… car=… amp=…`,

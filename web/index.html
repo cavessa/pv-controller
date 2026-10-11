@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=59">
+  <link rel="stylesheet" href="/static/styles.css?v=60">
 </head>
 <body>
   <div class="app-shell">
@@ -52,8 +52,8 @@
           <h2>Aktuelle Entscheidung</h2>
           <span class="severity-badge" id="summary-severity">…</span>
         </div>
-        <div class="decision-state" id="summary-state"><span class="skeleton">Speicher priorisiert</span></div>
-        <div class="decision-reason" id="summary-reason"><span class="skeleton">Speicher-Temperatur und PV-Überschuss werden gelesen …</span></div>
+        <div class="decision-state" id="summary-state"><span class="skeleton">Wasserspeicher priorisiert</span></div>
+        <div class="decision-reason" id="summary-reason"><span class="skeleton">Wasserspeicher-Temperatur und PV-Überschuss werden gelesen …</span></div>
       </div>
 
       <div class="card flow-card">
@@ -93,7 +93,7 @@
 
       <div class="card storage-card">
         <div class="card-head">
-          <h2><span id="storage-title">Speicher · heute</span> <span class="dot hidden" id="storage-dot"></span></h2>
+          <h2><span id="storage-title">Wasserspeicher · heute</span> <span class="dot hidden" id="storage-dot"></span></h2>
           <div class="seg" id="storage-range" role="group" aria-label="Zeitraum">
             <button type="button" data-range="1h">1 h</button>
             <button type="button" data-range="24h" class="on">24 h</button>
@@ -122,6 +122,25 @@
           <div id="storage-hour"></div>
         </div>
         <div class="storage-legend" id="storage-legend"></div>
+      </div>
+
+      <div class="card zendure-card hidden" id="zendure-card">
+        <div class="card-head">
+          <h2><span id="zd-title">Batterie</span></h2>
+          <span class="dot hidden" id="zd-dot"></span>
+        </div>
+        <div class="big-temp" id="zd-soc">–</div>
+        <div class="zd-bar">
+          <div class="zd-cover" id="zd-cover"></div>
+          <div class="zd-minmark" id="zd-minmark"></div>
+        </div>
+        <div class="kv compact">
+          <div><span>Status</span><b id="zd-status" class="badge">–</b></div>
+          <div><span>Geladen heute</span><b id="zd-charged">–</b></div>
+          <div><span>Entladen heute</span><b id="zd-discharged">–</b></div>
+          <div><span>Temperatur</span><b id="zd-temp">–</b></div>
+        </div>
+        <div id="zd-chart-wrap" class="temp-chart-wrap"></div>
       </div>
 
       <div class="card">
@@ -629,6 +648,24 @@
           </fieldset>
 
           <fieldset>
+            <legend>Batteriespeicher (Zendure SolarFlow)</legend>
+            <label class="check"><input type="checkbox" name="zendure.enabled"> Aktiviert (zendure.enabled)</label>
+            <label>IP-Adresse<input type="text" name="zendure.ip" placeholder="192.168.x.x"></label>
+            <label>Seriennummer (leer = automatisch)<input type="text" name="zendure.sn"></label>
+            <label>Bezeichnung<input type="text" name="zendure.name" placeholder="Batterie"></label>
+            <label>Kapazität (Wh)<input type="number" step="100" name="zendure.capacity_wh"></label>
+            <label>Max. Ladeleistung (W)<input type="number" step="50" min="0" max="2400" name="zendure.max_charge_w"></label>
+            <label>Max. Entladeleistung (W)<input type="number" step="50" min="0" max="2400" name="zendure.max_discharge_w"></label>
+            <label>Mindest-SoC (%)<input type="number" step="1" min="0" max="50" name="zendure.min_soc"></label>
+            <label>Ziel-SoC (%)<input type="number" step="1" min="70" max="100" name="zendure.target_soc"></label>
+            <label class="check"><input type="checkbox" name="zendure.block_discharge_while_wallbox_charging"> Entladen sperren, solange die Wallbox lädt
+              <small class="field-hint">verhindert, dass das Auto den Hausspeicher leerzieht (greift mit der Steuerung, Phase 2)</small></label>
+            <p class="note" style="margin-top:4px">Steuerung (Laden/Entladen) folgt in Phase 2; aktuell wird nur gelesen. Lokale API aktivieren: In der Zendure-App „HEMS hinzufügen" und wieder verlassen.</p>
+            <button type="button" id="zendure-test-btn">Verbindung testen</button>
+            <div class="form-msg" id="zendure-test-msg"></div>
+          </fieldset>
+
+          <fieldset>
             <legend>Hausanschluss</legend>
             <label>Max. Last (kW, Warnmarke)<input type="number" step="0.5" min="1" max="100" name="house.max_load_kw" placeholder="11"></label>
           </fieldset>
@@ -657,27 +694,27 @@
               </span>
             </label>
             <p class="note" style="margin-top:4px">Ein Gen2-Gerät mit mehreren Kanälen (z. B. Pro 2PM) kann für zwei Phasen mit gleicher URL und unterschiedlichem Kanal (0/1) verwendet werden.</p>
-            <label>Speicher (storage_url)<input type="text" name="shelly.storage_url" placeholder="http://192.168.x.x"></label>
+            <label>Wasserspeicher (storage_url)<input type="text" name="shelly.storage_url" placeholder="http://192.168.x.x"></label>
             <label>Hauptzähler (main_meter_url)<input type="text" name="shelly.main_meter_url" placeholder="http://192.168.x.x"></label>
             <label>Heizstab 3EM (heater_meter_url)<input type="text" name="shelly.heater_meter_url" placeholder="http://192.168.x.x"></label>
           </fieldset>
 
           <fieldset>
-            <legend>Heizstab &amp; Speicher</legend>
+            <legend>Heizstab &amp; Wasserspeicher</legend>
             <label>storage_max_temp (°C)<input type="number" step="0.1" name="heater.storage_max_temp"></label>
             <label>storage_temp_hysteresis (K)<input type="number" step="0.1" name="heater.storage_temp_hysteresis"></label>
             <label>min_pv_power_ph1 (W)<input type="number" step="50" name="heater.min_pv_power_ph1"></label>
             <label>min_pv_power_ph2 (W)<input type="number" step="50" name="heater.min_pv_power_ph2"></label>
             <label>min_pv_power_ph3 (W)<input type="number" step="50" name="heater.min_pv_power_ph3"></label>
             <label>Netzbezug-Toleranz (W)<input type="number" step="50" min="0" name="heater.grid_assist_w"><small class="field-hint">Wird von den Einschaltschwellen abgezogen: Bei 500 W startet Phase 1 schon mit 1000 W Überschuss, die fehlenden 500 W kommen aus dem Netz. 0 = aus.</small></label>
-            <label>Speicher-Priorität aktiv bis (°C)<input type="number" step="0.1" name="wallbox.pause_below_storage_temp"><small class="field-hint">Unterhalb dieser Temperatur bleibt PV-Überschuss zuerst für den Speicher reserviert.</small></label>
-            <label>Wallbox wieder freigeben ab Speicher-Temperatur (°C)<input type="number" step="0.1" name="wallbox.release_above_storage_temp"><small class="field-hint">Ab dieser Temperatur darf die Wallbox wieder laden.</small></label>
+            <label>Wasserspeicher-Priorität aktiv bis (°C)<input type="number" step="0.1" name="wallbox.pause_below_storage_temp"><small class="field-hint">Unterhalb dieser Temperatur bleibt PV-Überschuss zuerst für den Wasserspeicher reserviert.</small></label>
+            <label>Wallbox wieder freigeben ab Wasserspeicher-Temperatur (°C)<input type="number" step="0.1" name="wallbox.release_above_storage_temp"><small class="field-hint">Ab dieser Temperatur darf die Wallbox wieder laden.</small></label>
           </fieldset>
 
           <fieldset>
             <legend>Sommermodus (Ölheizung aus)</legend>
             <label class="check"><input type="checkbox" name="summer_mode.enabled"> Sommermodus aktiv (Ölheizung komplett aus)</label>
-            <p class="note" style="margin-top:4px">Wenn aktiviert, übernimmt der Heizstab die komplette Warmwasserbereitung. Fällt die Speichertemperatur unter das Minimum, wird aus dem Netz nachgeheizt.</p>
+            <p class="note" style="margin-top:4px">Wenn aktiviert, übernimmt der Heizstab die komplette Warmwasserbereitung. Fällt die Wasserspeichertemperatur unter das Minimum, wird aus dem Netz nachgeheizt.</p>
             <label>Mindesttemperatur (°C)
               <input type="number" step="0.5" name="summer_mode.min_temp" placeholder="45">
               <small class="field-hint">Unter diesem Wert startet Netz-Heizung.</small>
@@ -865,6 +902,6 @@
   </footer>
   </div>
 
-  <script src="/static/app.js?v=20261011e" defer></script>
+  <script src="/static/app.js?v=20261011h" defer></script>
 </body>
 </html>
