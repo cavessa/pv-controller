@@ -1,6 +1,14 @@
 # Changelog
 
-## 2026-10-12 – Deploy-Werkzeuge (Produktion ↔ Entwicklung trennen), noch nicht eingeführt
+## 2026-10-12 – Umzug: Produktion läuft aus `~/pvcontroller-prod`, `~/pvcontroller` ist Dev
+
+- Cutover 14:08–14:10: Clone von GitHub (`32aec2c`), Venv, 48 Tests grün; DB per Python-`sqlite3.backup` kopiert (`integrity_check` ok, `cascade_log` 686.772 / `HeizstabPhaseLog` 12.943 Zeilen identisch), `config.json`/`temp_history.json` kopiert. Cron `main.py` zeigt auf Prod (`flock -s /tmp/pvc-code.lock`), alte Zeile als `#CUTOVER#` auskommentiert; Web-Dienst (Unit aus `deploy/`) läuft aus Prod, sudoers-Eintrag für den Neustart angelegt. Erster Prod-Lauf 14:10:03 ohne Fehler, `deploy.sh` meldet „Bereits aktuell".
+- Auch `pvlog.py --mode hourly/daily` (Cron) auf Prod umgestellt (liefen sonst weiter in die Dev-DB). Crontab-Sicherungen: `~/backup/crontab/crontab.pre-cutover`, `crontab.pre-pvlog-move`.
+- `~/pvcontroller` per `deploy/make-dev.sh` zur Dev-Umgebung: `dry_run=true`, Log `dev.log`, `cascade_enabled=0`, Zendure aus; Dev-Web über `deploy/dev-web.sh` (Port 8001).
+- Hinweis: Das `sqlite3`-CLI ist auf dem Pi nicht installiert (README: Python-Variante statt CLI; `make-dev.sh` hat bereits einen Python-Fallback).
+- Ablauf ab jetzt: Dev → Commit → Push (nach Freigabe) → `deploy/deploy.sh` in `~/pvcontroller-prod`.
+
+## 2026-10-12 – Deploy-Werkzeuge (Produktion ↔ Entwicklung trennen)
 
 Neu in `deploy/`: `deploy.sh` (fetch → Wegwerf-Worktree mit Unit-Tests und Prüfung der produktiven `config.json` gegen den neuen Code → Umschalten unter exklusivem Lock → Neustart über sudoers → Smoke-Test mit automatischem Rollback), `rollback.sh`, `smoke_check.py`, `sudoers.pvcontroller` (nur `systemctl restart pvcontroller-web`), `cron.example` (Shared-Lock), `pvcontroller-web.service` (Produktion `~/pvcontroller-prod`), `make-dev.sh`/`dev-web.sh` (Dry-Run, Zendure aus, Kaskade aus, Port 8001), `README.md` mit Umzugsablauf. `.gitignore`: `deploy.log`, `.deploy_history`.
 Getestet in einem Wegwerf-Aufbau (Fake-Origin, Fake-Health-Server, echter `main.py`-Cron mit Dry-Run und unerreichbaren Geräten): Deploy ok, roter Test → Abbruch ohne Änderung, Laufzeitfehler bei grünen Tests → automatischer Rollback, `rollback.sh`, ungültige `config.json` → Abbruch. Der produktive Umzug steht noch aus.

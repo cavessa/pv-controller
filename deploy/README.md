@@ -30,11 +30,15 @@ Voraussetzung: `/etc/sudoers.d/pvcontroller` (siehe `sudoers.pvcontroller`) – 
    `git clone git@github.com:cavessa/pv-controller.git ~/pvcontroller-prod && cd ~/pvcontroller-prod && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/python -m unittest discover -s tests -t .`
 3. Cutover (≈ 1 min ohne Cron):
    1. Cron-Zeile für `~/pvcontroller` auskommentieren, laufenden Lauf abwarten (`pgrep -f main.py`).
-   2. Zustand kopieren: `config.json`, `temp_history.json`, `data/`; DB mit `sqlite3 pvcontroller.db ".backup '$HOME/pvcontroller-prod/pvcontroller.db'"`.
+   2. Zustand kopieren: `config.json`, `temp_history.json`, `data/`; DB per Python-Backup-API (das `sqlite3`-CLI ist auf dem Pi nicht installiert): `python3 -c "import sqlite3;s=sqlite3.connect('pvcontroller.db');d=sqlite3.connect('$HOME/pvcontroller-prod/pvcontroller.db');s.backup(d)"`.
    3. **Du:** `sudo cp ~/pvcontroller-prod/deploy/pvcontroller-web.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl restart pvcontroller-web`.
    4. Neue Cron-Zeile aus `deploy/cron.example` eintragen.
    5. Prüfen: `/api/health`, nächster Cron-Lauf im Log, Dashboard, `deploy.sh` (sollte „Bereits aktuell" melden).
-4. Entwicklung: in `~/pvcontroller` `deploy/make-dev.sh` ausführen (Dry-Run, Zendure aus, Kaskade aus, eigenes Log).
-5. Backup: `~/pvcontroller-prod/{config.json,pvcontroller.db,temp_history.json}` in `backup.sh` aufnehmen.
+4. Auch `pvlog.py --mode hourly/daily` im Cron auf `~/pvcontroller-prod` umstellen.
+5. Entwicklung: in `~/pvcontroller` `deploy/make-dev.sh` ausführen (Dry-Run, Zendure aus, Kaskade aus, eigenes Log).
+6. Backup: `~/pvcontroller-prod/{config.json,pvcontroller.db,temp_history.json}` in `backup.sh` aufnehmen.
 
 **Rückweg:** Cron-Zeile und `/etc/systemd/system/pvcontroller-web.service` wieder auf `~/pvcontroller` zeigen lassen (Dateien dort bleiben bis zur Freigabe unverändert), `daemon-reload`, Neustart.
+
+
+**Alltag nach dem Umzug:** in `~/pvcontroller` (Dev, Dry-Run) entwickeln → committen → pushen (nach Freigabe) → `~/pvcontroller-prod/deploy/deploy.sh`.
