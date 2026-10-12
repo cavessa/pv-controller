@@ -21,3 +21,7 @@ CLAUDE.md
 
 # System
 .DS_Store
+
+# Deploy (Produktionsverzeichnis)
+deploy.log
+.deploy_history

@@ -1,0 +1,2 @@
+# Produktion: Shared-Lock, damit deploy.sh (exklusiv) nie mitten in einem Lauf umschaltet
+* * * * * cd /home/openhabian/pvcontroller-prod && flock -s /tmp/pvc-code.lock .venv/bin/python main.py >> cron.log 2>&1

@@ -1,0 +1,3 @@
+# /etc/sudoers.d/pvcontroller  – anlegen mit:  sudo visudo -f /etc/sudoers.d/pvcontroller
+# Erlaubt dem Benutzer NUR diesen einen Befehl ohne Passwort (exakte Argumente):
+openhabian ALL=(root) NOPASSWD: /usr/bin/systemctl restart pvcontroller-web

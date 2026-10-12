@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-12 – Deploy-Werkzeuge (Produktion ↔ Entwicklung trennen), noch nicht eingeführt
+
+Neu in `deploy/`: `deploy.sh` (fetch → Wegwerf-Worktree mit Unit-Tests und Prüfung der produktiven `config.json` gegen den neuen Code → Umschalten unter exklusivem Lock → Neustart über sudoers → Smoke-Test mit automatischem Rollback), `rollback.sh`, `smoke_check.py`, `sudoers.pvcontroller` (nur `systemctl restart pvcontroller-web`), `cron.example` (Shared-Lock), `pvcontroller-web.service` (Produktion `~/pvcontroller-prod`), `make-dev.sh`/`dev-web.sh` (Dry-Run, Zendure aus, Kaskade aus, Port 8001), `README.md` mit Umzugsablauf. `.gitignore`: `deploy.log`, `.deploy_history`.
+Getestet in einem Wegwerf-Aufbau (Fake-Origin, Fake-Health-Server, echter `main.py`-Cron mit Dry-Run und unerreichbaren Geräten): Deploy ok, roter Test → Abbruch ohne Änderung, Laufzeitfehler bei grünen Tests → automatischer Rollback, `rollback.sh`, ungültige `config.json` → Abbruch. Der produktive Umzug steht noch aus.
+**Auffälligkeit:** `/home/openhabian/backup/backup.sh` sichert `~/pvcontroller` (Config, Datenbank) nicht.
+
 ## 2026-10-12 – Defaults angepasst, PH1 wieder aktiv
 
 - `heater.phase_min_on_s` Default **180 → 420 s** (`config.py`, `heater_phases.HeaterParams`, `config.example.json`, Settings-Fallback); `budget_smooth_min` 10, `budget_smooth_down_min` 2, `phase_min_off_s` 120 und `phase_down_hyst` 0,15 bleiben. Simulation 09.10. 11–15 Uhr mit diesen Werten: Ø 6,0 Wechsel/h (max. Stunde 8), Netzanteil 0,72 kWh. `app.js?v=20261012f`.
