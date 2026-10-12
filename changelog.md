@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-12 – Ist-Analyse der Steuerungslogik (nur Dokumentation)
+
+Neuer Bericht `docs/steuerung-ist-analyse.md`: wie Heizstab, Wallbox und Kaskade heute tatsächlich entscheiden (mit Code-Referenzen), Auswertung von 5,75 Tagen Controller-Log und 7 Tagen DB-Daten sowie Bewertung für die Batterie-Integration mit offenen Entscheidungen. **Kein Code geändert.** Wichtigste Befunde: Phase-1-Shelly offline → Fail-safe an 79 % der Minuten am 11.10.; Heizstab wird von zwei Ebenen ohne gemeinsame Mindestzeiten gesteuert (Flackern an 5 von 8 Tagen); `grid_assist_w` wirkt für Phase 1 nicht; Kaskaden-Gerät „Wallbox" und die Wallbox-Temperatur-Einstellungen haben keine Wirkung.
+
 ## 2026-10-12 – Heizstab-Punkte: Schätzung bei nicht lesbarem Phasenstatus
 
 **Anlass (User):** Der Heizstab lief (1,59 kW), aber alle drei Punkte im Energiefluss waren leer.
