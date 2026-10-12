@@ -1231,6 +1231,37 @@ def update_cascade_settings(**kwargs: object) -> dict:
     return get_cascade_settings()
 
 
+# ── Kaskaden-Profile (Sommer/Winter) ─────────────────────────────────────────
+
+def get_cascade_profile(season: str) -> list[str]:
+    """Gespeicherte Reihenfolge des Profils (normalisiert; ohne gespeicherten Wert: Default)."""
+    import json
+    from cascade_plan import normalize_profile
+    ids = [d["id"] for d in get_cascade_devices()]
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT value FROM cascade_settings WHERE key = ?", (f"profile_{season}",)
+        ).fetchone()
+    try:
+        order = json.loads(row[0]) if row else None
+    except ValueError:
+        order = None
+    return normalize_profile(season, order, ids)
+
+
+def set_cascade_profile(season: str, order: list[str]) -> list[str]:
+    import json
+    from cascade_plan import normalize_profile
+    ids = [d["id"] for d in get_cascade_devices()]
+    clean = normalize_profile(season, order, ids)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO cascade_settings (key, value) VALUES (?, ?)",
+            (f"profile_{season}", json.dumps(clean)),
+        )
+    return clean
+
+
 def set_cascade_budget(
     device_id: str, budget_w: int, raw_w: int, force: Optional[str] = None,
     budget_down_w: Optional[int] = None,

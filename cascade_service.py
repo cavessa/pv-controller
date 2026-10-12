@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import logging
 import math
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Optional
 
 from clients.goe_client import GoeClient, GoeError
 from clients.shelly_cascade_client import ShellyCascadeClient, ShellyCascadeError
-from clients.shelly_client import Shelly3EMClient
+from cascade_plan import BATTERY, HEATER_MIN, HEATER_STAGES, HeaterCtx, walk
+from clients.shelly_client import Shelly3EMClient, ShellyStorageTempClient
 from clients.solax_client import SolaxClient
 from clients.zendure_client import ZendureClient
 from config import Config
@@ -32,6 +34,7 @@ from db import (
     clear_cascade_override,
     get_cascade_device,
     get_cascade_devices,
+    get_cascade_profile,
     get_cascade_devices_due_for_retry,
     get_cascade_settings,
     increment_cascade_device_errors,
@@ -64,7 +67,14 @@ class CascadeService:
         self.main_meter = Shelly3EMClient(
             config.shelly.main_meter_url, _METER_READ_TIMEOUT_S, name="main_meter"
         )
+        self.storage = ShellyStorageTempClient(
+            config.shelly.storage_url, _METER_READ_TIMEOUT_S, name="storage"
+        )
+        self.solax2: Optional[SolaxClient] = None
+        if config.solax2_active:
+            self.solax2 = SolaxClient(config.solax2.url, config.solax2.pwd, timeout)
         self.goe: Optional[GoeClient] = None
+        self._goe_cache: Optional[dict] = None
         if config.wallbox.enabled and config.wallbox.url:
             self.goe = GoeClient(config.wallbox.url, config.wallbox.request_timeout_seconds)
         # Batterie-Regelung (Phase 2): nur mit aktivem Gerät UND Master-Schalter
@@ -80,13 +90,14 @@ class CascadeService:
     # ── Hauptmethode ─────────────────────────────────────────────────────────
 
     def run_cascade(self) -> dict:
-        """Liest Überschuss, iteriert durch Geräte (nach priority) und entscheidet."""
+        """Liest Überschuss und verteilt ihn entlang des aktiven Profils (Sommer/Winter)."""
         settings = get_cascade_settings()
 
         if not settings["cascade_enabled"]:
             log.info("Kaskade: deaktiviert (cascade_enabled=False)")
             return {"surplus_watts": 0, "devices": [], "disabled": True}
 
+        self._goe_cache = None
         self._poll_shelly_devices()
         if self.zendure_ctl is not None:
             ensure_zendure_cascade_device(self.cfg.zendure.name, int(self.cfg.zendure.max_charge_w))
@@ -94,13 +105,30 @@ class CascadeService:
             d for d in get_cascade_devices()
             if d["enabled"] and (d["type"] != "zendure" or self.zendure_ctl is not None)
         ]
-        zd_status = None
-        if any(d["type"] == "zendure" for d in devices):
-            zd_status = self.zendure_client.get_status()
+        by_id = {d["id"]: d for d in devices}
+        heater_dev = next((d for d in devices if d["type"] == "heizstab"), None)
+        battery_dev = by_id.get(BATTERY)
 
-        # Primärquelle: Hauptzähler (sieht alle Lasten inkl. Wallbox im Basic-Modus).
-        # Fallback auf Solax wenn Hauptzähler nicht erreichbar.
-        main_feed_in = self._get_main_meter_feed_in_w()
+        season = "summer" if self.cfg.summer_mode.enabled else "winter"
+        order = []
+        for key in get_cascade_profile(season):
+            if key in HEATER_STAGES:
+                if heater_dev is not None:
+                    order.append(key)
+            elif key in by_id:
+                order.append(key)
+
+        # Lesen: Speichertemperatur, Batterie und PV (für die Grundlast) parallel zum Hauptzähler
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="casc") as ex:
+            f_temp = ex.submit(self._read_storage_temp) if heater_dev is not None else None
+            f_zd = ex.submit(self.zendure_client.get_status) if battery_dev is not None else None
+            f_pv = ex.submit(self._read_pv_total_w) if battery_dev is not None else None
+            # Primärquelle: Hauptzähler (sieht alle Lasten inkl. Wallbox im Basic-Modus).
+            # Fallback auf Solax wenn Hauptzähler nicht erreichbar.
+            main_feed_in = self._get_main_meter_feed_in_w()
+            temp = f_temp.result() if f_temp else None
+            zd_status = f_zd.result() if f_zd else None
+            pv_total_w = f_pv.result() if f_pv else None
         if main_feed_in is None:
             log.warning("Kaskade: Hauptzähler nicht verfügbar, Fallback zu Solax")
             raw_feed_in = self._get_raw_feed_in_w()
@@ -144,105 +172,72 @@ class CascadeService:
                 )
 
         log.info(
-            "=== Kaskade Start: Überschuss=%d W (effektiv=%d W), %d aktive Geräte ===",
-            surplus,
-            effective_surplus,
-            len(devices),
+            "=== Kaskade Start (%sprofil): Überschuss=%d W (effektiv=%d W), %d Einträge ===",
+            "Sommer" if season == "summer" else "Winter", surplus, effective_surplus, len(order),
         )
 
-        remaining = effective_surplus
+        # Grundlast für das Batterie-Entladen: Haus ohne Heizstab und Wallbox.
+        # Haus = PV + Netzbezug + Entladung − Ladung (die Batterie ist selbst kein Verbraucher).
+        base_load_w: Optional[float] = None
+        if battery_dev is not None and pv_total_w is not None and zd_status is not None:
+            wb_power = self._wallbox_power_w() or 0.0
+            house_w = pv_total_w - raw_feed_in + zd_status.discharge_w - zd_status.charge_w
+            heater_w = actual_device_w.get(heater_dev["id"], 0.0) if heater_dev else 0.0
+            base_load_w = max(0.0, house_w - heater_w - wb_power)
+
+        n_ph = self.cfg.heater.enabled_phase_count
+        h = self.cfg.heater
+        actual_heater_w = float(actual_device_w.get(heater_dev["id"], 0.0)) if heater_dev else 0.0
+        ctx = HeaterCtx(
+            phase_w=h.phase_power_w, grid_assist_w=h.grid_assist_w, n_phases=n_ph, temp=temp,
+            comfort_min=self.cfg.comfort_min_temp, max_temp=h.storage_max_temp, actual_w=actual_heater_w,
+        )
         results: list[dict] = []
+        battery_plan: dict = {}
 
-        for device in devices:
-            override = self._active_override(device)
-
-            if device["type"] == "heizstab":
-                remaining = self._handle_heater(
-                    device, remaining, surplus, actual_device_w, override
-                )
-                results.append(self._result(device, device.get("_reason", "")))
-                continue
-
-            if device["type"] == "zendure":
-                remaining = self._handle_zendure(
-                    device, remaining, surplus, zd_status, -raw_feed_in, override
-                )
-                results.append(self._result(device, device.get("_reason", "")))
-                continue
-
-            if override is not None:
-                if device["is_on"]:
-                    # Gemessene statt nominale Leistung abziehen (Phantom-Budget vermeiden)
-                    remaining -= int(actual_device_w.get(device["id"], device["power_watts"]))
-                log_cascade_action(
-                    surplus,
-                    device["id"],
-                    "manual_override",
-                    f"Manuelle Übersteuerung: {override} aktiv bis {device['manual_override_until']}",
-                    remaining,
-                )
-                log.info(
-                    "Kaskade: %s → manual_override (%s), remaining=%d W",
-                    device["name"],
-                    override,
-                    remaining,
-                )
-                # Shelly in den gewünschten Zustand bringen (DB-Flag allein reicht nicht)
-                self._dispatch(device, "turn_on" if override == "on" else "turn_off")
-                results.append(self._result(device, f"manual_override ({override})"))
-                continue
-
-            action, reason = self._decide(device, effective_surplus, remaining)
-
-            # Zustand in DB aktualisieren und remaining korrekt anpassen:
-            # - Laufendes Gerät: gemessene Ist-Leistung abziehen (nicht Nominalwert).
-            #   Das verhindert Phantom-Reservierungen wenn z.B. der Controller den
-            #   Heizstab wegen Temperatur blockiert (is_on=1 aber actual=0 W).
-            # - Ausschalten: abgezogene Ist-Leistung wieder freigeben
-            # - Einschalten: Nominalleistung reservieren (Gerät läuft noch nicht)
-            now = datetime.now()
-            if device["is_on"]:
-                actual_w = int(actual_device_w.get(device["id"], device["power_watts"]))
-                remaining -= actual_w
-                if action == "turn_off":
-                    update_cascade_device_state(device["id"], False, turned_off_at=now)
-                    remaining += actual_w  # Gerät freigegeben, Budget zurück
-                    device = {**device, "is_on": False}
-            elif action == "turn_on":
-                update_cascade_device_state(device["id"], True, turned_on_at=now)
-                remaining -= device["power_watts"]
-                device = {**device, "is_on": True}
-
-            log_cascade_action(surplus, device["id"], action, reason, remaining)
-            log.info(
-                "Kaskade: %s → %s, remaining=%d W | %s",
-                device["name"],
-                action,
-                remaining,
-                reason,
+        def battery_fn(avail_w: float) -> float:
+            charge_w, reason = self._handle_zendure(
+                battery_dev, avail_w, surplus, zd_status, -raw_feed_in, base_load_w,
+                self._active_override(battery_dev),
             )
+            results.append(self._result(battery_dev, reason))
+            battery_plan["charge_w"] = charge_w
+            return charge_w
 
-            self._dispatch(device, action)
+        def device_fn(key: str, remaining: float) -> float:
+            device = by_id[key]
+            new_remaining, reason = self._handle_device(
+                device, int(remaining), surplus, effective_surplus, actual_device_w
+            )
             results.append(self._result(device, reason))
+            return new_remaining
 
-        log.info("=== Kaskade Ende: remaining=%d W ===", remaining)
-        return {"surplus_watts": surplus, "devices": results}
+        def heater_fn(budget_w: int, battery_w: int, remaining_w: int) -> None:
+            reason = self._store_heater_budget(
+                heater_dev, budget_w, battery_w, remaining_w, surplus, season, temp, ctx,
+                actual_heater_w, self._active_override(heater_dev),
+            )
+            results.append(self._result(heater_dev, reason))
+
+        res = walk(order, effective_surplus, ctx, battery_fn, device_fn,
+                   heater_fn if heater_dev is not None else None)
+
+        log.info("=== Kaskade Ende: remaining=%d W ===", res.remaining_w)
+        return {"surplus_watts": surplus, "devices": results, "profile": season}
 
     # ── Heizstab: Kaskade legt nur das Budget fest ───────────────────────────
 
-    def _handle_heater(
-        self, device: dict, remaining: int, surplus: int,
-        actual_device_w: dict[str, float], override: Optional[str],
-    ) -> int:
-        """Budget („Heizstab darf X W haben") berechnen und für den Controller ablegen.
+    def _store_heater_budget(
+        self, device: dict, raw: int, battery_w: int, remaining_w: int, surplus: int, season: str,
+        temp: Optional[float], ctx: HeaterCtx, actual_w: float, override: Optional[str],
+    ) -> str:
+        """Gesamt-Budget des Heizstabs (beide Stufen) glätten und für den Controller ablegen.
 
         Welche Phasen innerhalb des Budgets laufen, entscheidet allein der Controller
-        (heater_phases.decide_phases; Mindestzeiten, Hysterese, Max-Temp). Vom Restbudget
-        der nachfolgenden Geräte wird die **gemessene** Heizstab-Leistung abgezogen.
+        (heater_phases.decide_phases; Mindestzeiten, Hysterese, Max-Temp).
         """
         h = self.cfg.heater
         n_ph = h.enabled_phase_count           # stillgelegte Phasen zählen nicht im Budget
-        raw = int(remaining)
         if override == "off":
             budget = budget_down = 0
             force = "off"
@@ -263,51 +258,139 @@ class CascadeService:
                 turned_on_at=now if active else None, turned_off_at=None if active else now,
             )
 
-        actual_w = int(actual_device_w.get(device["id"], 0))
-        remaining -= actual_w
+        stages = []
+        if ctx.temp is not None:
+            stages.append("bis Min" if ctx.stage_active(HEATER_MIN) else "Min erreicht")
         reason = (
             f"Budget {budget} W zu / {budget_down} W ab (roh {raw} W, Mittel {h.budget_smooth_min}/"
             f"{h.budget_smooth_down_min} min) → bis zu {target} Phase(n); "
-            f"Startschwelle {int(h.phase_power_w - h.grid_assist_w)} W, Ist {actual_w} W"
+            f"Startschwelle {int(h.phase_power_w - h.grid_assist_w)} W, Ist {int(actual_w)} W"
+            + (f"; Speicher {temp:.1f} °C" if temp is not None else "; Speichertemperatur unbekannt")
+            + (f" ({', '.join(stages)})" if stages and season == "summer" else "")
+            + (f"; Batterie {battery_w} W" if battery_w else "")
             + (f"; manuell {force.upper()}" if force else "")
         )
-        log_cascade_action(surplus, device["id"], "budget", reason, remaining)
-        log.info("Kaskade: %s → %s, remaining=%d W", device["name"], reason, remaining)
-        device["_reason"] = reason
-        return remaining
+        log_cascade_action(surplus, device["id"], "budget", reason, remaining_w)
+        log.info("Kaskade: %s → %s, remaining=%d W", device["name"], reason, remaining_w)
+        return reason
+
+    # ── Sonstige Geräte (Shelly, Wallbox) ────────────────────────────────────
+
+    def _handle_device(
+        self, device: dict, remaining: int, surplus: int, effective_surplus: int,
+        actual_device_w: dict[str, float],
+    ) -> tuple[int, str]:
+        """Ein-/Ausschaltentscheidung für ein Festlast-Gerät; liefert (Restbudget, Begründung)."""
+        override = self._active_override(device)
+        if override is not None:
+            if device["is_on"]:
+                # Gemessene statt nominale Leistung abziehen (Phantom-Budget vermeiden)
+                remaining -= int(actual_device_w.get(device["id"], device["power_watts"]))
+            reason = f"manual_override ({override})"
+            log_cascade_action(
+                surplus, device["id"], "manual_override",
+                f"Manuelle Übersteuerung: {override} aktiv bis {device['manual_override_until']}",
+                remaining,
+            )
+            log.info("Kaskade: %s → manual_override (%s), remaining=%d W", device["name"], override, remaining)
+            # Shelly in den gewünschten Zustand bringen (DB-Flag allein reicht nicht)
+            self._dispatch(device, "turn_on" if override == "on" else "turn_off")
+            return remaining, reason
+
+        action, reason = self._decide(device, effective_surplus, remaining)
+
+        # Zustand in DB aktualisieren und remaining korrekt anpassen:
+        # - Laufendes Gerät: gemessene Ist-Leistung abziehen (nicht Nominalwert).
+        #   Das verhindert Phantom-Reservierungen wenn z.B. der Controller den
+        #   Heizstab wegen Temperatur blockiert (is_on=1 aber actual=0 W).
+        # - Ausschalten: abgezogene Ist-Leistung wieder freigeben
+        # - Einschalten: Nominalleistung reservieren (Gerät läuft noch nicht)
+        now = datetime.now()
+        if device["is_on"]:
+            actual_w = int(actual_device_w.get(device["id"], device["power_watts"]))
+            remaining -= actual_w
+            if action == "turn_off":
+                update_cascade_device_state(device["id"], False, turned_off_at=now)
+                remaining += actual_w  # Gerät freigegeben, Budget zurück
+                device = {**device, "is_on": False}
+        elif action == "turn_on":
+            update_cascade_device_state(device["id"], True, turned_on_at=now)
+            remaining -= device["power_watts"]
+            device = {**device, "is_on": True}
+
+        log_cascade_action(surplus, device["id"], action, reason, remaining)
+        log.info("Kaskade: %s → %s, remaining=%d W | %s", device["name"], action, remaining, reason)
+        self._dispatch(device, action)
+        return remaining, reason
 
     # ── Batterie (stufenlos) ─────────────────────────────────────────────────
+
+    def _goe_raw(self) -> Optional[dict]:
+        """go-e-Status, einmal pro Kaskadenlauf gelesen (None bei Fehler/ohne Wallbox)."""
+        if self.goe is None:
+            return None
+        if self._goe_cache is None:
+            try:
+                self._goe_cache = self.goe.get_status() or {}
+            except Exception:
+                log.warning("Kaskade: Wallbox-Status nicht lesbar", exc_info=True)
+                self._goe_cache = {"_error": True}
+        return None if self._goe_cache.get("_error") else self._goe_cache
+
+    def _wallbox_power_w(self) -> Optional[float]:
+        raw = self._goe_raw()
+        if raw is None:
+            return None
+        nrg = raw.get("nrg")
+        return max(0.0, float(nrg[11])) if isinstance(nrg, list) and len(nrg) >= 12 else 0.0
 
     def _wallbox_charging(self) -> bool:
         """Lädt gerade ein Auto (go-e car=2, > 100 W)? Bei Lesefehler konservativ True,
         damit die Batterie nicht ungeprüft entladen wird."""
         if self.goe is None:
             return False
-        try:
-            raw = self.goe.get_status()
-            nrg = raw.get("nrg")
-            power = float(nrg[11]) if isinstance(nrg, list) and len(nrg) >= 12 else 0.0
-            return raw.get("car") == 2 and power > 100
-        except Exception:
-            log.warning("Kaskade: Wallbox-Status für Batterie unbekannt – Entladen vorsichtshalber gesperrt",
-                        exc_info=True)
+        raw = self._goe_raw()
+        if raw is None:
+            log.warning("Kaskade: Wallbox-Status für Batterie unbekannt – Entladen vorsichtshalber gesperrt")
             return True
+        return raw.get("car") == 2 and (self._wallbox_power_w() or 0.0) > 100
+
+    def _read_storage_temp(self) -> Optional[float]:
+        try:
+            return self.storage.get_temperature_c()
+        except Exception:
+            log.warning("Kaskade: Speichertemperatur nicht lesbar", exc_info=True)
+            return None
+
+    def _read_pv_total_w(self) -> Optional[float]:
+        """Gesamt-PV (Haupt-WR + Pergola) – Solax-Lesewerte sind prozessweit gecacht."""
+        pv = self.solax.get_pv_power_w()
+        if pv is None:
+            return None
+        if self.solax2 is not None:
+            try:
+                d = self.solax2.get_realtime_data()
+                if d is not None:
+                    pv += d.pv_total_w
+            except Exception:
+                log.warning("Kaskade: Pergola-WR nicht lesbar", exc_info=True)
+        return float(pv)
 
     def _handle_zendure(
-        self, device: dict, remaining: int, surplus: int, st, import_w: float, override: Optional[str]
-    ) -> int:
-        """Batterie regeln; gibt das Restbudget nach der Ladeleistung zurück."""
+        self, device: dict, avail_w: float, surplus: int, st, import_w: float,
+        base_load_w: Optional[float], override: Optional[str],
+    ) -> tuple[float, str]:
+        """Batterie regeln; liefert (geplante Ladeleistung W, Begründung)."""
         wb = self._wallbox_charging() if self.cfg.zendure.block_discharge_while_wallbox_charging else False
         # Netzbezug ohne die eigene Ladeleistung der Batterie (Laden zieht ja selbst am Zähler)
         if st is not None:
             import_w -= st.charge_w
         p = self.zendure_ctl.run(
-            st, avail_w=max(0, remaining), import_w=import_w,
+            st, avail_w=max(0, avail_w), import_w=import_w, base_load_w=base_load_w,
             wallbox_charging=wb, override=override,
             hysteresis_w=int(device["hysteresis_watts"]),
         )
         charge_w = p.limit_w if (p.mode == "charge" and st is not None) else 0
-        remaining -= charge_w
 
         now = datetime.now()
         active = p.mode != "idle" and st is not None
@@ -321,10 +404,9 @@ class CascadeService:
             (st.charge_w if st.state == "charging" else st.discharge_w) if st is not None else 0.0,
             st is not None,
         )
-        log_cascade_action(surplus, device["id"], p.action, p.reason, remaining)
-        log.info("Kaskade: %s → %s %d W, remaining=%d W | %s", device["name"], p.mode, p.limit_w, remaining, p.reason)
-        device["_reason"] = p.reason
-        return remaining
+        log_cascade_action(surplus, device["id"], p.action, p.reason, int(avail_w - charge_w))
+        log.info("Kaskade: %s → %s %d W, verfügbar %d W | %s", device["name"], p.mode, p.limit_w, avail_w, p.reason)
+        return float(charge_w), p.reason
 
     # ── Entscheidungslogik ───────────────────────────────────────────────────
 
@@ -533,7 +615,9 @@ class CascadeService:
         if any(d["type"] == "wallbox" for d in devices) and self.goe is not None:
             wallbox_actual: float | None = None
             try:
-                raw = self.goe.get_status()
+                raw = self._goe_raw()
+                if raw is None:
+                    raise GoeError("Wallbox-Status nicht lesbar")
                 lmo = raw.get("lmo")
                 if lmo != 4:
                     # Basic-Modus (lmo=3): Wallbox nicht kaskaden-gesteuert.

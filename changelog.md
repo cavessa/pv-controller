@@ -1,5 +1,62 @@
 # Changelog
 
+## 2026-10-12 – Batterie in der Kaskade: Sommer-/Winterprofil, Grundlast-Entladen, batterieneutraler Überschuss (Dev, nicht deployt)
+
+`zendure.control_enabled` bleibt aus; alles Neue wirkt erst mit aktiver Batterie. Entwickelt im Dev-Verzeichnis (dry_run, Kaskade aus).
+
+**1. Profile (neu `cascade_plan.py`):** Der Sommermodus-Schalter wählt das Profil (kein zweiter Schalter). Reihenfolge je Profil in `cascade_settings` (`profile_summer` / `profile_winter`, JSON); fehlt sie, wird sie aus der bisherigen Geräteliste gebaut (Heizstab-Eintrag wird zum Block, eBike/Wallbox behalten ihre Position, neue Geräte hinten):
+- Winter (Öl heizt): `Batterie → Wasserspeicher bis Max`
+- Sommer (Öl aus): `Wasserspeicher bis Komfort-Min → Batterie → Wasserspeicher bis Max`
+
+**2. Heizstab als zwei Stufen:** `heizstab_min` (aktiv solange Temp < `heater.comfort_min_temp`, Default = `summer_mode.target_temp` = 52 °C, neue Einstellung „Komfort-Mindesttemperatur“ unter Heizstab & Wasserspeicher) und `heizstab_max` (Temp < `storage_max_temp`). Ein Heizstab, **ein** Budget an den Controller: Rest-Überschuss an der ersten aktiven Stufe minus Batterie-Ladung dazwischen. Die Min-Stufe beansprucht nur ihre ganzen Phasen (`floor((Rest + grid_assist) / 1500 W)`), der Rest geht an die Batterie – kleiner Überschuss unter der Startschwelle landet so in der Batterie, beide laden gleichzeitig, sobald genug da ist. Phasenlogik des Controllers unverändert.
+
+**3. Grundlast-Entladen (`zendure_control.plan`):** `Entladen = min(Netzbezug, Grundlast, max_discharge)`, Grundlast = Haus − Heizstab − Wallbox (Haus = PV + Netz + Entladung − Ladung, PV inkl. Pergola; die Kaskade liest dafür PV und go-e-Leistung mit, Solax-Lesewerte sind prozessweit gecacht). Kein Entladen in den Heizstab (grid_assist, Sommermodus-Netzheizung), nicht ins Auto (Wallbox lädt → Sperre wie in Phase 2), nicht im selben Zyklus wie Laden; Grundlast unbekannt (PV nicht lesbar) → kein Entladen.
+
+**4. Überschuss batterieneutral:** `Readings.battery_net_w` (+ lädt / − entlädt); `true_surplus_w` und `surplus_without_heater_w` rechnen Ladung zum Überschuss, Entladung nicht. Kaskade war bereits korrekt (Phase 2). Neu `Readings.house_consumption_w`. Hausverbrauch: Energiefluss-Knoten „Haus“ (app.js), `/api/solax` (`consumption_w`), Stundenlog (`pv_logger`), Tagesbilanz (`meter.compute_meter_today`: + entladen − geladen kWh); `/api/cascade/status` Überschuss. Lastspitzen (`house_peak_day`, Hauptzähler) bleiben bewusst Hausanschluss-Leistung am Zähler. Nicht angefasst: `pvlog.py` (Legacy-Cron, kennt weder Pergola noch Batterie).
+
+**5. UI:** Prioritäten-Seite mit Tabs `☀ Sommer | ❄ Winter` (aktives Profil markiert, beide per Drag&Drop sortierbar, Einträge „Wasserspeicher (bis 52 °C)“ / „(bis 63 °C)“, übersprungene Stufe ausgegraut), Kaskade-Card mit „· Sommerprofil/Winterprofil“, Batterie-Eintrag nur bei `zendure.enabled` (+ IP). API: `PATCH /api/cascade/reorder` mit `profile`, `GET /api/cascade/status?profile=`; Antwort enthält `profile`, `active_profile`, `comfort_min_temp`. `app.js?v=20261012g`, `styles.css?v=64`.
+
+**Tests:** 80 (vorher 48): Verteilung (alle Fälle der Vorgabe), Entladen, batterieneutraler Überschuss, Profil-Normalisierung, `run_cascade` mit Fake-Geräten je Profil. Außerdem einmal read-only gegen die echten Geräte (Kopie der Prod-DB, `_dispatch` aus).
+
+**Simulation** (Minutenlogs 07.–12.10., 12.10. nur bis 13:29; fiktive Batterie 2,4 kWh, Start-SoC 50 %, ideal 100 % Wirkungsgrad, Wallbox/eBike wie gemessen; Speichertemperatur = Messung + zusätzliche Heizstab-Energie / 0,375 kWh/K (aus den Daten geschätzt); „Sim ohne Bat.“ = dieselbe Simulation ohne Batterie als Referenz). Skript: `scratchpad/sim/sim.py`.
+
+| Tag | Bat. geladen W/S | Bat. entladen W/S | Heizstab gemessen | Heizstab Sim ohne Bat. | Heizstab Winter | Heizstab Sommer |
+|---|---|---|---|---|---|---|
+| 2026-10-07 | 2.20 / 2.22 | 3.16 / 3.18 | 6.3 | 6.3 | 6.2 | 6.2 |
+| 2026-10-08 | 2.76 / 1.74 | 2.76 / 1.74 | 0.9 | 1.1 | 0.0 | 1.1 |
+| 2026-10-09 | 2.62 / 2.49 | 2.62 / 2.49 | 7.0 | 6.8 | 7.6 | 6.8 |
+| 2026-10-10 | 2.35 / 1.41 | 2.35 / 1.41 | 2.0 | 2.5 | 0.9 | 1.8 |
+| 2026-10-11 | 4.64 / 2.90 | 4.64 / 2.90 | 6.0 | 7.5 | 3.3 | 5.2 |
+| 2026-10-12 | 2.16 / 0.74 | 0.00 / 0.03 | 2.5 | 2.2 | 0.2 | 1.6 |
+| Σ | 16.7 / 11.5 | 15.5 / 11.8 | 24.6 | 26.4 | 18.2 | 22.7 |
+
+| Tag | Einspeisung gemessen | Sim ohne Bat. | Winter | Sommer |
+|---|---|---|---|---|
+| 2026-10-07 | 2.4 | 2.3 | 1.2 | 1.3 |
+| 2026-10-08 | 2.1 | 1.9 | 1.0 | 0.9 |
+| 2026-10-09 | 11.2 | 11.3 | 8.6 | 9.5 |
+| 2026-10-10 | 0.9 | 1.3 | 0.9 | 0.9 |
+| 2026-10-11 | 1.9 | 1.0 | 1.8 | 1.8 |
+| 2026-10-12 | 1.4 | 1.2 | 0.7 | 0.9 |
+| Σ | 19.9 | 19.0 | 14.2 | 15.4 |
+
+| Tag | Netzbezug gemessen | Sim ohne Bat. | Winter | Sommer |
+|---|---|---|---|---|
+| 2026-10-07 | 19.3 | 19.2 | 17.0 | 17.1 |
+| 2026-10-08 | 23.8 | 23.8 | 21.8 | 22.8 |
+| 2026-10-09 | 29.7 | 29.6 | 27.7 | 27.8 |
+| 2026-10-10 | 29.3 | 30.1 | 28.1 | 29.0 |
+| 2026-10-11 | 56.2 | 56.8 | 53.5 | 55.4 |
+| 2026-10-12 | 41.8 | 41.3 | 40.9 | 41.2 |
+| Σ | 200.0 | 200.8 | 189.1 | 193.3 |
+
+| Phasenwechsel | gesamt | Stunden mit Heizstab | je Stunde |
+|---|---|---|---|
+| tatsächlich (Schaltbefehle im Log) | 178 | 19 | 9.4 |
+| Sim ohne Batterie | 96 | 21 | 4.6 |
+| Sim Winter | 74 | 20 | 3.7 |
+| Sim Sommer | 98 | 21 | 4.7 |
+
 ## 2026-10-12 – Umzug: Produktion läuft aus `~/pvcontroller-prod`, `~/pvcontroller` ist Dev
 
 - Cutover 14:08–14:10: Clone von GitHub (`32aec2c`), Venv, 48 Tests grün; DB per Python-`sqlite3.backup` kopiert (`integrity_check` ok, `cascade_log` 686.772 / `HeizstabPhaseLog` 12.943 Zeilen identisch), `config.json`/`temp_history.json` kopiert. Cron `main.py` zeigt auf Prod (`flock -s /tmp/pvc-code.lock`), alte Zeile als `#CUTOVER#` auskommentiert; Web-Dienst (Unit aus `deploy/`) läuft aus Prod, sudoers-Eintrag für den Neustart angelegt. Erster Prod-Lauf 14:10:03 ohne Fehler, `deploy.sh` meldet „Bereits aktuell".

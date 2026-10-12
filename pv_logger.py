@@ -54,7 +54,8 @@ def _log_hourly(result: ControllerResult) -> None:
     pv2_w = _pergola_w(result)
     feed_in_w = int(sc._signed16(raw[34]))
     # Der Haupt-WR sieht den Pergola-Anteil im Hausverbrauch nicht
-    consumption_w = int(sc._signed16(raw[47])) + (pv2_w or 0)
+    # Batterie: Entladung gehört zum Verbrauch, Ladung nicht
+    consumption_w = int(sc._signed16(raw[47])) + (pv2_w or 0) - int(r.battery_net_w)
     heater_w = int(r.heater_meter_power_w) if r.heater_meter_power_w is not None else None
     wallbox_w = None
     if result.wallbox_status is not None and result.wallbox_status.power_w is not None:

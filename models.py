@@ -69,14 +69,35 @@ class Readings:
         return [e for e in self.errors if e in self.CRITICAL_ERRORS]
 
     @property
+    def battery_net_w(self) -> float:
+        """Batterie-Leistung am Hausnetz: + lädt (zieht wie ein Verbraucher), − entlädt.
+        Ohne (erreichbare) Batterie 0."""
+        zd = self.zendure
+        if zd is None:
+            return 0.0
+        return float(zd.charge_w or 0.0) - float(zd.discharge_w or 0.0)
+
+    @property
+    def house_consumption_w(self) -> Optional[float]:
+        """Echter Hausverbrauch (inkl. Heizstab/Wallbox, ohne Batterie-Ladung):
+        PV + Netzbezug + Entladung − Ladung. None, wenn PV oder Hauptzähler fehlen."""
+        if self.pv_power_w is None or self.main_meter_power_w is None:
+            return None
+        return self.pv_power_w + self.main_meter_power_w - self.battery_net_w
+
+    @property
     def surplus_without_heater_w(self) -> Optional[float]:
+        """Hauptzähler ohne Heizstab und batterieneutral (Ladung zählt als Überschuss)."""
         if self.main_meter_power_w is None or self.heater_meter_power_w is None:
             return None
-        return self.main_meter_power_w - self.heater_meter_power_w
+        return self.main_meter_power_w - self.heater_meter_power_w - self.battery_net_w
 
     @property
     def true_surplus_w(self) -> Optional[float]:
         """PV-Überschuss unabhängig von Heizstab UND Wallbox.
+
+        Batterieneutral: Lädt die Batterie, fehlt ihre Leistung in der Einspeisung (wird
+        dem Überschuss hinzugerechnet); entlädt sie, ist das kein PV-Überschuss.
 
         Beide sind steuerbare Lasten, die vom Controller selbst ein-/ausgeschaltet
         werden. Würde man die Wallbox-Leistung nicht herausrechnen, sieht die
@@ -91,6 +112,7 @@ class Readings:
             self.main_meter_power_w
             - self.heater_meter_power_w
             - (self.wallbox_power_w or 0.0)
+            - self.battery_net_w
         )
 
     def is_complete(self) -> bool:

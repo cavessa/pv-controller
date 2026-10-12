@@ -51,7 +51,8 @@
     "phase_min_on_s": 420,
     "phase_min_off_s": 120,
     "phase_down_hyst": 0.15,
-    "budget_smooth_min": 10
+    "budget_smooth_min": 10,
+    "comfort_min_temp": null
   },
   "runtime": {
     "enabled": true,

@@ -177,18 +177,21 @@ class ControllerPhaseTest(unittest.TestCase):
         self.assertEqual(self.sets(c), [[False], [], []])
 
     def test_cascade_writes_budget_and_books_actual_power(self):
+        from cascade_plan import HEATER_MAX, HeaterCtx, walk
         from cascade_service import CascadeService
         svc = CascadeService(self.cfg)
         dev = db.get_cascade_device("heizstab")
-        left = svc._handle_heater(dev, 4000, 4000, {"heizstab": 1500.0}, None)
-        self.assertEqual(left, 4000 - 1500)           # gemessene, nicht nominale Leistung
+        ctx = HeaterCtx(temp=50.0, actual_w=1500.0)
+        res = walk([HEATER_MAX], 4000, ctx, lambda a: 0.0, lambda k, r: r)
+        self.assertEqual(res.remaining_w, 4000 - 1500)  # gemessene, nicht nominale Leistung
+        svc._store_heater_budget(dev, res.heater_budget_w, 0, res.remaining_w, 4000, "winter", 50.0, ctx, 1500.0, None)
         info = db.get_cascade_budget("heizstab")
         self.assertEqual(info["raw_w"], 4000)
         self.assertEqual(info["budget_w"], 4000)      # erste Minute: Mittel = Rohwert
         self.assertEqual(info["budget_down_w"], 4000)
-        svc._handle_heater(dev, 0, 0, {"heizstab": 0.0}, "off")
+        res0 = walk([HEATER_MAX], 0, HeaterCtx(temp=50.0), lambda a: 0.0, lambda k, r: r)
+        svc._store_heater_budget(dev, res0.heater_budget_w, 0, res0.remaining_w, 0, "winter", 50.0, HeaterCtx(temp=50.0), 0.0, "off")
         self.assertEqual(db.get_cascade_budget("heizstab")["force"], "off")
-
 
 if __name__ == "__main__":
     unittest.main()

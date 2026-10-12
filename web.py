@@ -670,6 +670,7 @@ _ALLOWED_HEATER_KEYS = {
     "phase1_disabled",
     "phase2_disabled",
     "phase3_disabled",
+    "comfort_min_temp",
 }
 _BOOL_HEATER_KEYS = {"phase1_disabled", "phase2_disabled", "phase3_disabled"}
 _ALLOWED_WALLBOX_KEYS = {
@@ -731,7 +732,13 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
         if bad:
             raise HTTPException(400, f"heater keys not allowed: {sorted(bad)}")
         for k, v in patch.heater.items():
-            if k in _BOOL_HEATER_KEYS:
+            if k == "comfort_min_temp" and v is None:
+                pass  # leer = Default (Sommermodus-Zieltemperatur)
+            elif k == "comfort_min_temp" and (
+                not isinstance(v, (int, float)) or isinstance(v, bool) or not 20 <= v <= 90
+            ):
+                raise HTTPException(400, "heater.comfort_min_temp must be a number between 20 and 90 (or null)")
+            elif k in _BOOL_HEATER_KEYS:
                 if not isinstance(v, bool):
                     raise HTTPException(400, f"heater.{k} must be boolean")
             elif not isinstance(v, (int, float)) or isinstance(v, bool):
@@ -1049,7 +1056,8 @@ def api_solax(response: Response) -> dict[str, Any]:
         "pv1_current_a": data.pv1_current_a,
         "pv2_current_a": data.pv2_current_a,
         "feed_in_w": data.feed_in_w,
-        "consumption_w": data.consumption_w + bk_w,
+        # Hausverbrauch inkl. Pergola; Batterie: Entladung dazu, Ladung ist kein Verbrauch
+        "consumption_w": data.consumption_w + bk_w - (cached.readings.battery_net_w if cached else 0.0),
         "yield_today_kwh": yield_today,
         "main_yield_today_kwh": data.yield_today_kwh,
         "grid_out_today_kwh": grid_out,
@@ -1406,6 +1414,7 @@ class _CascadeDeviceUpdate(BaseModel):
 
 class _CascadeReorder(BaseModel):
     deviceIds: list[str]
+    profile: Optional[str] = None   # "summer" | "winter": Reihenfolge dieses Profils (sonst Legacy-Priorität)
 
 
 class _CascadeOverride(BaseModel):
@@ -1431,7 +1440,10 @@ def cascade_device_test(body: _ShellyTestRequest) -> dict[str, Any]:
 def _visible_cascade_devices() -> list[dict]:
     """Kaskaden-Geräte; die Batterie nur bei aktivem Gerät mit Steuerung."""
     cfg = _load_cfg()
-    show_zd = cfg.zendure_active and cfg.zendure.control_enabled
+    show_zd = cfg.zendure_active
+    if show_zd:
+        from db import ensure_zendure_cascade_device
+        ensure_zendure_cascade_device(cfg.zendure.name, int(cfg.zendure.max_charge_w))
     return [d for d in get_cascade_devices() if d["type"] != "zendure" or show_zd]
 
 
@@ -1504,6 +1516,18 @@ def cascade_devices_delete(device_id: str) -> dict[str, Any]:
 def cascade_reorder(body: _CascadeReorder) -> dict[str, Any]:
     if not body.deviceIds:
         raise HTTPException(400, "deviceIds darf nicht leer sein")
+    if body.profile is not None:
+        from cascade_plan import BATTERY, HEATER_MAX, HEATER_MIN, SEASONS
+        from db import set_cascade_profile
+        if body.profile not in SEASONS:
+            raise HTTPException(400, "profile muss 'summer' oder 'winter' sein")
+        valid = {d["id"] for d in get_cascade_devices()} - {"heizstab"} | {HEATER_MIN, HEATER_MAX, BATTERY}
+        missing = [i for i in body.deviceIds if i not in valid]
+        if missing:
+            raise HTTPException(404, f"Unbekannte Einträge: {missing}")
+        if len(body.deviceIds) != len(set(body.deviceIds)):
+            raise HTTPException(400, "deviceIds enthält Duplikate")
+        return {"profile": body.profile, "order": set_cascade_profile(body.profile, body.deviceIds)}
     existing_ids = {d["id"] for d in get_cascade_devices()}
     missing = [i for i in body.deviceIds if i not in existing_ids]
     if missing:
@@ -1515,7 +1539,7 @@ def cascade_reorder(body: _CascadeReorder) -> dict[str, Any]:
 
 
 @app.get("/api/cascade/status")
-def cascade_status(response: Response) -> dict[str, Any]:
+def cascade_status(response: Response, profile: Optional[str] = None) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
 
     # Echte Messwerte aus dem Status-Snapshot des Hintergrund-Pollers
@@ -1524,14 +1548,17 @@ def cascade_status(response: Response) -> dict[str, Any]:
     wb_power_w: Optional[float] = None
     surplus_w: Optional[int] = None
     zd_live = None
+    storage_temp: Optional[float] = None
     try:
         result, _ = _cached_status()
         r = result.readings
         zd_live = r.zendure
         heater_power_w = r.heater_meter_power_w
         # main_meter ist negativ bei Einspeisung → Überschuss = max(0, -main_meter)
+        # batterieneutral: Ladeleistung der Batterie zählt als Überschuss
         if r.main_meter_power_w is not None:
-            surplus_w = max(0, round(-r.main_meter_power_w))
+            surplus_w = max(0, round(-(r.main_meter_power_w - r.battery_net_w)))
+        storage_temp = r.storage_temp_c
         ws = result.wallbox_status
         if ws is not None:
             wb_charging = (ws.car_state == 2)
@@ -1582,8 +1609,45 @@ def cascade_status(response: Response) -> dict[str, Any]:
                 entry["last_status_power_w"] = round(wb_power_w)
         return entry
 
-    device_status = [_enrich(d) for d in devices]
-    return {"surplus_watts": surplus_w, "devices": device_status}
+    cfg = _load_cfg()
+    from cascade_plan import HEATER_MAX, HEATER_MIN, SEASONS
+    from db import get_cascade_profile
+    active = "summer" if cfg.summer_mode.enabled else "winter"
+    season = profile if profile in SEASONS else active
+    by_id = {d["id"]: _enrich(d) for d in devices}
+    comfort, tmax = cfg.comfort_min_temp, cfg.heater.storage_max_temp
+    entries: list[dict[str, Any]] = []
+    for key in get_cascade_profile(season):
+        if key in (HEATER_MIN, HEATER_MAX):
+            base = by_id.get("heizstab")
+            if base is None:
+                continue
+            e = dict(base)
+            e["device_id"] = "heizstab"
+            e["id"] = e["stage"] = key
+            below = storage_temp is not None and storage_temp < comfort
+            if key == HEATER_MIN:
+                e["name"] = f"Wasserspeicher (bis {comfort:.0f} °C)"
+                e["is_on"] = bool(base["is_on"]) and below
+                e["skipped"] = storage_temp is not None and not below
+            else:
+                e["name"] = (f"Wasserspeicher (bis {tmax:.0f} °C)" if season == "summer"
+                             else f"Wasserspeicher (bis Max {tmax:.0f} °C)")
+                e["is_on"] = bool(base["is_on"]) and (season != "summer" or not below)
+                e["skipped"] = storage_temp is not None and storage_temp >= tmax
+        elif key in by_id:
+            e = dict(by_id[key])
+            e["device_id"] = key
+        else:
+            continue            # z. B. Batterie ohne aktives Gerät
+        entries.append(e)
+    for i, e in enumerate(entries, start=1):
+        e["priority"] = i
+    return {
+        "surplus_watts": surplus_w, "devices": entries,
+        "profile": season, "active_profile": active, "storage_temp": storage_temp,
+        "comfort_min_temp": comfort, "storage_max_temp": tmax,
+    }
 
 
 @app.post("/api/cascade/devices/{device_id}/override")

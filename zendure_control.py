@@ -9,7 +9,8 @@ Regeln:
 - Laden nur aus dem Überschuss, der der Batterie in der Kaskade zusteht
   (`avail_w`); nie aus dem Netz. Stufenlos, Start ab 100 W + Hysterese.
 - Entladen nur ohne Laden, mit SoC > Mindest-SoC und Netzbezug; geregelt auf
-  Bezug ≈ 0 (Ziel = aktuelle Abgabe + Bezug).
+  Bezug ≈ 0 (Ziel = aktuelle Abgabe + Bezug), begrenzt auf die **Grundlast**
+  (Haus ohne Heizstab und Wallbox) – die Batterie heizt nie das Wasser.
 - Wallbox lädt (Auto im Zustand „lädt", > 100 W) -> Entladen hart gesperrt,
   wenn `block_discharge_while_wallbox_charging` (Default an).
 - Ein neuer Lade-/Entlademodus startet frühestens 2 min nach dem letzten
@@ -41,6 +42,7 @@ DISCHARGE_START_IMPORT_W = 50   # Netzbezug, ab dem entladen wird
 MIN_DIRECTION_S = 120           # Mindestzeit vor Laden <-> Entladen
 MAX_FAILS = 3
 DEVICE_MAX_W = 2400
+UNLIMITED = float("inf")        # Grundlast nicht begrenzt (Tests/Aufrufer ohne Grundlast-Angabe)
 
 
 @dataclass
@@ -69,6 +71,7 @@ def plan(
     ctl_limit_w: int,
     seconds_since_change: float,
     hysteresis_w: int = 100,
+    base_load_w: Optional[float] = UNLIMITED,
 ) -> Plan:
     """Gewünschte Betriebsart bestimmen (siehe Modul-Docstring)."""
     max_c = int(min(zc.max_charge_w, DEVICE_MAX_W))
@@ -107,12 +110,22 @@ def plan(
             desired = Plan("idle", 0, False,
                            f"Batterie leer (SoC {soc:.0f} % ≤ Mindest-SoC {zc.min_soc:.0f} %)"
                            + (", Netzbezug" if import_w > DISCHARGE_START_IMPORT_W else ""), "idle")
+        elif base_load_w is None:
+            desired = Plan("idle", 0, False, "Grundlast unbekannt (PV/Hauszähler nicht lesbar) – kein Entladen", "idle")
         elif import_w > DISCHARGE_START_IMPORT_W or ctl_mode == "discharge":
-            target_d = max(0, min(_round10(st.home_out_w + import_w), max_d)) \
-                if ctl_mode == "discharge" else max(0, min(_round10(import_w), max_d))
+            # Entladen nur für die Grundlast (Haus ohne Heizstab/Wallbox), nie in den Heizstab
+            cap_w = min(max_d, base_load_w)
+            target_d = max(0, min(_round10(st.home_out_w + import_w), cap_w)) \
+                if ctl_mode == "discharge" else max(0, min(_round10(import_w), cap_w))
+            target_d = _round10(target_d)
             if target_d >= DISCHARGE_START_IMPORT_W:
+                limited = " (auf Grundlast begrenzt)" if base_load_w < min(max_d, import_w + st.home_out_w) else ""
                 desired = Plan("discharge", target_d, False,
-                               f"Batterie deckt Hausverbrauch ({target_d} W), SoC {soc:.0f} %", "discharge")
+                               f"Batterie deckt Grundlast ({target_d} W{limited}), SoC {soc:.0f} %", "discharge")
+            elif import_w > DISCHARGE_START_IMPORT_W and base_load_w < DISCHARGE_START_IMPORT_W:
+                desired = Plan("idle", 0, False,
+                               f"Netzbezug {import_w:.0f} W gehört zu Heizstab/Wallbox (Grundlast {base_load_w:.0f} W) – kein Entladen",
+                               "idle")
             else:
                 desired = Plan("idle", 0, False, "Kein Netzbezug – Batterie im Standby", "idle")
         else:
@@ -153,6 +166,7 @@ class ZendureControl:
         wallbox_charging: bool,
         override: Optional[str],
         hysteresis_w: int = 100,
+        base_load_w: Optional[float] = UNLIMITED,
     ) -> Plan:
         ctl = db.get_zendure_ctl()
         now = datetime.now()
@@ -177,7 +191,7 @@ class ZendureControl:
         p = plan(
             self.zc, st, avail_w=avail_w, import_w=import_w, wallbox_charging=wallbox_charging,
             override=override, ctl_mode=ctl["mode"], ctl_limit_w=ctl["limit_w"],
-            seconds_since_change=since, hysteresis_w=hysteresis_w,
+            seconds_since_change=since, hysteresis_w=hysteresis_w, base_load_w=base_load_w,
         )
 
         reason = p.reason

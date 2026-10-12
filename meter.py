@@ -7,6 +7,7 @@ bei nicht lesbarem Shelly gelten die Solax-Tageszähler wie bisher.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Optional
 
 import db
@@ -29,7 +30,7 @@ def pv_today_kwh(r: Readings) -> Optional[float]:
 def compute_meter_today(r: Readings, pv_kwh: Optional[float] = None) -> Optional[dict]:
     """{source, bezug_kwh, einspeisung_kwh, verbrauch_kwh} oder None, wenn nichts bekannt.
 
-    verbrauch = PV-Ertrag (Summe) + Bezug − Einspeisung.
+    verbrauch = PV-Ertrag (Summe) + Bezug − Einspeisung + Batterie entladen − geladen.
     """
     if pv_kwh is None:
         pv_kwh = pv_today_kwh(r)
@@ -54,9 +55,17 @@ def compute_meter_today(r: Readings, pv_kwh: Optional[float] = None) -> Optional
             return None
         bezug, einsp = r.solax_grid_in_kwh, r.solax_grid_out_kwh
 
+    # Batterie: entladene kWh sind Verbrauch aus Speicher, geladene sind keiner
+    bat_net = 0.0
+    try:
+        e = db.get_zendure_energy(datetime.now().strftime("%Y-%m-%d"))
+        bat_net = (e["discharged_kwh"] or 0.0) - (e["charged_kwh"] or 0.0)
+    except Exception:
+        log.debug("meter_today: Batterie-Tagesenergie nicht lesbar", exc_info=True)
+
     return {
         "source": source,
         "bezug_kwh": round(bezug, 2),
         "einspeisung_kwh": round(einsp, 2),
-        "verbrauch_kwh": round(max(0.0, pv_kwh + bezug - einsp), 2),
+        "verbrauch_kwh": round(max(0.0, pv_kwh + bezug - einsp + bat_net), 2),
     }

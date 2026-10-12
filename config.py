@@ -92,6 +92,9 @@ class HeaterConfig:
     phase1_disabled: bool = False
     phase2_disabled: bool = False
     phase3_disabled: bool = False
+    # Komfort-Mindesttemperatur des Wasserspeichers: bis hierher hat der Heizstab in der
+    # Kaskade (Sommerprofil) Vorrang vor der Batterie. None = summer_mode.target_temp.
+    comfort_min_temp: Optional[float] = None
 
     @property
     def disabled_phases(self) -> tuple[bool, bool, bool]:
@@ -221,6 +224,13 @@ class Config:
     # Warnmarke für die Hausanschluss-Belastung (kW), Lastspitzen-Anzeige
     house_max_load_kw: float = 11.0
     zendure: Optional[ZendureConfig] = None
+
+    @property
+    def comfort_min_temp(self) -> float:
+        """Wasserspeicher-Komfortminimum (Kaskade, Stufe „bis Min“); Default = Sommermodus-Zieltemperatur."""
+        t = self.heater.comfort_min_temp
+        t = self.summer_mode.target_temp if t is None else float(t)
+        return min(t, self.heater.storage_max_temp)
 
     @property
     def zendure_active(self) -> bool:

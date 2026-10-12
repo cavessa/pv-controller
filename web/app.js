@@ -382,9 +382,10 @@ function renderEnergyFlow(heater, wb, cs, zd) {
   // Shelly cascade devices
   const shellys = (cs?.devices ?? []).filter(d => d.enabled && d.type?.startsWith("shelly"));
 
-  // Hausverbrauch estimate: PV + net grid - heizstab
+  // Hausverbrauch estimate: PV + net grid - heizstab (Batterie: Entladung dazu, Ladung ist kein Verbrauch)
   const kwOrW = w => Math.abs(w) >= 1000 ? (w / 1000).toFixed(2) + " kW" : Math.round(w) + " W";
-  const hvW   = Math.max(0, pvW + gridW - heaterW);
+  const batNetW = zd?.enabled ? ((zd.discharge_w ?? 0) - (zd.charge_w ?? 0)) : 0;
+  const hvW   = Math.max(0, pvW + gridW - heaterW + batNetW);
   const hvStr = kwOrW(hvW);
 
   // node geometry (SVG coordinates, viewBox 0 0 360 H)
@@ -3219,6 +3220,7 @@ async function loadSettings() {
     setFormValue(f, "shelly.heater_meter_url", lastConfig.shelly?.heater_meter_url ?? "");
     setFormValue(f, "heater.storage_max_temp", lastConfig.heater?.storage_max_temp);
     setFormValue(f, "heater.storage_temp_hysteresis", lastConfig.heater?.storage_temp_hysteresis);
+    setFormValue(f, "heater.comfort_min_temp", lastConfig.heater?.comfort_min_temp ?? "");
     setFormValue(f, "heater.min_pv_power_ph1", lastConfig.heater?.min_pv_power_ph1);
     setFormValue(f, "heater.min_pv_power_ph2", lastConfig.heater?.min_pv_power_ph2);
     setFormValue(f, "heater.min_pv_power_ph3", lastConfig.heater?.min_pv_power_ph3);
@@ -3325,6 +3327,10 @@ async function saveSettings(e) {
     heater: {
       storage_max_temp: numField("heater.storage_max_temp"),
       storage_temp_hysteresis: numField("heater.storage_temp_hysteresis"),
+      comfort_min_temp: (() => {                       // leer = Default (Zieltemperatur Sommermodus)
+        const v = f.elements.namedItem("heater.comfort_min_temp")?.value;
+        return v === "" || v == null ? null : Number(v);
+      })(),
       min_pv_power_ph1: numField("heater.min_pv_power_ph1"),
       min_pv_power_ph2: numField("heater.min_pv_power_ph2"),
       min_pv_power_ph3: numField("heater.min_pv_power_ph3"),
@@ -3512,6 +3518,7 @@ function boot() {
 
   // Cascade modal
   $("#cascade-edit-form")?.addEventListener("submit", _submitCascadeEdit);
+  _bindCascadeProfileTabs();
   $("#modal-cancel")?.addEventListener("click", _closeEditModal);
   $("#cascade-modal")?.addEventListener("click", e => {
     if (e.target === e.currentTarget) _closeEditModal();
@@ -3626,6 +3633,7 @@ let cascadeStatusData  = null;
 let lastCascadeStatus  = null;  // latest status for cross-widget use
 let _cDrag             = null;  // active drag state
 let _activeMenu        = null;  // open dropdown element
+let cascadeProfileSel  = null;  // angezeigter Tab: "summer" | "winter" (null = aktives Profil)
 
 // ── helpers ──────────────────────────────────────────
 
@@ -3658,22 +3666,56 @@ function _cascadeIcon(type) {
 
 async function loadCascade() {
   try {
+    const q = cascadeProfileSel ? `?profile=${cascadeProfileSel}` : "";
     const [statusData, devData] = await Promise.all([
-      api("/api/cascade/status"),
+      api("/api/cascade/status" + q),
       api("/api/cascade/devices"),
     ]);
     const devMap = Object.fromEntries((devData.devices || []).map(d => [d.id, d]));
     cascadeDevicesData = (statusData.devices || []).map(sd => ({
-      ...(devMap[sd.id] || {}),
+      ...(devMap[sd.device_id || sd.id] || {}),
       ...sd,
     }));
     cascadeStatusData = statusData;
+    if (!cascadeProfileSel) cascadeProfileSel = statusData.profile;
+    renderCascadeProfileTabs(statusData);
     renderCascadeTab(cascadeDevicesData, statusData.surplus_watts);
-    renderCascadeMini(statusData);
+    if (statusData.profile === statusData.active_profile) renderCascadeMini(statusData);
   } catch (err) {
     const el = document.getElementById("cascade-device-list");
     if (el) el.innerHTML = `<div class="card"><p class="note" style="color:var(--error)">Fehler: ${escapeHtml(err.message)}</p></div>`;
   }
+}
+
+// ── Profil-Tabs (Sommer / Winter) ────────────────────
+
+function renderCascadeProfileTabs(status) {
+  const active = status?.active_profile;
+  document.querySelectorAll("#cascade-profile-tabs .cascade-profile-tab").forEach(btn => {
+    const p = btn.dataset.profile;
+    btn.classList.toggle("selected", p === cascadeProfileSel);
+    btn.classList.toggle("is-active-profile", p === active);
+    btn.setAttribute("aria-selected", p === cascadeProfileSel ? "true" : "false");
+    btn.textContent = (p === "summer" ? "☀ Sommer" : "❄ Winter") + (p === active ? " · aktiv" : "");
+  });
+  const hint = document.getElementById("cascade-profile-hint");
+  if (hint) {
+    const sel = cascadeProfileSel;
+    hint.textContent = sel === active
+      ? (sel === "summer"
+          ? `Sommerprofil ist aktiv (Öl aus): Wasserspeicher bis ${status.comfort_min_temp} °C → Batterie → Wasserspeicher bis ${status.storage_max_temp} °C.`
+          : `Winterprofil ist aktiv (Öl heizt): Batterie → Wasserspeicher bis Max.`)
+      : `Dieses Profil ist gerade nicht aktiv – es gilt, sobald der Sommermodus ${sel === "summer" ? "eingeschaltet" : "ausgeschaltet"} wird.`;
+  }
+}
+
+function _bindCascadeProfileTabs() {
+  document.querySelectorAll("#cascade-profile-tabs .cascade-profile-tab").forEach(btn => {
+    btn.addEventListener("click", () => {
+      cascadeProfileSel = btn.dataset.profile;
+      loadCascade();
+    });
+  });
 }
 
 // ── render tab ───────────────────────────────────────
@@ -3691,9 +3733,14 @@ function renderCascadeTab(devices, surplusW) {
   if (el("cs-fill"))     el("cs-fill").style.width     = fillPct.toFixed(1) + "%";
 
   listEl.innerHTML = devices.map((d, i) => {
+    const devId       = d.device_id || d.id;           // Heizstab-Stufen gehören zum Gerät "heizstab"
     const isShelly    = d.type.startsWith("shelly");
-    const isProtected = d.id === "heizstab" || d.id === "wallbox" || d.id === "zendure";
-    const statusText  = d.manual_override_action
+    const isProtected = devId === "heizstab" || devId === "wallbox" || devId === "zendure";
+    const statusText  = d.skipped
+      ? (d.stage === "heizstab_min"
+          ? `übersprungen – Speicher ≥ ${cascadeStatusData?.comfort_min_temp ?? ""} °C`
+          : "übersprungen – Speicher voll")
+      : d.manual_override_action
       ? (d.type === "zendure"
           ? (d.manual_override_action === "on" ? "Laden erzwungen" : "Entladen gesperrt")
           : "Manuell " + (d.manual_override_action === "on" ? "EIN" : "AUS"))
@@ -3709,8 +3756,9 @@ function renderCascadeTab(devices, surplusW) {
       pwrText = `${Math.round(d.last_status_power_w)} W <span class="cascade-power-actual">(von ${d.power_watts} W)</span>`;
     }
 
-    return `<div class="cascade-card${d.enabled ? "" : " disabled-device"}"
+    return `<div class="cascade-card${d.enabled ? "" : " disabled-device"}${d.skipped ? " skipped-stage" : ""}"
         data-id="${escapeHtml(d.id)}"
+        data-device-id="${escapeHtml(devId)}"
         data-is-shelly="${isShelly}"
         data-is-zendure="${d.type === "zendure"}"
         data-is-protected="${isProtected}">
@@ -3731,11 +3779,11 @@ function renderCascadeTab(devices, surplusW) {
         <span class="cascade-badge ${d.is_on ? "on" : "off"}">${d.is_on ? "AN" : "AUS"}</span>
         <label class="toggle-switch" title="${d.enabled ? "Deaktivieren" : "Aktivieren"}">
           <input type="checkbox" class="device-enabled-toggle"
-            data-device-id="${escapeHtml(d.id)}" ${d.enabled ? "checked" : ""}>
+            data-device-id="${escapeHtml(devId)}" ${d.enabled ? "checked" : ""}>
           <span class="toggle-track"></span>
         </label>
         <button class="cascade-menu-btn" title="Aktionen"
-          data-device-id="${escapeHtml(d.id)}">⋮</button>
+          data-device-id="${escapeHtml(devId)}">⋮</button>
       </div>
     </div>`;
   }).join("");
@@ -3776,11 +3824,11 @@ function _closeMenu() {
 function _openCascadeMenu(btn) {
   _closeMenu();
   const card      = btn.closest(".cascade-card");
-  const id        = card.dataset.id;
+  const id        = card.dataset.deviceId || card.dataset.id;
   const isShelly  = card.dataset.isShelly === "true";
   const isProt    = card.dataset.isProtected === "true";
   const isZendure = card.dataset.isZendure === "true";
-  const device    = cascadeDevicesData.find(d => d.id === id) || {};
+  const device    = cascadeDevicesData.find(d => (d.device_id || d.id) === id) || {};
   const enabled   = device.enabled ?? true;
 
   const menu = document.createElement("div");
@@ -3821,21 +3869,26 @@ function _openCascadeMenu(btn) {
 // ── device actions ───────────────────────────────────
 
 async function _cascadeToggleEnabled(id, enabled) {
-  const card = document.querySelector(`.cascade-card[data-id="${id}"]`);
-  const chk  = card?.querySelector(".device-enabled-toggle");
-  if (card) card.classList.toggle("disabled-device", !enabled);
-  if (chk)  chk.checked = enabled;
+  const cards = Array.from(document.querySelectorAll(`.cascade-card[data-device-id="${id}"]`));
+  const card = cards[0];
+  cards.forEach(c => {
+    c.classList.toggle("disabled-device", !enabled);
+    const k = c.querySelector(".device-enabled-toggle");
+    if (k) k.checked = enabled;
+  });
   try {
     await api(`/api/cascade/devices/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled }),
     });
-    const d = cascadeDevicesData.find(x => x.id === id);
-    if (d) d.enabled = enabled;
+    cascadeDevicesData.filter(x => (x.device_id || x.id) === id).forEach(x => { x.enabled = enabled; });
   } catch (err) {
-    if (card) card.classList.toggle("disabled-device", enabled);
-    if (chk)  chk.checked = !enabled;
+    cards.forEach(c => {
+      c.classList.toggle("disabled-device", enabled);
+      const k = c.querySelector(".device-enabled-toggle");
+      if (k) k.checked = !enabled;
+    });
     showError("Gerät konnte nicht aktualisiert werden: " + err.message);
   }
 }
@@ -3866,7 +3919,7 @@ async function _cascadeDelete(id) {
 // ── edit modal ───────────────────────────────────────
 
 function _openEditModal(id) {
-  const d = cascadeDevicesData.find(x => x.id === id);
+  const d = cascadeDevicesData.find(x => (x.device_id || x.id) === id);
   if (!d) return;
   const modal = document.getElementById("cascade-modal");
   if (!modal) return;
@@ -3999,7 +4052,7 @@ function _cdEnd(e) {
     api("/api/cascade/reorder", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ deviceIds }),
+      body: JSON.stringify({ deviceIds, profile: cascadeProfileSel }),
     }).catch(err => showError("Reihenfolge konnte nicht gespeichert werden: " + err.message));
   }
 }
@@ -4026,6 +4079,9 @@ function renderCascadeMini(status) {
   const surplusW = status.surplus_watts ?? 0;
   const assignedW = devices.filter(d => d.is_on && d.enabled).reduce((s, d) => s + d.power_watts, 0);
   const freeW    = Math.max(0, surplusW - assignedW);
+
+  const profEl = document.getElementById("cascade-mini-profile");
+  if (profEl) profEl.textContent = status.profile === "summer" ? "· Sommerprofil" : status.profile === "winter" ? "· Winterprofil" : "";
 
   const surplusEl = document.getElementById("cascade-mini-surplus");
   if (surplusEl) {
