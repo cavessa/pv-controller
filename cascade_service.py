@@ -16,6 +16,7 @@ Eco-Modus der Wallbox bleiben als zusätzliche Bedingungen erhalten.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -36,6 +37,8 @@ from db import (
     increment_cascade_device_errors,
     log_cascade_action,
     reset_cascade_device_errors,
+    set_cascade_budget,
+    smooth_heater_budget,
     set_cascade_device_retry_after,
     update_cascade_device,
     update_cascade_device_live_status,
@@ -43,6 +46,7 @@ from db import (
 )
 
 _MAX_ERRORS = 5
+_METER_READ_TIMEOUT_S = 1.5   # Lesen darf kurz warten; ein toter Zähler bremst sonst jeden Lauf
 _AUTO_RETRY_HOURS = 1
 
 log = logging.getLogger(__name__)
@@ -55,10 +59,10 @@ class CascadeService:
         self.solax = SolaxClient(config.solax.url, config.solax.pwd, timeout)
         self.shelly = ShellyCascadeClient()
         self.heater_meter = Shelly3EMClient(
-            config.shelly.heater_meter_url, timeout, name="heater_meter"
+            config.shelly.heater_meter_url, _METER_READ_TIMEOUT_S, name="heater_meter"
         )
         self.main_meter = Shelly3EMClient(
-            config.shelly.main_meter_url, timeout, name="main_meter"
+            config.shelly.main_meter_url, _METER_READ_TIMEOUT_S, name="main_meter"
         )
         self.goe: Optional[GoeClient] = None
         if config.wallbox.enabled and config.wallbox.url:
@@ -152,6 +156,13 @@ class CascadeService:
         for device in devices:
             override = self._active_override(device)
 
+            if device["type"] == "heizstab":
+                remaining = self._handle_heater(
+                    device, remaining, surplus, actual_device_w, override
+                )
+                results.append(self._result(device, device.get("_reason", "")))
+                continue
+
             if device["type"] == "zendure":
                 remaining = self._handle_zendure(
                     device, remaining, surplus, zd_status, -raw_feed_in, override
@@ -216,6 +227,49 @@ class CascadeService:
 
         log.info("=== Kaskade Ende: remaining=%d W ===", remaining)
         return {"surplus_watts": surplus, "devices": results}
+
+    # ── Heizstab: Kaskade legt nur das Budget fest ───────────────────────────
+
+    def _handle_heater(
+        self, device: dict, remaining: int, surplus: int,
+        actual_device_w: dict[str, float], override: Optional[str],
+    ) -> int:
+        """Budget („Heizstab darf X W haben") berechnen und für den Controller ablegen.
+
+        Welche Phasen innerhalb des Budgets laufen, entscheidet allein der Controller
+        (heater_phases.decide_phases; Mindestzeiten, Hysterese, Max-Temp). Vom Restbudget
+        der nachfolgenden Geräte wird die **gemessene** Heizstab-Leistung abgezogen.
+        """
+        h = self.cfg.heater
+        raw = int(remaining)
+        if override == "off":
+            budget, force = 0, "off"
+        elif override == "on":
+            budget, force = int(h.phase_power_w * 3), "on"
+        else:
+            budget, force = int(round(smooth_heater_budget(raw, h.budget_smooth_min))), None
+        set_cascade_budget(device["id"], budget, raw, force)
+
+        target = max(0, min(3, math.floor((budget + h.grid_assist_w) / h.phase_power_w)))
+        now = datetime.now()
+        active = target >= 1
+        if active != device["is_on"]:
+            update_cascade_device_state(
+                device["id"], active,
+                turned_on_at=now if active else None, turned_off_at=None if active else now,
+            )
+
+        actual_w = int(actual_device_w.get(device["id"], 0))
+        remaining -= actual_w
+        reason = (
+            f"Budget {budget} W (roh {raw} W, Mittel {h.budget_smooth_min} min) → bis zu {target} Phase(n); "
+            f"Startschwelle {int(h.phase_power_w - h.grid_assist_w)} W, Ist {actual_w} W"
+            + (f"; manuell {force.upper()}" if force else "")
+        )
+        log_cascade_action(surplus, device["id"], "budget", reason, remaining)
+        log.info("Kaskade: %s → %s, remaining=%d W", device["name"], reason, remaining)
+        device["_reason"] = reason
+        return remaining
 
     # ── Batterie (stufenlos) ─────────────────────────────────────────────────
 

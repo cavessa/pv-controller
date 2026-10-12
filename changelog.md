@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-10-12 – Heizstab: Fail-safe pro Phase, Kaskade = Budget, Controller = Phasen
+
+**Anlass (User):** Grundlage `docs/steuerung-ist-analyse.md`: Ein ausgefallener Phasen-Shelly legte die ganze Steuerung lahm (inkl. Max-Temperatur), der Heizstab wurde von zwei Ebenen ohne gemeinsame Mindestzeiten geschaltet (bis 39 Wechsel/h).
+
+**A – Fail-safe granular**
+- Lesefehler einer Phase → Phase `unknown` (wird nicht geschaltet, zählt im Budget als laufend); die anderen Phasen arbeiten normal weiter. `Readings.unreachable_phases`, Fehlerliste enthält weiter `phN_state`.
+- **Globaler Fail-safe nur noch** bei nicht lesbarem Hauptzähler oder Wechselrichter (`Readings.critical_errors`): dann keine überschussbasierten Schaltbefehle und kein Sommermodus-Start.
+- **Maximaltemperatur hat absoluten Vorrang** und gilt immer (auch im globalen Fail-safe): ≥ Max → alle erreichbaren Phasen AUS; Speichertemperatur nicht lesbar → alle erreichbaren Phasen AUS („Speichertemperatur unbekannt – Heizstab aus"). Gilt ebenso für Sommermodus-Stopp und manuelles AUS – auch innerhalb der Mindestlaufzeit.
+- **Paralleles Lesen** (`ThreadPoolExecutor`) mit 1,5 s Lese-Timeout für Shelly-Reads (`SHELLY_READ_TIMEOUT_S`; Schalten behält `runtime.request_timeout_seconds`); gleiches Lese-Timeout für die Zähler der Kaskade. Lauf mit totem PH1: ≈ 2 s statt 7,6 s.
+- **Dauerhaft tote Geräte:** Tabelle `device_health`; ab 10 min ohne Antwort ein einmaliger Log-Eintrag („Phase 1 (192.168.2.53) seit HH:MM Uhr nicht erreichbar"), ein weiterer beim Wiederkommen; `/api/status` → `device_alerts`, Dashboard-Banner. Die Einzel-Lesefehler der Phasen werden nicht mehr pro Lauf geloggt.
+
+**B – Eine Zuständigkeit**
+- **Kaskade** (`cascade_service._handle_heater`): legt nur das Budget fest („Heizstab darf X W haben" = Rest-Überschuss an seiner Priorität, brutto) und speichert es (`cascade_devices.budget_*`); vom Restbudget der nachfolgenden Geräte wird die **gemessene** Heizstab-Leistung abgezogen. Manuelle Übersteuerung: AUS = Budget 0 (sofort), EIN = volle Leistung. Die Kaskaden-Mindestzeiten gelten für den Heizstab nicht mehr.
+- **Controller** (neu: `heater_phases.decide_phases`, reine Funktion): Ziel-Phasen = `floor((Budget + grid_assist_w) / phase_power_w)`, 0–3; erst ab Schwelle starten, Abschalten erst unter Schwelle − `phase_down_hyst` × Phase (15 %); Mindestlaufzeit 180 s / Mindestpause 120 s je Phase (aus `HeizstabPhaseLog`), höchstens 1 Phase pro Lauf zuschalten; Hysteresebereich 62–64 °C wie bisher (keine neue Phase ohne laufenden Zyklus). Fehlt ein aktuelles Kaskaden-Budget (Kaskade aus/veraltet > 3 min), rechnet der Controller selbst (`-true_surplus_w`, gleich geglättet).
+- `grid_assist_w` gilt nur noch hier; die Kaskade zeigt als Startschwelle `phase_power_w − grid_assist_w` (statt fix 1 500 W). Die Schwellen `min_pv_power_ph1..3` sind **ohne Wirkung** (Phasenschwelle = n × `phase_power_w`); die UI-Felder sind als „veraltet" markiert.
+- **Zusätzlich (Abweichung):** Budget-Glättung `heater.budget_smooth_min` (Default 10): Mittel der letzten 10 Minuten. Ohne sie erreichte die neue Logik im Nachspielen die Zielmarke nicht (Wolken: Budget schwankt um mehrere kW pro Minute).
+- Neue Config-Felder `heater.phase_min_on_s`, `phase_min_off_s`, `phase_down_hyst`, `budget_smooth_min` (Settings → Heizstab & Wasserspeicher, `config.example.json`).
+
+**Nachgespielt (Minutenlog, Phasenwechsel/h, alt → neu mit 10-min-Glättung):** 07.10. max 10 → 5; 09.10. max 39 → 5 (88 → 12 Wechsel/Tag); 10.10. max 24 → 7; 11.10. max 11 → 4. Ohne Glättung (Mindestzeiten allein): 09.10. max 20/h. Die Simulation kennt keine Rückkopplung des Heizstabs auf die Temperatur; Netzanteil des Heizstabs (09.10. 11–15 Uhr): real 0,7 kWh, simuliert 1,1 kWh (längere Mittelung ⇒ etwas später abgeschaltet).
+
+**Tests:** `tests/test_heater_phases.py` (18), `tests/test_controller_phases.py` (10, Fake-Geräte, eigene Test-DB), `tests/test_zendure_control.py` (12): `python -m unittest discover -s tests -t .`.
+
+**Hinweis:** Der **Cron-Lauf** (`main.py`) nutzt den Code sofort, nur der Web-Dienst braucht einen Neustart (Dashboard-Banner, neue Settings-Felder, `device_alerts`). Zendure-Code und Wallbox-Logik unverändert.
+
 ## 2026-10-12 – Ist-Analyse der Steuerungslogik (nur Dokumentation)
 
 Neuer Bericht `docs/steuerung-ist-analyse.md`: wie Heizstab, Wallbox und Kaskade heute tatsächlich entscheiden (mit Code-Referenzen), Auswertung von 5,75 Tagen Controller-Log und 7 Tagen DB-Daten sowie Bewertung für die Batterie-Integration mit offenen Entscheidungen. **Kein Code geändert.** Wichtigste Befunde: Phase-1-Shelly offline → Fail-safe an 79 % der Minuten am 11.10.; Heizstab wird von zwei Ebenen ohne gemeinsame Mindestzeiten gesteuert (Flackern an 5 von 8 Tagen); `grid_assist_w` wirkt für Phase 1 nicht; Kaskaden-Gerät „Wallbox" und die Wallbox-Temperatur-Einstellungen haben keine Wirkung.

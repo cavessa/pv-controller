@@ -31,9 +31,12 @@ class ShellyPlugClient:
         name: str = "shelly",
         type_: str = "shelly_gen1",
         channel: int = 0,
+        read_timeout: Optional[float] = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        # Lesen darf kürzer warten als Schalten (ein toter Shelly bremst sonst jeden Lauf)
+        self.read_timeout = read_timeout if read_timeout is not None else timeout
         self.name = name
         self.type_ = type_
         self.channel = channel
@@ -44,17 +47,17 @@ class ShellyPlugClient:
                 r = requests.get(
                     f"{self.base_url}/rpc/Switch.GetStatus",
                     params={"id": self.channel},
-                    timeout=self.timeout,
+                    timeout=self.read_timeout,
                 )
                 r.raise_for_status()
                 return bool(r.json()["output"])
             r = requests.get(
-                f"{self.base_url}/relay/{self.channel}", timeout=self.timeout
+                f"{self.base_url}/relay/{self.channel}", timeout=self.read_timeout
             )
             r.raise_for_status()
             return bool(r.json()["ison"])
         except (requests.RequestException, KeyError, ValueError) as e:
-            log.error("Shelly %s read relay state failed: %s", self.name, e)
+            log.debug("Shelly %s read relay state failed: %s", self.name, e)  # Dauerausfall meldet der Controller einmalig
             return None
 
     def set_relay(self, on: bool) -> bool:

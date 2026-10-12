@@ -80,8 +80,20 @@ class HeaterConfig:
     # Erlaubter Netzbezug (W): wird von den min_pv_power_phX-Schwellen abgezogen,
     # d.h. der Heizstab startet schon mit (min_pv_power - grid_assist_w) Überschuss.
     grid_assist_w: float = 0.0
+    # Phasenlogik (heater_phases.py): Mindestzeiten je Phase, Halte-Hysterese beim
+    # Runterschalten (Anteil von phase_power_w) und Glättung des Budgets (Mittel, Minuten)
+    phase_min_on_s: float = 180.0
+    phase_min_off_s: float = 120.0
+    phase_down_hyst: float = 0.15
+    budget_smooth_min: int = 10
 
     def __post_init__(self) -> None:
+        if self.phase_min_on_s < 0 or self.phase_min_off_s < 0:
+            raise ValueError("heater.phase_min_on_s / phase_min_off_s must be >= 0")
+        if not 0 <= self.phase_down_hyst < 1:
+            raise ValueError("heater.phase_down_hyst must be in [0, 1)")
+        if self.budget_smooth_min < 1:
+            raise ValueError("heater.budget_smooth_min must be >= 1")
         if self.grid_assist_w < 0:
             raise ValueError(
                 f"heater.grid_assist_w must be >= 0, got {self.grid_assist_w}"

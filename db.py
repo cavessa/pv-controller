@@ -913,6 +913,10 @@ def init_cascade_tables() -> None:
             )
         """)
         for col, definition in (
+            ("budget_w",            "INTEGER"),   # Heizstab-Budget (geglättet), Kaskade -> Controller
+            ("budget_raw_w",        "INTEGER"),
+            ("budget_force",        "TEXT"),      # 'on' | 'off' (manuelle Übersteuerung)
+            ("budget_at",           "TEXT"),
             ("consecutive_errors",  "INTEGER DEFAULT 0"),
             ("last_status_power_w", "REAL"),
             ("last_status_ok",      "INTEGER DEFAULT 1"),
@@ -1224,6 +1228,132 @@ def update_cascade_settings(**kwargs: object) -> dict:
                     (k, str(int(v) if isinstance(v, bool) else int(v))),
                 )
     return get_cascade_settings()
+
+
+def set_cascade_budget(
+    device_id: str, budget_w: int, raw_w: int, force: Optional[str] = None
+) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "UPDATE cascade_devices SET budget_w = ?, budget_raw_w = ?, budget_force = ?, "
+            "budget_at = ? WHERE id = ?",
+            (int(budget_w), int(raw_w), force, datetime.now().isoformat(timespec="seconds"), device_id),
+        )
+
+
+def get_cascade_budget(device_type: str, max_age_s: float = 180.0) -> Optional[dict]:
+    """Budget des (aktiven) Kaskaden-Geräts dieses Typs oder None (fehlt/deaktiviert/veraltet)."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT budget_w, budget_raw_w, budget_force, budget_at FROM cascade_devices "
+                "WHERE type = ? AND enabled = 1 ORDER BY priority ASC LIMIT 1",
+                (device_type,),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    if not row or row[0] is None or not row[3]:
+        return None
+    age = (datetime.now() - datetime.fromisoformat(row[3])).total_seconds()
+    if age > max_age_s:
+        return None
+    return {"budget_w": row[0], "raw_w": row[1], "force": row[2], "age_s": age}
+
+
+def smooth_heater_budget(raw_w: float, minutes: int, record: bool = True) -> float:
+    """Mittel der letzten `minutes` Minuten (inkl. aktuellem Wert) des Heizstab-Budgets.
+
+    Jede Minute zählt einmal (Cron und Web-Poller schreiben nicht doppelt); mit
+    record=False wird nur gelesen (READ_ONLY).
+    """
+    now = datetime.now()
+    key = now.strftime("%Y-%m-%d %H:%M")
+    since = (now - timedelta(minutes=max(1, minutes) - 1)).strftime("%Y-%m-%d %H:%M")
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS heater_budget_log (ts TEXT PRIMARY KEY, raw_w REAL)")
+        if record:
+            conn.execute("INSERT OR REPLACE INTO heater_budget_log (ts, raw_w) VALUES (?, ?)", (key, raw_w))
+            conn.execute("DELETE FROM heater_budget_log WHERE ts < ?",
+                         ((now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M"),))
+        rows = conn.execute(
+            "SELECT raw_w FROM heater_budget_log WHERE ts >= ? AND ts <= ? AND ts != ?",
+            (since, key, key),
+        ).fetchall()
+    vals = [r[0] for r in rows] + [raw_w]
+    return sum(vals) / len(vals)
+
+
+def get_last_phase_changes() -> dict[int, datetime]:
+    """Zeitpunkt der letzten Schaltung je Phase (aus HeizstabPhaseLog, lokale Zeit)."""
+    out: dict[int, datetime] = {}
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            for phase, ts in conn.execute(
+                "SELECT phase, MAX(timestamp) FROM HeizstabPhaseLog GROUP BY phase"
+            ):
+                try:
+                    out[int(phase)] = datetime.fromisoformat(ts)
+                except (TypeError, ValueError):
+                    pass
+    except sqlite3.Error:
+        pass
+    return out
+
+
+def device_health_update(device_id: str, ok: bool) -> dict:
+    """Erreichbarkeit eines Geräts fortschreiben.
+
+    Liefert {"down_min": Minuten seit dem ersten Fehler (0 wenn ok), "since": HH:MM,
+    "newly_down": True genau einmal, wenn die Meldeschwelle erstmals überschritten wird
+    (Aufrufer prüft down_min), "recovered": True genau einmal beim Wiederkommen nach Alarm}.
+    """
+    now = datetime.now()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS device_health ("
+            "device_id TEXT PRIMARY KEY, first_fail_at TEXT NOT NULL, alerted INTEGER NOT NULL DEFAULT 0)"
+        )
+        row = conn.execute(
+            "SELECT first_fail_at, alerted FROM device_health WHERE device_id = ?", (device_id,)
+        ).fetchone()
+        if ok:
+            if row:
+                conn.execute("DELETE FROM device_health WHERE device_id = ?", (device_id,))
+            return {"down_min": 0.0, "since": None, "recovered": bool(row and row[1])}
+        if not row:
+            conn.execute(
+                "INSERT INTO device_health (device_id, first_fail_at) VALUES (?, ?)",
+                (device_id, now.isoformat(timespec="seconds")),
+            )
+            first = now
+            alerted = 0
+        else:
+            first, alerted = datetime.fromisoformat(row[0]), row[1]
+        down_min = (now - first).total_seconds() / 60.0
+        return {"down_min": down_min, "since": first.strftime("%H:%M"),
+                "alerted": bool(alerted), "recovered": False}
+
+
+def mark_device_alerted(device_id: str) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("UPDATE device_health SET alerted = 1 WHERE device_id = ?", (device_id,))
+
+
+def get_device_alerts(min_minutes: float = 10.0) -> list[dict]:
+    """Geräte, die seit mindestens min_minutes nicht erreichbar sind."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            rows = conn.execute("SELECT device_id, first_fail_at FROM device_health").fetchall()
+    except sqlite3.Error:
+        return []
+    now = datetime.now()
+    out = []
+    for dev, ts in rows:
+        first = datetime.fromisoformat(ts)
+        mins = (now - first).total_seconds() / 60.0
+        if mins >= min_minutes:
+            out.append({"id": dev, "since": first.strftime("%H:%M"), "minutes": int(mins)})
+    return out
 
 
 def get_cascade_permission(device_type: str) -> Optional[bool]:

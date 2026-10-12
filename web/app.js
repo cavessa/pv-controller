@@ -87,6 +87,18 @@ function renderStatus(s) {
   lastZendure = s.zendure ?? null;
   renderZendureCard(lastZendure);
 
+  // Geräte, die seit ≥ 10 min nicht antworten (z. B. ein Phasen-Shelly)
+  const devBanner = $("#device-banner");
+  if (devBanner) {
+    const alerts = s.device_alerts ?? [];
+    if (alerts.length) {
+      devBanner.className = "wb-banner warn";
+      devBanner.textContent = alerts.map(a => `${a.label} seit ${a.since} Uhr nicht erreichbar`).join(" · ");
+    } else {
+      devBanner.className = "wb-banner warn hidden";
+    }
+  }
+
   // pills
   $("#pill-enabled").textContent = "Automatik: " + (s.runtime.enabled ? "aktiv" : "aus");
   $("#pill-enabled").className = "pill " + (s.runtime.enabled ? "ok" : "warn");
@@ -3192,6 +3204,10 @@ async function loadSettings() {
     setFormValue(f, "heater.min_pv_power_ph2", lastConfig.heater?.min_pv_power_ph2);
     setFormValue(f, "heater.min_pv_power_ph3", lastConfig.heater?.min_pv_power_ph3);
     setFormValue(f, "heater.grid_assist_w", lastConfig.heater?.grid_assist_w ?? 0);
+    setFormValue(f, "heater.phase_min_on_s", lastConfig.heater?.phase_min_on_s ?? 180);
+    setFormValue(f, "heater.phase_min_off_s", lastConfig.heater?.phase_min_off_s ?? 120);
+    setFormValue(f, "heater.phase_down_hyst", lastConfig.heater?.phase_down_hyst ?? 0.15);
+    setFormValue(f, "heater.budget_smooth_min", lastConfig.heater?.budget_smooth_min ?? 10);
     setFormValue(f, "wallbox.enabled", lastConfig.wallbox?.enabled);
     setFormValue(f, "wallbox.url", lastConfig.wallbox?.url ?? "");
     setFormValue(f, "wallbox.only_control_when_pv_surplus_active", lastConfig.wallbox?.only_control_when_pv_surplus_active);
@@ -3292,6 +3308,10 @@ async function saveSettings(e) {
       min_pv_power_ph2: numField("heater.min_pv_power_ph2"),
       min_pv_power_ph3: numField("heater.min_pv_power_ph3"),
       grid_assist_w: numField("heater.grid_assist_w"),
+      phase_min_on_s: numField("heater.phase_min_on_s"),
+      phase_min_off_s: numField("heater.phase_min_off_s"),
+      phase_down_hyst: numField("heater.phase_down_hyst"),
+      budget_smooth_min: numField("heater.budget_smooth_min"),
     },
     wallbox: {
       enabled: boolField("wallbox.enabled"),
@@ -3593,6 +3613,7 @@ function _cascadeActionText(action) {
     skip_min_on:    "Mindestlaufzeit",
     skip_min_off:   "Mindestpause",
     manual_override:"Manuell",
+    budget:         "Budget",
     charge:         "lädt",
     discharge:      "entlädt",
     idle:           "Standby",
@@ -4217,6 +4238,7 @@ const _cascadeHistActionLabel = {
   skip_min_off:   { label: "Mindestpause",   cls: "cascade-hist-other" },
   manual_override:{ label: "Manuell",        cls: "cascade-hist-other" },
   auto_disabled:  { label: "deaktiviert",    cls: "cascade-hist-off" },
+  budget:         { label: "Budget",         cls: "cascade-hist-other" },
   charge:         { label: "lädt",           cls: "cascade-hist-on" },
   discharge:      { label: "entlädt",        cls: "cascade-hist-on" },
   idle:           { label: "Standby",        cls: "cascade-hist-other" },

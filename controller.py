@@ -19,6 +19,7 @@ Temperaturlogik (vereinfacht):
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -34,9 +35,14 @@ from clients.shelly_client import (
 )
 from config import Config
 from db import (
-    get_cascade_permission,
+    device_health_update,
+    get_cascade_budget,
+    get_last_phase_changes,
     log_phase_change,
+    mark_device_alerted,
+    smooth_heater_budget,
 )
+from heater_phases import HeaterParams, PhaseIn, decide_phases
 from models import (
     ControllerResult,
     PhaseAction,
@@ -50,26 +56,16 @@ from models import (
 
 log = logging.getLogger(__name__)
 
-# Modul-level Zähler für aufeinanderfolgende Lesefehler (prozesslokal).
-# Fail-safe wird erst nach _FAIL_SAFE_THRESHOLD konsekutiven Fehlern aktiviert,
-# um sporadische Timeouts des Pocket-WiFi-Loggers zu tolerieren.
-_consecutive_errors: int = 0
-_FAIL_SAFE_THRESHOLD: int = 2
+# Lesen darf kurz warten: ein toter Shelly bremst sonst jeden Lauf (Schalten: runtime-Timeout).
+SHELLY_READ_TIMEOUT_S = 1.5
+# Ab so vielen Minuten ohne Antwort gilt ein Gerät als „dauerhaft tot" (Banner + einmaliger Log).
+DEVICE_ALERT_MIN = 10
 
 
 class ControllerMode(str, Enum):
     NORMAL = "normal"
     DRY_RUN = "dry_run"
     READ_ONLY = "read_only"
-
-
-@dataclass
-class _PhaseInput:
-    name: str
-    plug: ShellyPlugClient
-    current_state: Optional[bool]
-    surplus_threshold_w: float  # negativ; z. B. -1500
-    min_pv_power_w: float
 
 
 class Controller:
@@ -94,6 +90,7 @@ class Controller:
             name="PH1",
             type_=config.shelly.ph1_type,
             channel=config.shelly.ph1_channel,
+            read_timeout=SHELLY_READ_TIMEOUT_S,
         )
         self.ph2 = ShellyPlugClient(
             config.shelly.ph2_url,
@@ -101,6 +98,7 @@ class Controller:
             name="PH2",
             type_=config.shelly.ph2_type,
             channel=config.shelly.ph2_channel,
+            read_timeout=SHELLY_READ_TIMEOUT_S,
         )
         self.ph3 = ShellyPlugClient(
             config.shelly.ph3_url,
@@ -108,15 +106,16 @@ class Controller:
             name="PH3",
             type_=config.shelly.ph3_type,
             channel=config.shelly.ph3_channel,
+            read_timeout=SHELLY_READ_TIMEOUT_S,
         )
         self.storage = ShellyStorageTempClient(
-            config.shelly.storage_url, timeout, name="storage"
+            config.shelly.storage_url, SHELLY_READ_TIMEOUT_S, name="storage"
         )
         self.main_meter = Shelly3EMClient(
-            config.shelly.main_meter_url, timeout, name="main_meter"
+            config.shelly.main_meter_url, SHELLY_READ_TIMEOUT_S, name="main_meter"
         )
         self.heater_meter = Shelly3EMClient(
-            config.shelly.heater_meter_url, timeout, name="heater_meter"
+            config.shelly.heater_meter_url, SHELLY_READ_TIMEOUT_S, name="heater_meter"
         )
         self.goe: Optional[GoeClient] = None
         if config.wallbox.enabled and config.wallbox.url:
@@ -173,17 +172,11 @@ class Controller:
         except Exception:
             log.warning("Zendure-Lesen fehlgeschlagen", exc_info=True)
 
-    def _read_all(self) -> Readings:
-        if self.cfg.simulation.enabled:
-            return self._read_simulated()
-
-        r = Readings()
-
+    def _read_inverters(self, r: Readings) -> None:
+        """Haupt-WR (+ Pergola, Tageszähler). Ein Thread: das Pocket-WiFi mag nur eine Verbindung."""
         r.pv1_power_w = self.solax.get_pv_power_w()
         r.pv_power_w = r.pv1_power_w
-        if r.pv_power_w is None:
-            r.errors.append("pv_power")
-        else:
+        if r.pv_power_w is not None:
             # kommt aus dem Cache des eben erfolgten Reads (kein zweiter HTTP-Call)
             try:
                 sd = self.solax.get_realtime_data()
@@ -194,52 +187,90 @@ class Controller:
             except Exception:
                 log.warning("Solax-Tageszähler nicht lesbar", exc_info=True)
         self._read_pergola(r)
-        self._read_zendure(r)
 
+    def _read_main_meter(self, r: Readings) -> None:
         r.main_meter_power_w = self.main_meter.get_total_power_w()
         if r.main_meter_power_w is None:
-            r.errors.append("main_meter")
-        else:
-            try:
-                from db import record_main_meter
-                record_main_meter(r.main_meter_power_w)
-            except Exception:
-                log.warning("Hauptzähler-Leistung nicht gespeichert", exc_info=True)
-            # Tagesenergie ist nicht kritisch: Fehler -> Solax-Fallback, kein Fail-safe
-            try:
-                energy = self.main_meter.get_energy_wh()
-                if energy is not None:
-                    r.main_import_wh, r.main_export_wh = energy
-                    from db import ensure_meter_snapshot
-                    ensure_meter_snapshot(*energy)
-            except Exception:
-                log.warning("Hauptzähler-Energie/Snapshot fehlgeschlagen", exc_info=True)
+            return
+        try:
+            from db import record_main_meter
+            record_main_meter(r.main_meter_power_w)
+        except Exception:
+            log.warning("Hauptzähler-Leistung nicht gespeichert", exc_info=True)
+        # Tagesenergie ist nicht kritisch: Fehler -> Solax-Fallback, kein Fail-safe
+        try:
+            energy = self.main_meter.get_energy_wh()
+            if energy is not None:
+                r.main_import_wh, r.main_export_wh = energy
+                from db import ensure_meter_snapshot
+                ensure_meter_snapshot(*energy)
+        except Exception:
+            log.warning("Hauptzähler-Energie/Snapshot fehlgeschlagen", exc_info=True)
 
-        r.heater_meter_power_w = self.heater_meter.get_total_power_w()
+    def _track_health(self, key: str, label: str, ok: bool) -> None:
+        """Dauerhaft tote Geräte: einmal loggen (nach DEVICE_ALERT_MIN) und beim Wiederkommen."""
+        try:
+            h = device_health_update(key, ok)
+            if ok:
+                if h["recovered"]:
+                    log.info("%s wieder erreichbar.", label)
+            elif h["down_min"] >= DEVICE_ALERT_MIN and not h["alerted"]:
+                log.error("%s seit %s Uhr nicht erreichbar.", label, h["since"])
+                mark_device_alerted(key)
+        except Exception:
+            log.debug("Geräte-Status nicht fortgeschrieben", exc_info=True)
+
+    def _read_all(self) -> Readings:
+        """Liest alle Geräte parallel (Lauf ≈ langsamstes Gerät, nicht Summe der Timeouts)."""
+        if self.cfg.simulation.enabled:
+            return self._read_simulated()
+
+        r = Readings()
+        with ThreadPoolExecutor(max_workers=9, thread_name_prefix="read") as ex:
+            f_inv = ex.submit(self._read_inverters, r)
+            f_zd = ex.submit(self._read_zendure, r)
+            f_main = ex.submit(self._read_main_meter, r)
+            f_heat = ex.submit(self.heater_meter.get_total_power_w)
+            f_temp = ex.submit(self.storage.get_temperature_c)
+            f_ph = [ex.submit(p.get_relay_state) for p in (self.ph1, self.ph2, self.ph3)]
+            for f in (f_inv, f_zd, f_main):
+                f.result()
+            r.heater_meter_power_w = f_heat.result()
+            r.storage_temp_c = f_temp.result()
+            ph_states = [f.result() for f in f_ph]
+
+        r.ph1_on, r.ph2_on, r.ph3_on = ph_states
+
+        if r.pv_power_w is None:
+            r.errors.append("pv_power")
+        if r.main_meter_power_w is None:
+            r.errors.append("main_meter")
         if r.heater_meter_power_w is None:
             r.errors.append("heater_meter")
-
-        r.storage_temp_c = self.storage.get_temperature_c()
         if r.storage_temp_c is None:
             r.errors.append("storage_temp")
-
-        r.ph1_on = self.ph1.get_relay_state()
-        if r.ph1_on is None:
-            r.errors.append("ph1_state")
-        r.ph2_on = self.ph2.get_relay_state()
-        if r.ph2_on is None:
-            r.errors.append("ph2_state")
-        r.ph3_on = self.ph3.get_relay_state()
-        if r.ph3_on is None:
-            log.warning("ph3_state Lesefehler – Phase 3 bleibt unverändert, System läuft weiter.")
+        urls = (self.cfg.shelly.ph1_url, self.cfg.shelly.ph2_url, self.cfg.shelly.ph3_url)
+        for i, (state, url) in enumerate(zip(ph_states, urls), start=1):
+            if state is None:
+                r.errors.append(f"ph{i}_state")
+                r.unreachable_phases.append(f"ph{i}")
+            self._track_health(f"ph{i}", f"Phase {i} ({url.replace('http://', '')})", state is not None)
+        self._track_health("storage_temp", "Speichertemperatur-Shelly "
+                           f"({self.cfg.shelly.storage_url.replace('http://', '')})", r.storage_temp_c is not None)
+        self._track_health("heater_meter", "Heizstab-3EM "
+                           f"({self.cfg.shelly.heater_meter_url.replace('http://', '')})",
+                           r.heater_meter_power_w is not None)
+        self._track_health("main_meter", "Hauptzähler "
+                           f"({self.cfg.shelly.main_meter_url.replace('http://', '')})",
+                           r.main_meter_power_w is not None)
 
         # Fallback: heater_meter nicht erreichbar → aus Phasenzuständen schätzen.
-        # Jede Phase hat phase_power_w (1500 W). Kein Fehler → System läuft weiter.
+        # Jede Phase hat phase_power_w (1500 W); eine unbekannte Phase zählt vorsichtshalber als laufend.
         if r.heater_meter_power_w is None:
-            phases_on = sum(1 for ph in (r.ph1_on, r.ph2_on, r.ph3_on) if ph is True)
+            phases_on = sum(1 for ph in ph_states if ph is True or ph is None)
             r.heater_meter_power_w = float(phases_on * self.cfg.heater.phase_power_w)
             log.warning(
-                "heater_meter nicht erreichbar – schätze %d W aus %d aktiven Phasen",
+                "heater_meter nicht erreichbar – schätze %d W aus %d aktiven/unbekannten Phasen",
                 r.heater_meter_power_w,
                 phases_on,
             )
@@ -258,147 +289,8 @@ class Controller:
         return TempStatus.HYSTERESIS_BAND
 
     # ---- Entscheidung --------------------------------------------------
-
-    def _decide_phase(
-        self,
-        phase: _PhaseInput,
-        readings: Readings,
-        temp_status: TempStatus,
-        any_phase_on: bool,
-    ) -> PhaseDecision:
-        """Entscheide AN/AUS/UNCHANGED für eine Phase.
-
-        Reihenfolge:
-        - Unvollständige Werte           -> UNCHANGED (Fail-safe)
-        - storage_temp >= storage_max_temp
-                                          -> AUS
-        - storage_temp <= heat_resume_temp
-                                          -> normale PV-Überschusslogik
-        - sonst (Hysteresebereich)        -> AUSschalten immer erlaubt;
-                                             neue Einschaltungen nur, wenn
-                                             bereits eine Phase läuft
-                                             (aktiver Heizzyklus). Läuft noch
-                                             gar keine Phase, bleibt die
-                                             Neustart-Sperre bestehen (verhindert
-                                             Flattern direkt nach Erreichen von
-                                             storage_max_temp).
-
-        PV-Überschusslogik:
-          surplus = main_meter - heater_meter   (negativ = Einspeisung)
-          AN, wenn surplus <= -min_pv_power UND pv_power >= min_pv_power
-          AUS, wenn surplus > -min_pv_power
-        """
-        cur = phase.current_state
-        temp = readings.storage_temp_c
-        pv = readings.pv_power_w
-        surplus = readings.true_surplus_w
-        h = self.cfg.heater
-
-        def reason(tail: str) -> str:
-            head = (
-                f"needs surplus <= {phase.surplus_threshold_w:.0f} W "
-                f"and pv_power >= {phase.min_pv_power_w:.0f} W"
-            )
-            actual = f"actual surplus={surplus:.0f} W, pv_power={pv:.0f} W"
-            return f"{head}; {actual}; {tail}."
-
-        if temp is None or pv is None or surplus is None or cur is None:
-            return PhaseDecision(
-                phase.name,
-                cur,
-                PhaseAction.UNCHANGED,
-                "incomplete readings – fail-safe, no change.",
-            )
-
-        if temp_status is TempStatus.AT_OR_ABOVE_MAX:
-            tail = (
-                f"storage_temp={temp:.1f} °C >= storage_max_temp="
-                f"{h.storage_max_temp:.1f} °C; "
-                + ("switching OFF" if cur else "already OFF")
-            )
-            return PhaseDecision(
-                phase.name,
-                cur,
-                PhaseAction.TURN_OFF if cur else PhaseAction.UNCHANGED,
-                reason(tail),
-            )
-
-        want_off = surplus > phase.surplus_threshold_w
-        want_on = (
-            surplus <= phase.surplus_threshold_w and pv >= phase.min_pv_power_w
-        )
-
-        if temp_status is TempStatus.HYSTERESIS_BAND:
-            # Im Hysteresebereich: nie eine neue Phase einschalten,
-            # aber laufende Phasen dürfen bei zu wenig Überschuss aus.
-            if want_off and cur:
-                tail = (
-                    f"hysteresis band ({h.heat_resume_temp:.1f} °C < "
-                    f"storage_temp={temp:.1f} °C < {h.storage_max_temp:.1f} °C); "
-                    f"surplus too small; switching OFF"
-                )
-                return PhaseDecision(
-                    phase.name, cur, PhaseAction.TURN_OFF, reason(tail)
-                )
-            if not cur and want_on and any_phase_on:
-                tail = (
-                    f"hysteresis band ({h.heat_resume_temp:.1f} °C < "
-                    f"storage_temp={temp:.1f} °C < {h.storage_max_temp:.1f} °C); "
-                    f"active heating cycle (other phase already ON); "
-                    f"switching ON additional phase"
-                )
-                return PhaseDecision(phase.name, cur, PhaseAction.TURN_ON, reason(tail))
-            if not cur:
-                tail = (
-                    f"hysteresis band ({h.heat_resume_temp:.1f} °C < "
-                    f"storage_temp={temp:.1f} °C < {h.storage_max_temp:.1f} °C); "
-                    + (
-                        "not switching new phase ON (no active heating cycle)"
-                        if not any_phase_on
-                        else "not switching new phase ON"
-                    )
-                )
-                return PhaseDecision(
-                    phase.name, cur, PhaseAction.UNCHANGED, reason(tail)
-                )
-            tail = (
-                f"hysteresis band ({h.heat_resume_temp:.1f} °C < "
-                f"storage_temp={temp:.1f} °C < {h.storage_max_temp:.1f} °C); "
-                f"already ON, surplus sufficient"
-            )
-            return PhaseDecision(phase.name, cur, PhaseAction.UNCHANGED, reason(tail))
-
-        # TempStatus.BELOW_RESUME -> volle PV-Überschusslogik
-        if want_off:
-            tail = "surplus too small; " + ("switching OFF" if cur else "already OFF")
-            return PhaseDecision(
-                phase.name,
-                cur,
-                PhaseAction.TURN_OFF if cur else PhaseAction.UNCHANGED,
-                reason(tail),
-            )
-
-        if want_on:
-            if not cur:
-                return PhaseDecision(
-                    phase.name,
-                    cur,
-                    PhaseAction.TURN_ON,
-                    reason("conditions met; switching ON"),
-                )
-            return PhaseDecision(
-                phase.name, cur, PhaseAction.UNCHANGED, reason("conditions met; already ON")
-            )
-
-        return PhaseDecision(
-            phase.name,
-            cur,
-            PhaseAction.UNCHANGED,
-            reason(
-                f"pv_power below min ({pv:.0f} W < {phase.min_pv_power_w:.0f} W); "
-                + ("staying ON" if cur else "staying OFF")
-            ),
-        )
+    # Die Phasenentscheidung (Budget → Phasen, Mindestzeiten, Max-Temp) liegt in
+    # heater_phases.decide_phases; hier nur Sommermodus und Ausführung.
 
     def _check_summer_mode(
         self,
@@ -843,120 +735,69 @@ class Controller:
 
         self._log_readings(readings, temp_status)
 
-        global _consecutive_errors
-
-        sm_heating = False
-        sm_stop = False
-        sm_reason = ""
-
+        h = self.cfg.heater
         decisions: list[PhaseDecision] = []
-        if readings.errors or temp_status is None:
-            _consecutive_errors += 1
-            error_names = ", ".join(readings.errors) if readings.errors else "storage_temp"
-            if _consecutive_errors < _FAIL_SAFE_THRESHOLD:
-                log.warning(
-                    "Lesefehler bei: %s (Fehler %d/%d) – warte auf weiteren Fehler "
-                    "vor Fail-safe-Aktivierung.",
-                    error_names, _consecutive_errors, _FAIL_SAFE_THRESHOLD,
-                )
-            else:
-                log.warning(
-                    "Lesefehler bei: %s (%d konsekutiv) – Fail-safe, keine Schaltbefehle.",
-                    error_names, _consecutive_errors,
-                )
-            for name, cur in (
-                ("PH1", readings.ph1_on),
-                ("PH2", readings.ph2_on),
-                ("PH3", readings.ph3_on),
-            ):
-                reason = (
-                    f"Fail-safe wegen Lesefehlern ({_consecutive_errors}x)"
-                    if _consecutive_errors >= _FAIL_SAFE_THRESHOLD
-                    else f"Lesefehler ({_consecutive_errors}/{_FAIL_SAFE_THRESHOLD}) – noch kein Fail-safe"
-                )
-                decisions.append(
-                    PhaseDecision(
-                        name,
-                        cur,
-                        PhaseAction.UNCHANGED,
-                        reason,
-                    )
-                )
-        else:
-            _consecutive_errors = 0  # Erfolgreicher Read → Zähler zurücksetzen
-            if temp_status is TempStatus.HYSTERESIS_BAND:
-                log.info(
-                    "Storage temperature within hysteresis band. "
-                    "Avoiding new phase activation."
-                )
-            elif temp_status is TempStatus.AT_OR_ABOVE_MAX:
-                log.info("Storage temperature >= max temperature. All phases off.")
-
-            phases = [
-                _PhaseInput(
-                    name="PH1",
-                    plug=self.ph1,
-                    current_state=readings.ph1_on,
-                    surplus_threshold_w=-h.effective_min_pv(h.min_pv_power_ph1),
-                    min_pv_power_w=h.effective_min_pv(h.min_pv_power_ph1),
-                ),
-                _PhaseInput(
-                    name="PH2",
-                    plug=self.ph2,
-                    current_state=readings.ph2_on,
-                    surplus_threshold_w=-h.effective_min_pv(h.min_pv_power_ph2),
-                    min_pv_power_w=h.effective_min_pv(h.min_pv_power_ph2),
-                ),
-                _PhaseInput(
-                    name="PH3",
-                    plug=self.ph3,
-                    current_state=readings.ph3_on,
-                    surplus_threshold_w=-h.effective_min_pv(h.min_pv_power_ph3),
-                    min_pv_power_w=h.effective_min_pv(h.min_pv_power_ph3),
-                ),
-            ]
-            cascade_heizstab = get_cascade_permission("heizstab")
-            any_phase_on = any(
-                p.current_state is True for p in phases
+        critical = readings.critical_errors
+        if critical:
+            # Ohne Hauptzähler bzw. Wechselrichter ist kein Überschuss bekannt: keine
+            # überschussbasierten Schaltbefehle. Sicherheitsabschaltungen (Max-Temp,
+            # Temperatur unbekannt) gelten weiter, siehe decide_phases.
+            log.warning(
+                "Lesefehler bei: %s – Fail-safe: keine überschussbasierten Schaltbefehle.",
+                ", ".join(critical),
             )
 
-            # Sommermodus: Prüfung VOR den Phasen-Entscheidungen
+        # Sommermodus: Prüfung VOR den Phasen-Entscheidungen
+        sm_heating = sm_stop = False
+        sm_reason = ""
+        if not critical:
             sm_heating, sm_stop, sm_reason = self._check_summer_mode(readings, temp_status)
 
-            for i, p in enumerate(phases):
-                in_summer_heating = sm_heating
-                in_summer_stop = sm_stop
+        # Budget: kommt von der Kaskade (geglättet); ohne aktuelles Kaskaden-Budget
+        # (Kaskade aus / veraltet) eigene Berechnung aus dem Überschuss, gleich geglättet.
+        budget_w: Optional[float] = None
+        force: Optional[str] = None
+        info = get_cascade_budget("heizstab")
+        if info is not None:
+            budget_w, force = float(info["budget_w"]), info["force"]
+            log.info("Heizstab-Budget (Kaskade): %.0f W (roh %s W)%s", budget_w, info["raw_w"],
+                     f", manuell {force}" if force else "")
+        elif readings.true_surplus_w is not None:
+            raw = -readings.true_surplus_w
+            budget_w = smooth_heater_budget(
+                raw, h.budget_smooth_min, record=not self._read_only and not self.cfg.runtime.dry_run
+            )
+            log.info("Heizstab-Budget (Eigenberechnung, kein Kaskaden-Budget): %.0f W (roh %.0f W)",
+                     budget_w, raw)
 
-                if in_summer_stop:
-                    # Zieltemperatur erreicht, kein PV-Überschuss → Netz-Heizung beenden
-                    action = PhaseAction.TURN_OFF if p.current_state else PhaseAction.UNCHANGED
-                    d = PhaseDecision(p.name, p.current_state, action, sm_reason)
-                elif in_summer_heating:
-                    # Sommermodus: Phase aus Netz einschalten (überstimmt Kaskade-Sperre)
-                    action = PhaseAction.UNCHANGED if p.current_state else PhaseAction.TURN_ON
-                    d = PhaseDecision(p.name, p.current_state, action, sm_reason)
-                else:
-                    d = self._decide_phase(p, readings, temp_status, any_phase_on)
-                    if cascade_heizstab is False:
-                        # Kaskade hat Heizstab abgeschaltet:
-                        # - laufende Phase aktiv ausschalten
-                        # - Einschalten blockieren
-                        if d.action is PhaseAction.TURN_ON:
-                            d.action = PhaseAction.UNCHANGED
-                            d.reason += " [Kaskade: Einschalten blockiert]"
-                        elif d.action is PhaseAction.UNCHANGED and p.current_state:
-                            d.action = PhaseAction.TURN_OFF
-                            d.reason += " [Kaskade: Ausschalten erzwungen]"
-
-                self._execute(d, p.plug)
-                decisions.append(d)
-                if d.executed and d.action in (PhaseAction.TURN_ON, PhaseAction.TURN_OFF):
-                    ph_num = int(p.name[2])
-                    state = "on" if d.action == PhaseAction.TURN_ON else "off"
-                    try:
-                        log_phase_change(ph_num, state)
-                    except Exception:
-                        log.warning("Phase-Log konnte nicht geschrieben werden", exc_info=True)
+        last = get_last_phase_changes()
+        plugs = (self.ph1, self.ph2, self.ph3)
+        states = (readings.ph1_on, readings.ph2_on, readings.ph3_on)
+        outs = decide_phases(
+            [PhaseIn(f"PH{i + 1}", states[i], last.get(i + 1)) for i in range(3)],
+            readings.storage_temp_c,
+            budget_w,
+            HeaterParams(
+                phase_w=h.phase_power_w, grid_assist_w=h.grid_assist_w,
+                max_temp=h.storage_max_temp, resume_temp=h.heat_resume_temp,
+                min_on_s=h.phase_min_on_s, min_off_s=h.phase_min_off_s,
+                down_hyst_frac=h.phase_down_hyst,
+            ),
+            now,
+            force=force,
+            summer="stop" if sm_stop else "heat" if sm_heating else None,
+            summer_reason=sm_reason,
+            surplus_fail_safe=bool(critical),
+        )
+        for i, out in enumerate(outs):
+            d = PhaseDecision(f"PH{i + 1}", states[i], out.action, out.reason)
+            self._execute(d, plugs[i])
+            decisions.append(d)
+            if d.executed and d.action in (PhaseAction.TURN_ON, PhaseAction.TURN_OFF):
+                try:
+                    log_phase_change(i + 1, "on" if d.action == PhaseAction.TURN_ON else "off")
+                except Exception:
+                    log.warning("Phase-Log konnte nicht geschrieben werden", exc_info=True)
 
         for d in decisions:
             state_str = (
@@ -989,8 +830,7 @@ class Controller:
             wallbox_status=wallbox_status,
             wallbox_decision=wallbox_decision,
             summary="ok",
-            fail_safe_active=bool(readings.errors or temp_status is None)
-                and _consecutive_errors >= _FAIL_SAFE_THRESHOLD,
+            fail_safe_active=bool(critical),
             summer_mode_heating=_sm_heating_result,
             summer_mode_reason=_sm_reason_result,
         )

@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=61">
+  <link rel="stylesheet" href="/static/styles.css?v=62">
 </head>
 <body>
   <div class="app-shell">
@@ -31,6 +31,7 @@
     <!-- ========= Dashboard ========= -->
     <section id="tab-dashboard" class="tab-panel active">
 
+      <div id="device-banner" class="wb-banner warn hidden"></div>
       <div id="wb-banner" class="wb-banner hidden"></div>
       <div id="cascade-alert-strip" class="cascade-alert-strip hidden"></div>
 
@@ -724,10 +725,14 @@
             <legend>Heizstab &amp; Wasserspeicher</legend>
             <label>storage_max_temp (°C)<input type="number" step="0.1" name="heater.storage_max_temp"></label>
             <label>storage_temp_hysteresis (K)<input type="number" step="0.1" name="heater.storage_temp_hysteresis"></label>
-            <label>min_pv_power_ph1 (W)<input type="number" step="50" name="heater.min_pv_power_ph1"></label>
-            <label>min_pv_power_ph2 (W)<input type="number" step="50" name="heater.min_pv_power_ph2"></label>
-            <label>min_pv_power_ph3 (W)<input type="number" step="50" name="heater.min_pv_power_ph3"></label>
+            <label>min_pv_power_ph1 (W, veraltet – ohne Wirkung)<input type="number" step="50" name="heater.min_pv_power_ph1"></label>
+            <label>min_pv_power_ph2 (W, veraltet – ohne Wirkung)<input type="number" step="50" name="heater.min_pv_power_ph2"></label>
+            <label>min_pv_power_ph3 (W, veraltet – ohne Wirkung)<input type="number" step="50" name="heater.min_pv_power_ph3"></label>
             <label>Netzbezug-Toleranz (W)<input type="number" step="50" min="0" name="heater.grid_assist_w"><small class="field-hint">Wird von den Einschaltschwellen abgezogen: Bei 500 W startet Phase 1 schon mit 1000 W Überschuss, die fehlenden 500 W kommen aus dem Netz. 0 = aus.</small></label>
+            <label>Mindestlaufzeit je Phase (s)<input type="number" step="10" min="0" name="heater.phase_min_on_s"><small class="field-hint">Eine Phase bleibt nach dem Einschalten mindestens so lange an (außer Max-Temperatur/Sommermodus-Stopp/manuell AUS).</small></label>
+            <label>Mindestpause je Phase (s)<input type="number" step="10" min="0" name="heater.phase_min_off_s"></label>
+            <label>Abschalt-Hysterese (Anteil einer Phase)<input type="number" step="0.05" min="0" max="0.95" name="heater.phase_down_hyst"><small class="field-hint">0,15 = erst abschalten, wenn das Budget mehr als 15 % einer Phase unter der Schwelle liegt.</small></label>
+            <label>Budget-Glättung (Minuten)<input type="number" step="1" min="1" name="heater.budget_smooth_min"><small class="field-hint">Mittelwert des Überschuss-Budgets über so viele Minuten (verhindert Flackern bei Wolken; 1 = aus).</small></label>
             <label>Wasserspeicher-Priorität aktiv bis (°C)<input type="number" step="0.1" name="wallbox.pause_below_storage_temp"><small class="field-hint">Unterhalb dieser Temperatur bleibt PV-Überschuss zuerst für den Wasserspeicher reserviert.</small></label>
             <label>Wallbox wieder freigeben ab Wasserspeicher-Temperatur (°C)<input type="number" step="0.1" name="wallbox.release_above_storage_temp"><small class="field-hint">Ab dieser Temperatur darf die Wallbox wieder laden.</small></label>
           </fieldset>
@@ -923,6 +928,6 @@
   </footer>
   </div>
 
-  <script src="/static/app.js?v=20261012c" defer></script>
+  <script src="/static/app.js?v=20261012d" defer></script>
 </body>
 </html>

@@ -198,6 +198,14 @@ def _summary(result: ControllerResult, cfg: Config) -> dict[str, str]:
             + ". Fail-safe – keine Schaltbefehle.",
             "severity": "error",
         }
+    if r.unreachable_phases:
+        names = ", ".join(p.upper().replace("PH", "Phase ") for p in r.unreachable_phases)
+        return {
+            "state": "Phase nicht erreichbar",
+            "reason": f"{names} antwortet nicht und wird nicht geschaltet; die übrigen Phasen "
+            "laufen normal weiter. Maximaltemperatur wird weiter erzwungen.",
+            "severity": "warn",
+        }
     if r.errors:
         return {
             "state": "Lesefehler (transient)",
@@ -307,6 +315,23 @@ def _zendure_status_block(cfg: Config, r) -> dict[str, Any]:
     }
 
 
+def _device_alerts(cfg: Config) -> list[dict[str, Any]]:
+    """Geräte, die seit ≥ 10 min nicht antworten (für das Dashboard-Banner)."""
+    from db import get_device_alerts
+    names = {
+        "ph1": f"Phase 1 ({cfg.shelly.ph1_url})", "ph2": f"Phase 2 ({cfg.shelly.ph2_url})",
+        "ph3": f"Phase 3 ({cfg.shelly.ph3_url})",
+        "storage_temp": f"Speichertemperatur-Shelly ({cfg.shelly.storage_url})",
+        "heater_meter": f"Heizstab-3EM ({cfg.shelly.heater_meter_url})",
+        "main_meter": f"Hauptzähler ({cfg.shelly.main_meter_url})",
+    }
+    out = []
+    for a in get_device_alerts(10.0):
+        label = names.get(a["id"], a["id"]).replace("http://", "")
+        out.append({**a, "label": label})
+    return out
+
+
 def _house_peak_today() -> dict[str, Any]:
     from db import get_house_peak
     return get_house_peak(datetime.now().strftime("%Y-%m-%d"))
@@ -366,6 +391,7 @@ def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
         "summary": _summary(result, cfg),
         "meter_today": compute_meter_today(r),
         "zendure": _zendure_status_block(cfg, r),
+        "device_alerts": _device_alerts(cfg),
         "house_peak_watts": hp["peak_w"],
         "house_peak_time": hp["peak_time"],
     }
@@ -630,6 +656,10 @@ _ALLOWED_HEATER_KEYS = {
     "min_pv_power_ph2",
     "min_pv_power_ph3",
     "grid_assist_w",
+    "phase_min_on_s",
+    "phase_min_off_s",
+    "phase_down_hyst",
+    "budget_smooth_min",
 }
 _ALLOWED_WALLBOX_KEYS = {
     "enabled",

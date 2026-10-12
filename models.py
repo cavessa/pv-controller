@@ -56,6 +56,15 @@ class Readings:
     ph3_on: Optional[bool] = None
     wallbox_power_w: Optional[float] = None
     errors: list[str] = field(default_factory=list)
+    # Phasen, deren Shelly nicht antwortet (state None) – nicht kritisch, nur nicht schaltbar
+    unreachable_phases: list[str] = field(default_factory=list)
+
+    # Fehler, ohne die kein Überschuss bekannt ist -> globaler Fail-safe
+    CRITICAL_ERRORS = ("pv_power", "main_meter")
+
+    @property
+    def critical_errors(self) -> list[str]:
+        return [e for e in self.errors if e in self.CRITICAL_ERRORS]
 
     @property
     def surplus_without_heater_w(self) -> Optional[float]:
