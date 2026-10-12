@@ -58,6 +58,8 @@ class Readings:
     errors: list[str] = field(default_factory=list)
     # Phasen, deren Shelly nicht antwortet (state None) – nicht kritisch, nur nicht schaltbar
     unreachable_phases: list[str] = field(default_factory=list)
+    # In der Config stillgelegte Phasen ("ph1"…): nicht gelesen, nicht geschaltet, nicht im Budget
+    disabled_phases: list[str] = field(default_factory=list)
 
     # Fehler, ohne die kein Überschuss bekannt ist -> globaler Fail-safe
     CRITICAL_ERRORS = ("pv_power", "main_meter")

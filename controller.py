@@ -35,12 +35,13 @@ from clients.shelly_client import (
 )
 from config import Config
 from db import (
+    device_health_clear,
     device_health_update,
     get_cascade_budget,
     get_last_phase_changes,
     log_phase_change,
     mark_device_alerted,
-    smooth_heater_budget,
+    smooth_heater_budgets,
 )
 from heater_phases import HeaterParams, PhaseIn, decide_phases
 from models import (
@@ -232,12 +233,16 @@ class Controller:
             f_main = ex.submit(self._read_main_meter, r)
             f_heat = ex.submit(self.heater_meter.get_total_power_w)
             f_temp = ex.submit(self.storage.get_temperature_c)
-            f_ph = [ex.submit(p.get_relay_state) for p in (self.ph1, self.ph2, self.ph3)]
+            disabled = self.cfg.heater.disabled_phases
+            f_ph = [
+                None if disabled[i] else ex.submit(p.get_relay_state)
+                for i, p in enumerate((self.ph1, self.ph2, self.ph3))
+            ]
             for f in (f_inv, f_zd, f_main):
                 f.result()
             r.heater_meter_power_w = f_heat.result()
             r.storage_temp_c = f_temp.result()
-            ph_states = [f.result() for f in f_ph]
+            ph_states = [None if f is None else f.result() for f in f_ph]
 
         r.ph1_on, r.ph2_on, r.ph3_on = ph_states
 
@@ -251,6 +256,11 @@ class Controller:
             r.errors.append("storage_temp")
         urls = (self.cfg.shelly.ph1_url, self.cfg.shelly.ph2_url, self.cfg.shelly.ph3_url)
         for i, (state, url) in enumerate(zip(ph_states, urls), start=1):
+            if disabled[i - 1]:
+                # stillgelegt: kein Fehler, kein Banner, alter Fehlerzustand wird gelöscht
+                r.disabled_phases.append(f"ph{i}")
+                device_health_clear(f"ph{i}")
+                continue
             if state is None:
                 r.errors.append(f"ph{i}_state")
                 r.unreachable_phases.append(f"ph{i}")
@@ -267,7 +277,10 @@ class Controller:
         # Fallback: heater_meter nicht erreichbar → aus Phasenzuständen schätzen.
         # Jede Phase hat phase_power_w (1500 W); eine unbekannte Phase zählt vorsichtshalber als laufend.
         if r.heater_meter_power_w is None:
-            phases_on = sum(1 for ph in ph_states if ph is True or ph is None)
+            phases_on = sum(
+                1 for i, ph in enumerate(ph_states)
+                if not disabled[i] and (ph is True or ph is None)
+            )
             r.heater_meter_power_w = float(phases_on * self.cfg.heater.phase_power_w)
             log.warning(
                 "heater_meter nicht erreichbar – schätze %d W aus %d aktiven/unbekannten Phasen",
@@ -756,25 +769,28 @@ class Controller:
         # Budget: kommt von der Kaskade (geglättet); ohne aktuelles Kaskaden-Budget
         # (Kaskade aus / veraltet) eigene Berechnung aus dem Überschuss, gleich geglättet.
         budget_w: Optional[float] = None
+        budget_down_w: Optional[float] = None
         force: Optional[str] = None
         info = get_cascade_budget("heizstab")
         if info is not None:
-            budget_w, force = float(info["budget_w"]), info["force"]
-            log.info("Heizstab-Budget (Kaskade): %.0f W (roh %s W)%s", budget_w, info["raw_w"],
-                     f", manuell {force}" if force else "")
+            budget_w, budget_down_w, force = float(info["budget_w"]), float(info["budget_down_w"]), info["force"]
+            log.info("Heizstab-Budget (Kaskade): %.0f W zu / %.0f W ab (roh %s W)%s", budget_w,
+                     budget_down_w, info["raw_w"], f", manuell {force}" if force else "")
         elif readings.true_surplus_w is not None:
             raw = -readings.true_surplus_w
-            budget_w = smooth_heater_budget(
-                raw, h.budget_smooth_min, record=not self._read_only and not self.cfg.runtime.dry_run
+            budget_w, budget_down_w = smooth_heater_budgets(
+                raw, h.budget_smooth_min, h.budget_smooth_down_min,
+                record=not self._read_only and not self.cfg.runtime.dry_run,
             )
-            log.info("Heizstab-Budget (Eigenberechnung, kein Kaskaden-Budget): %.0f W (roh %.0f W)",
-                     budget_w, raw)
+            log.info("Heizstab-Budget (Eigenberechnung, kein Kaskaden-Budget): %.0f W zu / %.0f W ab (roh %.0f W)",
+                     budget_w, budget_down_w, raw)
 
         last = get_last_phase_changes()
         plugs = (self.ph1, self.ph2, self.ph3)
         states = (readings.ph1_on, readings.ph2_on, readings.ph3_on)
         outs = decide_phases(
-            [PhaseIn(f"PH{i + 1}", states[i], last.get(i + 1)) for i in range(3)],
+            [PhaseIn(f"PH{i + 1}", states[i], last.get(i + 1), disabled=h.disabled_phases[i])
+             for i in range(3)],
             readings.storage_temp_c,
             budget_w,
             HeaterParams(
@@ -784,6 +800,7 @@ class Controller:
                 down_hyst_frac=h.phase_down_hyst,
             ),
             now,
+            budget_down_w=budget_down_w,
             force=force,
             summer="stop" if sm_stop else "heat" if sm_heating else None,
             summer_reason=sm_reason,
@@ -894,9 +911,9 @@ class Controller:
         )
         log.info(
             "Phasen-Status:      PH1=%s PH2=%s PH3=%s",
-            "ON" if r.ph1_on else "OFF" if r.ph1_on is False else "?",
-            "ON" if r.ph2_on else "OFF" if r.ph2_on is False else "?",
-            "ON" if r.ph3_on else "OFF" if r.ph3_on is False else "?",
+            "deaktiviert" if "ph1" in r.disabled_phases else "ON" if r.ph1_on else "OFF" if r.ph1_on is False else "?",
+            "deaktiviert" if "ph2" in r.disabled_phases else "ON" if r.ph2_on else "OFF" if r.ph2_on is False else "?",
+            "deaktiviert" if "ph3" in r.disabled_phases else "ON" if r.ph3_on else "OFF" if r.ph3_on is False else "?",
         )
 
 

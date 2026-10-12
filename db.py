@@ -915,6 +915,7 @@ def init_cascade_tables() -> None:
         for col, definition in (
             ("budget_w",            "INTEGER"),   # Heizstab-Budget (geglättet), Kaskade -> Controller
             ("budget_raw_w",        "INTEGER"),
+            ("budget_down_w",       "INTEGER"),   # kürzeres Mittel (Abschalten)
             ("budget_force",        "TEXT"),      # 'on' | 'off' (manuelle Übersteuerung)
             ("budget_at",           "TEXT"),
             ("consecutive_errors",  "INTEGER DEFAULT 0"),
@@ -1231,13 +1232,16 @@ def update_cascade_settings(**kwargs: object) -> dict:
 
 
 def set_cascade_budget(
-    device_id: str, budget_w: int, raw_w: int, force: Optional[str] = None
+    device_id: str, budget_w: int, raw_w: int, force: Optional[str] = None,
+    budget_down_w: Optional[int] = None,
 ) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             "UPDATE cascade_devices SET budget_w = ?, budget_raw_w = ?, budget_force = ?, "
-            "budget_at = ? WHERE id = ?",
-            (int(budget_w), int(raw_w), force, datetime.now().isoformat(timespec="seconds"), device_id),
+            "budget_down_w = ?, budget_at = ? WHERE id = ?",
+            (int(budget_w), int(raw_w), force,
+             int(budget_w if budget_down_w is None else budget_down_w),
+             datetime.now().isoformat(timespec="seconds"), device_id),
         )
 
 
@@ -1246,7 +1250,7 @@ def get_cascade_budget(device_type: str, max_age_s: float = 180.0) -> Optional[d
     try:
         with sqlite3.connect(DB_PATH) as conn:
             row = conn.execute(
-                "SELECT budget_w, budget_raw_w, budget_force, budget_at FROM cascade_devices "
+                "SELECT budget_w, budget_raw_w, budget_force, budget_at, budget_down_w FROM cascade_devices "
                 "WHERE type = ? AND enabled = 1 ORDER BY priority ASC LIMIT 1",
                 (device_type,),
             ).fetchone()
@@ -1257,30 +1261,51 @@ def get_cascade_budget(device_type: str, max_age_s: float = 180.0) -> Optional[d
     age = (datetime.now() - datetime.fromisoformat(row[3])).total_seconds()
     if age > max_age_s:
         return None
-    return {"budget_w": row[0], "raw_w": row[1], "force": row[2], "age_s": age}
+    return {"budget_w": row[0], "raw_w": row[1], "force": row[2], "age_s": age,
+            "budget_down_w": row[4] if row[4] is not None else row[0]}
 
 
-def smooth_heater_budget(raw_w: float, minutes: int, record: bool = True) -> float:
-    """Mittel der letzten `minutes` Minuten (inkl. aktuellem Wert) des Heizstab-Budgets.
+def smooth_heater_budgets(
+    raw_w: float, up_minutes: int, down_minutes: int, record: bool = True
+) -> tuple[float, float]:
+    """(Mittel über up_minutes, Mittel über down_minutes) des Heizstab-Budgets.
 
-    Jede Minute zählt einmal (Cron und Web-Poller schreiben nicht doppelt); mit
-    record=False wird nur gelesen (READ_ONLY).
+    Beide inkl. aktuellem Wert. Jede Minute zählt einmal (Cron und Web-Poller schreiben
+    nicht doppelt); mit record=False wird nur gelesen (READ_ONLY).
     """
     now = datetime.now()
     key = now.strftime("%Y-%m-%d %H:%M")
-    since = (now - timedelta(minutes=max(1, minutes) - 1)).strftime("%Y-%m-%d %H:%M")
+    fmt = "%Y-%m-%d %H:%M"
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("CREATE TABLE IF NOT EXISTS heater_budget_log (ts TEXT PRIMARY KEY, raw_w REAL)")
         if record:
             conn.execute("INSERT OR REPLACE INTO heater_budget_log (ts, raw_w) VALUES (?, ?)", (key, raw_w))
             conn.execute("DELETE FROM heater_budget_log WHERE ts < ?",
-                         ((now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M"),))
-        rows = conn.execute(
-            "SELECT raw_w FROM heater_budget_log WHERE ts >= ? AND ts <= ? AND ts != ?",
-            (since, key, key),
-        ).fetchall()
-    vals = [r[0] for r in rows] + [raw_w]
-    return sum(vals) / len(vals)
+                         ((now - timedelta(hours=1)).strftime(fmt),))
+        out = []
+        for minutes in (up_minutes, down_minutes):
+            since = (now - timedelta(minutes=max(1, minutes) - 1)).strftime(fmt)
+            rows = conn.execute(
+                "SELECT raw_w FROM heater_budget_log WHERE ts >= ? AND ts <= ? AND ts != ?",
+                (since, key, key),
+            ).fetchall()
+            vals = [r[0] for r in rows] + [raw_w]
+            out.append(sum(vals) / len(vals))
+    return out[0], out[1]
+
+
+def smooth_heater_budget(raw_w: float, minutes: int, record: bool = True) -> float:
+    """Mittel der letzten `minutes` Minuten (siehe smooth_heater_budgets)."""
+    return smooth_heater_budgets(raw_w, minutes, minutes, record)[0]
+
+
+def device_health_clear(device_id: str) -> None:
+    """Fehlerzustand eines Geräts löschen (z. B. wenn es stillgelegt wird)."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("DELETE FROM device_health WHERE device_id = ?", (device_id,))
+    except sqlite3.OperationalError:
+        pass  # Tabelle existiert noch nicht -> nichts zu löschen
 
 
 def get_last_phase_changes() -> dict[int, datetime]:

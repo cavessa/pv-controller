@@ -1569,3 +1569,7 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 .zd-decision { margin-top: 10px; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
 .zd-decision.hidden, #zd-day-card.hidden, #zd-month-card.hidden { display: none; }
 .cl-zd-dis { color: #e8a435; background: rgba(232,164,53,0.1); }
+
+/* deaktivierte Heizstab-Phase */
+.phase-dot.disabled { background: transparent; border: 1px dashed rgba(255,255,255,0.22); box-shadow: none; opacity: 0.6; }
+.phase-dot-label .phase-off { display: block; font-size: 9px; color: var(--text-dim); letter-spacing: 0.04em; text-transform: none; }

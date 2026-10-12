@@ -38,7 +38,7 @@ from db import (
     log_cascade_action,
     reset_cascade_device_errors,
     set_cascade_budget,
-    smooth_heater_budget,
+    smooth_heater_budgets,
     set_cascade_device_retry_after,
     update_cascade_device,
     update_cascade_device_live_status,
@@ -241,16 +241,20 @@ class CascadeService:
         der nachfolgenden Geräte wird die **gemessene** Heizstab-Leistung abgezogen.
         """
         h = self.cfg.heater
+        n_ph = h.enabled_phase_count           # stillgelegte Phasen zählen nicht im Budget
         raw = int(remaining)
         if override == "off":
-            budget, force = 0, "off"
+            budget = budget_down = 0
+            force = "off"
         elif override == "on":
-            budget, force = int(h.phase_power_w * 3), "on"
+            budget = budget_down = int(h.phase_power_w * n_ph)
+            force = "on"
         else:
-            budget, force = int(round(smooth_heater_budget(raw, h.budget_smooth_min))), None
-        set_cascade_budget(device["id"], budget, raw, force)
+            up, down = smooth_heater_budgets(raw, h.budget_smooth_min, h.budget_smooth_down_min)
+            budget, budget_down, force = int(round(up)), int(round(down)), None
+        set_cascade_budget(device["id"], budget, raw, force, budget_down)
 
-        target = max(0, min(3, math.floor((budget + h.grid_assist_w) / h.phase_power_w)))
+        target = max(0, min(n_ph, math.floor((budget + h.grid_assist_w) / h.phase_power_w)))
         now = datetime.now()
         active = target >= 1
         if active != device["is_on"]:
@@ -262,7 +266,8 @@ class CascadeService:
         actual_w = int(actual_device_w.get(device["id"], 0))
         remaining -= actual_w
         reason = (
-            f"Budget {budget} W (roh {raw} W, Mittel {h.budget_smooth_min} min) → bis zu {target} Phase(n); "
+            f"Budget {budget} W zu / {budget_down} W ab (roh {raw} W, Mittel {h.budget_smooth_min}/"
+            f"{h.budget_smooth_down_min} min) → bis zu {target} Phase(n); "
             f"Startschwelle {int(h.phase_power_w - h.grid_assist_w)} W, Ist {actual_w} W"
             + (f"; manuell {force.upper()}" if force else "")
         )

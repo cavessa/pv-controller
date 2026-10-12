@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-10-12 – Defaults angepasst, PH1 wieder aktiv
+
+- `heater.phase_min_on_s` Default **180 → 420 s** (`config.py`, `heater_phases.HeaterParams`, `config.example.json`, Settings-Fallback); `budget_smooth_min` 10, `budget_smooth_down_min` 2, `phase_min_off_s` 120 und `phase_down_hyst` 0,15 bleiben. Simulation 09.10. 11–15 Uhr mit diesen Werten: Ø 6,0 Wechsel/h (max. Stunde 8), Netzanteil 0,72 kWh. `app.js?v=20261012f`.
+- In der produktiven `config.json` wurde `heater.phase1_disabled` auf **false** zurückgesetzt (User prüft PH1 am Heizstab-3EM; Backup `config.backup-20261012-*.json`).
+
+## 2026-10-12 – Asymmetrische Budget-Glättung, Phasen stilllegen, Regeln für Git/Produktion
+
+**1. Asymmetrische Glättung:** Zuschalten nutzt `heater.budget_smooth_min` (Default 10 min Mittel), Abschalten/Halten das kürzere `heater.budget_smooth_down_min` (Default 2 min). Kaskade speichert beide Mittel (`cascade_devices.budget_w`/`budget_down_w`), `heater_phases.target_phases(budget, n_cur, p, budget_down_w)`; Controller-Eigenberechnung (ohne Kaskaden-Budget) ebenso (`db.smooth_heater_budgets`).
+Simulation 09.10. 11–15 Uhr (Netzanteil = Σ max(0, Heizstab_sim − max(Budget, 0)); real 0,68 kWh):
+
+| Variante | Wechsel/h Ø (max Stunde) | Netzanteil |
+|---|---|---|
+| symmetrisch 10/10 (vorher) | 3,0 (5) | 1,07 kWh |
+| **10 / 2 (neuer Default)** | **8,0 (12)** | **0,59 kWh** |
+| 10 / 3 | 7,0 (12) | 0,76 kWh |
+| 10 / 2, `phase_min_on_s` 420 | 6,0 (8) | 0,72 kWh |
+| 10 / 2, `phase_min_on_s` 420, `phase_min_off_s` 300, `phase_down_hyst` 0,5 | 5,0 (8) | 0,71 kWh |
+
+→ Ziel „Netzanteil ≤ 0,8 kWh" erfüllt, „≤ 6 Wechsel/h" mit den Defaults (10/2, 180 s/120 s) **nicht** (Ø 8,0/h, schlechteste Stunde 12). In einem Raster aus 162 Varianten erfüllen 107 beide Ziele im Stundenmittel, keine hält 6 in der schlechtesten Stunde (kleinstes Maximum 7–8). Defaults bleiben wie vorgegeben, Entscheidung offen.
+
+**2. Phasen stilllegen:** `heater.phase1_disabled` / `phase2_disabled` / `phase3_disabled` (Settings → Heizstab). Eine deaktivierte Phase wird nicht gelesen, nicht geschaltet, zählt weder als laufend noch im Budget (Ziel-Phasen ≤ Zahl aktiver Phasen; Kaskade-Override „EIN" = aktive Phasen × `phase_power_w`), erzeugt keinen Fehler und kein Banner (alter Fehlerzustand wird gelöscht). Dashboard: Phasen-Karte und Zeitstrahl grau mit „deaktiviert", Energiefluss-Punkt gestrichelt. In der produktiven `config.json` ist **PH1 deaktiviert** (Backup `config.backup-20261012-*.json`). `/api/status` → `heater.phases_disabled`.
+**Achtung:** Ein deaktivierter Shelly wird nicht mehr geschaltet. Läuft die Phase physisch noch (am 12.10. zog der Heizstab ≈ 4,9 kW bei bekannten PH2+PH3), bleibt sie unkontrolliert an und die Max-Temperatur kann sie nicht abschalten.
+
+**3. Regeln:** `CLAUDE.md`: Pushen nur nach ausdrücklicher Freigabe; Cron und Web-Dienst laufen aus dem Arbeitsverzeichnis, Änderungen sind sofort produktiv (Entwicklung in einer Kopie, dann gesammelt übernehmen). Konzept zur Trennung Produktion/Entwicklung: noch nicht umgesetzt (Vorschlag liegt dem User vor).
+
+**Tests:** 48 (`python -m unittest discover -s tests -t .`), neu u. a. asymmetrische Mittel und stillgelegte Phasen. Cron läuft seit 13:49 mit diesem Stand; Web-Dienst braucht einen Neustart.
+
 ## 2026-10-12 – Heizstab: Fail-safe pro Phase, Kaskade = Budget, Controller = Phasen
 
 **Anlass (User):** Grundlage `docs/steuerung-ist-analyse.md`: Ein ausgefallener Phasen-Shelly legte die ganze Steuerung lahm (inkl. Max-Temperatur), der Heizstab wurde von zwei Ebenen ohne gemeinsame Mindestzeiten geschaltet (bis 39 Wechsel/h).

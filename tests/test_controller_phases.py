@@ -144,6 +144,27 @@ class ControllerPhaseTest(unittest.TestCase):
         c.run()
         self.assertEqual(self.sets(c), [[False], [], []])             # Max-Temp übersteuert
 
+    def test_disabled_phase_is_not_read_switched_nor_reported(self):
+        self.cfg.heater.phase1_disabled = True
+        c = self.make(ph=(None, False, False))
+        reads = []
+        orig = c.ph1.get_relay_state
+        c.ph1.get_relay_state = lambda: (reads.append(1), orig())[1]
+        res = c.run()
+        self.assertEqual(reads, [])                                   # nicht gelesen
+        self.assertEqual(self.sets(c), [[], [True], []])              # PH2 startet, PH1 bleibt unberührt
+        self.assertEqual(res.readings.disabled_phases, ["ph1"])
+        self.assertEqual(res.readings.unreachable_phases, [])
+        self.assertNotIn("ph1_state", res.readings.errors)
+        self.assertEqual(db.get_device_alerts(0), [])                 # kein Banner
+
+    def test_disabled_phase_limits_the_budget_to_two_phases(self):
+        self.cfg.heater.phase1_disabled = True
+        db.set_cascade_budget("heizstab", 9999, 9999)
+        c = self.make(ph=(None, True, True), main=-9000.0)
+        c.run()
+        self.assertEqual(self.sets(c), [[], [], []])
+
     def test_cascade_budget_is_used_and_fallback_otherwise(self):
         db.set_cascade_budget("heizstab", 3000, 3000)
         c = self.make(main=0.0)                       # Eigenberechnung hätte Budget 0 → nichts
@@ -164,6 +185,7 @@ class ControllerPhaseTest(unittest.TestCase):
         info = db.get_cascade_budget("heizstab")
         self.assertEqual(info["raw_w"], 4000)
         self.assertEqual(info["budget_w"], 4000)      # erste Minute: Mittel = Rohwert
+        self.assertEqual(info["budget_down_w"], 4000)
         svc._handle_heater(dev, 0, 0, {"heizstab": 0.0}, "off")
         self.assertEqual(db.get_cascade_budget("heizstab")["force"], "off")
 

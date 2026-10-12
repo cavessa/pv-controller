@@ -326,7 +326,10 @@ def _device_alerts(cfg: Config) -> list[dict[str, Any]]:
         "main_meter": f"Hauptzähler ({cfg.shelly.main_meter_url})",
     }
     out = []
+    off = {f"ph{i + 1}" for i, x in enumerate(cfg.heater.disabled_phases) if x}
     for a in get_device_alerts(10.0):
+        if a["id"] in off:       # stillgelegte Phasen melden nichts
+            continue
         label = names.get(a["id"], a["id"]).replace("http://", "")
         out.append({**a, "label": label})
     return out
@@ -368,6 +371,9 @@ def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
                 "ph1": r.ph1_on,
                 "ph2": r.ph2_on,
                 "ph3": r.ph3_on,
+            },
+            "phases_disabled": {
+                f"ph{i + 1}": bool(x) for i, x in enumerate(cfg.heater.disabled_phases)
             },
             "decisions": [_decision_to_dict(d) for d in result.decisions],
             "errors": list(r.errors),
@@ -660,7 +666,12 @@ _ALLOWED_HEATER_KEYS = {
     "phase_min_off_s",
     "phase_down_hyst",
     "budget_smooth_min",
+    "budget_smooth_down_min",
+    "phase1_disabled",
+    "phase2_disabled",
+    "phase3_disabled",
 }
+_BOOL_HEATER_KEYS = {"phase1_disabled", "phase2_disabled", "phase3_disabled"}
 _ALLOWED_WALLBOX_KEYS = {
     "enabled",
     "only_control_when_pv_surplus_active",
@@ -720,7 +731,10 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
         if bad:
             raise HTTPException(400, f"heater keys not allowed: {sorted(bad)}")
         for k, v in patch.heater.items():
-            if not isinstance(v, (int, float)) or isinstance(v, bool):
+            if k in _BOOL_HEATER_KEYS:
+                if not isinstance(v, bool):
+                    raise HTTPException(400, f"heater.{k} must be boolean")
+            elif not isinstance(v, (int, float)) or isinstance(v, bool):
                 raise HTTPException(400, f"heater.{k} must be a number")
             new_cfg["heater"][k] = v
 

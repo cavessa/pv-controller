@@ -81,10 +81,12 @@ async function api(path, opts = {}) {
 
 // ---------- render ----------
 let lastZendure = null;
+let lastPhasesDisabled = {};
 
 function renderStatus(s) {
   hideError();
   lastZendure = s.zendure ?? null;
+  lastPhasesDisabled = s.heater?.phases_disabled ?? {};
   renderZendureCard(lastZendure);
 
   // Geräte, die seit ≥ 10 min nicht antworten (z. B. ein Phasen-Shelly)
@@ -191,12 +193,14 @@ function renderStatus(s) {
   const decisions = h.decisions ?? [];
   if (decisions.length > 0) {
     phEl.innerHTML = `<div class="phases-dots">${
-      decisions.map(d => `
+      decisions.map(d => {
+        const off = h.phases_disabled?.[d.phase.toLowerCase()] === true;
+        return `
         <div class="phase-dot-item">
-          <div class="phase-dot ${d.current_state === true ? "on" : ""}"></div>
-          <div class="phase-dot-label">${escapeHtml(d.phase)}</div>
-        </div>
-      `).join("")
+          <div class="phase-dot ${off ? "disabled" : d.current_state === true ? "on" : ""}"></div>
+          <div class="phase-dot-label">${escapeHtml(d.phase)}${off ? '<small class="phase-off">deaktiviert</small>' : ""}</div>
+        </div>`;
+      }).join("")
     }</div>`;
   } else {
     phEl.innerHTML = `<div class="phases-dots">
@@ -362,9 +366,17 @@ function renderEnergyFlow(heater, wb, cs, zd) {
   const heatOn  = heaterW > 50 || phases > 0;
   // Phasen-Punkte; ist ein Phasenstatus nicht lesbar (Shelly offline, null), die Zahl der
   // laufenden Phasen aus der gemessenen Heizstab-Leistung schätzen (≈ 1,5 kW je Phase)
+  const phaseOff = ["ph1", "ph2", "ph3"].map(k => heater.phases_disabled?.[k] === true);
   const phaseStates = ["ph1", "ph2", "ph3"].map(k => heater.phases?.[k]);
-  const estPhases = heaterW > 50 ? Math.min(3, Math.max(1, Math.round(heaterW / 1500))) : 0;
-  const phaseDots = phaseStates.map((st, i) => st === true || (st == null && heaterW > 50 && i < estPhases));
+  const nActive = 3 - phaseOff.filter(Boolean).length;
+  const estPhases = heaterW > 50 ? Math.min(nActive, Math.max(1, Math.round(heaterW / 1500))) : 0;
+  let estLeft = estPhases;
+  const phaseDots = phaseStates.map((st, i) => {
+    if (phaseOff[i]) return "off";                     // deaktiviert
+    if (st === true) { estLeft--; return true; }
+    if (st == null && heaterW > 50 && estLeft > 0) { estLeft--; return true; }
+    return false;
+  });
   const wbOn    = wbChrg && wbPwrW > 50;
 
   // Shelly cascade devices
@@ -467,7 +479,9 @@ function renderEnergyFlow(heater, wb, cs, zd) {
   <text x="${w/2}" y="27" text-anchor="middle" font-size="${label.length > 11 ? 5.4 : 6.5}" fill="rgba(255,255,255,0.5)" letter-spacing="${label.length > 11 ? 0.4 : 1}" font-family="'DM Mono',monospace">${esc(label)}</text>
   <text x="${w/2}" y="39" text-anchor="middle" font-size="12" font-weight="700" fill="${vc}" font-family="'DM Mono',monospace">${esc(value)}</text>
   ${dots
-    ? dots.map((on, i) => `<circle cx="${w/2 + (i - (dots.length - 1) / 2) * 9}" cy="${nh-8}" r="2.3" fill="${on ? accent : "none"}" stroke="${on ? accent : "rgba(255,255,255,0.4)"}" stroke-width="1"/>`).join("")
+    ? dots.map((on, i) => on === "off"
+        ? `<circle cx="${w/2 + (i - (dots.length - 1) / 2) * 9}" cy="${nh-8}" r="2.3" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="1" stroke-dasharray="1.2 1.2"><title>deaktiviert</title></circle>`
+        : `<circle cx="${w/2 + (i - (dots.length - 1) / 2) * 9}" cy="${nh-8}" r="2.3" fill="${on ? accent : "none"}" stroke="${on ? accent : "rgba(255,255,255,0.4)"}" stroke-width="1"/>`).join("")
     : `<text x="${w/2}" y="${nh-5}" text-anchor="middle" font-size="7.5" fill="rgba(255,255,255,0.4)" font-family="'DM Mono',monospace">${esc(sub)}</text>`}
 </g>`;
   }
@@ -3042,8 +3056,13 @@ function renderPhaseTimeline(logs) {
   let rows = '';
   [1, 2, 3].forEach((ph, i) => {
     const y = padT + i * (barH + barGap);
-    rows += `<rect x="${labelW}" y="${y}" width="${trackW}" height="${barH}" rx="2" fill="rgba(255,255,255,0.06)"/>`;
+    const off = lastPhasesDisabled[`ph${ph}`] === true;
+    rows += `<rect x="${labelW}" y="${y}" width="${trackW}" height="${barH}" rx="2" fill="rgba(255,255,255,${off ? "0.03" : "0.06"})"/>`;
     rows += `<text x="${labelW - 4}" y="${(y + barH / 2).toFixed(1)}" text-anchor="end" dominant-baseline="middle">PH${ph}</text>`;
+    if (off) {
+      rows += `<text x="${labelW + 6}" y="${(y + barH / 2).toFixed(1)}" dominant-baseline="middle" style="fill:#6a6d75">deaktiviert</text>`;
+      return;
+    }
     for (const span of spans[ph]) {
       const x1 = toX(span.start), x2 = toX(span.end), w = Math.max(0, x2 - x1);
       if (w > 0) rows += `<rect x="${x1.toFixed(1)}" y="${y}" width="${w.toFixed(1)}" height="${barH}" rx="2" fill="#34d399"/>`;
@@ -3204,10 +3223,12 @@ async function loadSettings() {
     setFormValue(f, "heater.min_pv_power_ph2", lastConfig.heater?.min_pv_power_ph2);
     setFormValue(f, "heater.min_pv_power_ph3", lastConfig.heater?.min_pv_power_ph3);
     setFormValue(f, "heater.grid_assist_w", lastConfig.heater?.grid_assist_w ?? 0);
-    setFormValue(f, "heater.phase_min_on_s", lastConfig.heater?.phase_min_on_s ?? 180);
+    setFormValue(f, "heater.phase_min_on_s", lastConfig.heater?.phase_min_on_s ?? 420);
     setFormValue(f, "heater.phase_min_off_s", lastConfig.heater?.phase_min_off_s ?? 120);
     setFormValue(f, "heater.phase_down_hyst", lastConfig.heater?.phase_down_hyst ?? 0.15);
     setFormValue(f, "heater.budget_smooth_min", lastConfig.heater?.budget_smooth_min ?? 10);
+    setFormValue(f, "heater.budget_smooth_down_min", lastConfig.heater?.budget_smooth_down_min ?? 2);
+    for (const n of [1, 2, 3]) setFormValue(f, `heater.phase${n}_disabled`, lastConfig.heater?.[`phase${n}_disabled`] ?? false);
     setFormValue(f, "wallbox.enabled", lastConfig.wallbox?.enabled);
     setFormValue(f, "wallbox.url", lastConfig.wallbox?.url ?? "");
     setFormValue(f, "wallbox.only_control_when_pv_surplus_active", lastConfig.wallbox?.only_control_when_pv_surplus_active);
@@ -3312,6 +3333,10 @@ async function saveSettings(e) {
       phase_min_off_s: numField("heater.phase_min_off_s"),
       phase_down_hyst: numField("heater.phase_down_hyst"),
       budget_smooth_min: numField("heater.budget_smooth_min"),
+      budget_smooth_down_min: numField("heater.budget_smooth_down_min"),
+      phase1_disabled: boolField("heater.phase1_disabled"),
+      phase2_disabled: boolField("heater.phase2_disabled"),
+      phase3_disabled: boolField("heater.phase3_disabled"),
     },
     wallbox: {
       enabled: boolField("wallbox.enabled"),

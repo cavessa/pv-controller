@@ -36,6 +36,51 @@ class TargetTest(unittest.TestCase):
         self.assertEqual(target_phases(2370, 2, self.p), 1)
 
 
+class AsymmetricTest(unittest.TestCase):
+    def setUp(self):
+        self.p = HeaterParams(phase_w=1500, grid_assist_w=400)
+
+    def test_start_uses_long_mean_stop_uses_short_mean(self):
+        # langes Mittel 1200 (reicht für Phase 1), kurzes Mittel 300 (Einbruch): läuft die Phase → aus
+        self.assertEqual(target_phases(1200, 0, self.p, budget_down_w=300), 1)      # Start: langes Mittel
+        self.assertEqual(target_phases(1200, 1, self.p, budget_down_w=300), 0)      # Halten: kurzes Mittel
+        # kurzer Peak (kurzes Mittel hoch, langes niedrig) startet NICHT
+        self.assertEqual(target_phases(500, 0, self.p, budget_down_w=3000), 0)
+
+    def test_default_down_equals_up(self):
+        self.assertEqual(target_phases(2400, 2, self.p), target_phases(2400, 2, self.p, 2400))
+
+
+class DisabledPhaseTest(unittest.TestCase):
+    def setUp(self):
+        self.p = HeaterParams(phase_w=1500, grid_assist_w=0)
+
+    def phases(self, states, disabled):
+        return [PhaseIn(f"PH{i+1}", s, OLD, disabled=d) for i, (s, d) in enumerate(zip(states, disabled))]
+
+    def test_disabled_phase_is_never_switched_or_counted(self):
+        ph = self.phases([None, False, False], [True, False, False])
+        out = decide_phases(ph, 50.0, 1500, self.p, NOW)
+        self.assertEqual([o.action for o in out], [A.UNCHANGED, A.TURN_ON, A.UNCHANGED])
+        self.assertEqual(out[0].reason, "deaktiviert")
+
+    def test_budget_cap_is_the_number_of_active_phases(self):
+        ph = self.phases([None, True, True], [True, False, False])      # nur 2 aktive, beide laufen
+        out = decide_phases(ph, 50.0, 99999, self.p, NOW)
+        self.assertEqual([o.action for o in out], [A.UNCHANGED] * 3)
+
+    def test_disabled_does_not_count_as_running(self):
+        # PH1 deaktiviert, Budget für 1 Phase: PH2 startet (PH1 würde sonst als „läuft" zählen)
+        ph = self.phases([None, False, False], [True, False, False])
+        self.assertEqual(decide_phases(ph, 50.0, 1500, self.p, NOW)[1].action, A.TURN_ON)
+
+    def test_max_temp_ignores_disabled(self):
+        ph = self.phases([None, True, True], [True, False, False])
+        out = decide_phases(ph, 65.0, 99999, self.p, NOW)
+        self.assertEqual([o.action for o in out], [A.UNCHANGED, A.TURN_OFF, A.TURN_OFF])
+        self.assertEqual(out[0].reason, "deaktiviert")
+
+
 class DecideTest(unittest.TestCase):
     def setUp(self):
         self.p = HeaterParams(phase_w=1500, grid_assist_w=400, max_temp=64, resume_temp=62)

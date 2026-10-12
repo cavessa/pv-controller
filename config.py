@@ -82,12 +82,28 @@ class HeaterConfig:
     grid_assist_w: float = 0.0
     # Phasenlogik (heater_phases.py): Mindestzeiten je Phase, Halte-Hysterese beim
     # Runterschalten (Anteil von phase_power_w) und Glättung des Budgets (Mittel, Minuten)
-    phase_min_on_s: float = 180.0
+    phase_min_on_s: float = 420.0
     phase_min_off_s: float = 120.0
     phase_down_hyst: float = 0.15
-    budget_smooth_min: int = 10
+    budget_smooth_min: int = 10        # Zuschalten: Mittel über so viele Minuten
+    budget_smooth_down_min: int = 2    # Abschalten: kürzeres Mittel (schneller reagieren)
+    # Einzelne Phase stilllegen (defekter Shelly/Heizstab-Phase): wird nicht gelesen,
+    # nicht geschaltet und zählt nicht im Budget
+    phase1_disabled: bool = False
+    phase2_disabled: bool = False
+    phase3_disabled: bool = False
+
+    @property
+    def disabled_phases(self) -> tuple[bool, bool, bool]:
+        return (bool(self.phase1_disabled), bool(self.phase2_disabled), bool(self.phase3_disabled))
+
+    @property
+    def enabled_phase_count(self) -> int:
+        return 3 - sum(self.disabled_phases)
 
     def __post_init__(self) -> None:
+        if self.budget_smooth_down_min < 1:
+            raise ValueError("heater.budget_smooth_down_min must be >= 1")
         if self.phase_min_on_s < 0 or self.phase_min_off_s < 0:
             raise ValueError("heater.phase_min_on_s / phase_min_off_s must be >= 0")
         if not 0 <= self.phase_down_hyst < 1:
