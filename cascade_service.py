@@ -72,7 +72,7 @@ class CascadeService:
         )
         self.solax2: Optional[SolaxClient] = None
         if config.solax2_active:
-            self.solax2 = SolaxClient(config.solax2.url, config.solax2.pwd, timeout)
+            self.solax2 = SolaxClient(config.solax2.url, config.solax2.pwd, config.solax2_timeout)
         self.goe: Optional[GoeClient] = None
         self._goe_cache: Optional[dict] = None
         if config.wallbox.enabled and config.wallbox.url:

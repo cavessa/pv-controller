@@ -79,9 +79,7 @@ class Controller:
         )
         self.solax2: Optional[SolaxClient] = None
         if config.solax2_active:
-            self.solax2 = SolaxClient(
-                config.solax2.url, config.solax2.pwd, config.runtime.request_timeout_seconds
-            )
+            self.solax2 = SolaxClient(config.solax2.url, config.solax2.pwd, config.solax2_timeout)
         self.zendure: Optional[ZendureClient] = None
         if config.zendure_active:
             self.zendure = ZendureClient(config.zendure.ip, config.zendure.sn)

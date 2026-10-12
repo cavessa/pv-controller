@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-12 – Heizstab-Shellys getauscht/umgestellt, eigenes Timeout für den Pergola-WR
+
+**Betrieb (Prod, nicht im Code):** PH1-Shelly ersetzt (jetzt Shelly Plus 1PM Gen2, FW 1.4.0, feste IP `192.168.2.93` per FRITZ!Box-Reservierung; vorher IP-Konflikt auf `.53` mit unbekannter MAC `44:bd:8d:15:f0:00`, Ursache der sporadischen „Connection refused“-Lesefehler). `config.json` (Backups `config.backup-20261012-163717.json`, `…-165557.json`): `shelly.ph1_type/ph2_type/ph3_type` = `shelly_gen2` (PH2 = Plus 1PM Gen2 FW 1.7.1, PH3 = 1PM Gen3 FW 1.2.2; liefen bisher nur über den Gen1-Kompatibilitätsmodus). Auf allen drei Shellys `Switch.SetConfig`: `in_mode: detached`, `initial_state: off` (vorher `follow`/`match_input`: Relais folgte nach Stromausfall dem Eingang) – per `Switch.GetConfig` bestätigt. Alle Geräte der Config antworten stabil unter ihrer IP, keine weiteren MAC-Wechsel. Cron-Läufe danach: PH1/PH2/PH3 gelesen (kein `?`), keine Fehler.
+
+**Pergola-WR (solax2) eigenes HTTP-Timeout:** neues Feld `solax2.timeout_s` (Default **3 s**), `Config.solax2_timeout`; verwendet in Controller, Kaskade und Web. Der Haupt-WR bleibt bei `runtime.request_timeout_seconds` (5 s). Hinweis: Der Pergola-Client lief bisher mit 5 s (nicht 1,5 s – das ist das Shelly-Lese-Timeout); der WR antwortet in 1–1,5 s, nachts gar nicht (Pocket-WLAN schläft): mit 2 Versuchen je Lesen sinkt die Wartezeit bei Ausfall von bis zu 10 s auf 6 s. Test `tests/test_solax_timeout.py` (121 Tests).
+
 ## 2026-10-12 – cascade_log nur noch Ereignisse, Retention, AUS auch an unbekannte Phasen, Anzeige-Fix (Dev)
 
 **cascade_log (war 96,7 von 97,7 MB der DB; 96,8 % `keep_*`, ≈ 0,6 MB/Tag):**

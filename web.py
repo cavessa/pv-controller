@@ -1000,9 +1000,7 @@ def _read_pergola(cfg: Config):
         return None
     from clients.solax_client import SolaxClient
     try:
-        return SolaxClient(
-            cfg.solax2.url, cfg.solax2.pwd, cfg.runtime.request_timeout_seconds
-        ).get_realtime_data()
+        return SolaxClient(cfg.solax2.url, cfg.solax2.pwd, cfg.solax2_timeout).get_realtime_data()
     except Exception:
         log.warning("Pergola-WR: Lesefehler", exc_info=True)
         return None

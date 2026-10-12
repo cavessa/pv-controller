@@ -19,6 +19,10 @@ class SolaxConfig:
     max_w: float = 10000.0
     str1_max_w: float = 11500.0
     str2_max_w: float = 6500.0
+    # Eigenes HTTP-Timeout (s) für dieses Gerät; None = runtime.request_timeout_seconds.
+    # Der Pergola-WR (solax2) antwortet langsam (≈ 1–1,5 s), ist nachts aber nicht erreichbar:
+    # ein kurzes, eigenes Timeout hält den Lauf kurz (2 Versuche je Lesen).
+    timeout_s: Optional[float] = None
 
 
 @dataclass
@@ -254,6 +258,12 @@ class Config:
         return self.zendure is not None and self.zendure.enabled and bool(self.zendure.ip)
 
     @property
+    def solax2_timeout(self) -> float:
+        """HTTP-Timeout für den Pergola-WR (eigener Wert, sonst Standard 3 s)."""
+        t = self.solax2.timeout_s if self.solax2 is not None else None
+        return float(SOLAX2_TIMEOUT_S if t is None else t)
+
+    @property
     def solax2_active(self) -> bool:
         return self.solax2 is not None and self.solax2.enabled and bool(self.solax2.url)
 
@@ -263,6 +273,9 @@ def parse_zendure(raw: dict) -> Optional[ZendureConfig]:
     if not block:
         return None
     return ZendureConfig(**{k: v for k, v in block.items() if k in ZendureConfig.__dataclass_fields__})
+
+
+SOLAX2_TIMEOUT_S = 3.0      # Default für den Pergola-WR (solax2.timeout_s)
 
 
 def parse_solax2(raw: dict) -> Optional[SolaxConfig]:
@@ -276,6 +289,7 @@ def parse_solax2(raw: dict) -> Optional[SolaxConfig]:
         enabled=bool(block.get("enabled", False)),
         name=block.get("name", "Pergola"),
         max_w=float(block.get("max_w", 1000.0)),
+        timeout_s=float(block.get("timeout_s", SOLAX2_TIMEOUT_S)),
     )
 
 
