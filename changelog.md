@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-12 – cascade_log nur noch Ereignisse, Retention, AUS auch an unbekannte Phasen, Anzeige-Fix (Dev)
+
+**cascade_log (war 96,7 von 97,7 MB der DB; 96,8 % `keep_*`, ≈ 0,6 MB/Tag):**
+- Dauerhaft geschrieben werden nur Ereignisse: `turn_on`/`turn_off` (auch Heizstab-Budget erlaubt/verbietet), `auto_(re)enabled`; Mindestzeit-Sperren (`skip_min_*`), `manual_override` und Batterie-Betriebsarten nur beim **Wechsel** (erste Minute eines Zustands). `keep_on`/`keep_off`/`budget` nur mit `cascade.log_verbose=true` (Default false, `config.json`-Block `cascade`).
+- Die aktuelle Entscheidung samt Grund steht je Gerät in `cascade_devices.last_action/last_reason/last_decision_at` (wird überschrieben) und speist `/api/cascade/status`. Verlauf-Ansicht unverändert; leere Liste → „Keine Schaltvorgänge.“.
+- `db.prune()` (täglich, erster Minuten-Lauf ab 03:00, Merker `cascade_settings.last_prune`, kein neuer Cron, Batches à 5000, kein VACUUM; löst das stündliche `cleanup_old_hourly` im Minuten-Lauf ab): `cascade_log` Ereignisse 365 Tage, `keep_*`/`budget` 2 Tage, `pv_hourly_log` 90 Tage, `main_meter_min`/`zendure_min` 35 Tage (Tagesverlauf-Ansicht, bewusst nicht 14), `heater_budget_log` 14 Tage; unbegrenzt: `pv_daily_log`, `weather_log`, `house_peak_day`, `storage_day`. Erster automatischer Lauf nach dem Deploy löscht ≈ 656k Zeilen (≈ 23 s) – besser vorher `deploy/maintenance/prune_once.py` ausführen.
+- `deploy/maintenance/prune_once.py` (Dry-Run Default; `--apply`: Snapshot `~/backup/pvcontroller-snapshot/pre-prune-<Zeit>.db`, exklusiver flock auf `/tmp/pvc-code.lock`, alle `keep_*`/`budget` löschen, `prune()`, VACUUM, `integrity_check`). Probe auf Kopie der Prod-DB: 97,69 → 4,39 MB, `integrity_check` ok, Verlauf-API liefert weiter die Ereignisse.
+
+**Heizstab, Sicherheit:** `decide_phases` sendet AUS jetzt auch an Phasen mit **unbekanntem Zustand** („blind“) – bei Max-Temp, Temperatur unlesbar, Sommermodus-Stopp, manuell AUS und wenn das Budget-Ziel weniger Phasen als laufend vorsieht (dann Mindestlaufzeit beachtet); AN nie. Jeden Lauf erneut, Timeout 1,5 s, Fehler nur einmal je Serie im Log (Merker `blind_off_fail_phN`), kein Eintrag in `HeizstabPhaseLog`. Anlass: PH1-Shelly antwortet nur sporadisch; bei 64,6 °C zeigte das Relais gelegentlich EIN, der Controller konnte es nicht abschalten.
+**Anzeige:** Energiefluss zeigt „heizt/lädt“ nur noch bei gemessener Heizstab-Leistung (> 50 W), nicht schon bei eingeschaltetem Relais (`app.js?v=20261012i`).
+**Tests:** 117 (neu: `tests/test_db_retention.py`, Blind-AUS in `test_heater_phases`/`test_controller_phases`, cascade_log ohne keep/budget).
+
 ## 2026-10-12 – Fix: `log_daily_summary` nullte Prognose und Wetter (Dev, nicht deployt)
 
 `pv_logger._log_daily` → `db.log_daily_summary` schrieb mit `INSERT OR REPLACE` in `pv_daily_log`. REPLACE löscht die ganze Zeile und nullte damit jede Minute die Spalten, die der Aufruf nicht kennt (`forecast_kwh`, `forecast_ghi`; bei fehlendem Wetterabruf auch `sunshine_h`, `ghi_kwh_m2`, `cloud_cover_pct`, `temp_avg_c`; Pergola-/Batterie-Spalten). Folge: Die Prognose von `/api/forecast` hielt höchstens bis zum nächsten Minuten-Lauf; sichtbar wurde sie erst, wenn `backfill_historical_forecasts()` sie nach Mitternacht nachtrug. Jetzt `INSERT … ON CONFLICT(date) DO UPDATE`: Kennzahlen (PV, Einspeisung, Bezug, Eigenverbrauch, Autarkie) werden immer neu gesetzt, optionale Spalten (Wetter, Prognose, Pergola, Batterie) nur bei übergebenem Wert (`COALESCE`).

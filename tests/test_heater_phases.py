@@ -125,12 +125,49 @@ class DecideTest(unittest.TestCase):
 
     def test_other_phases_keep_working_when_one_unknown(self):
         out = self.run_([None, True, True], budget=0)
-        self.assertEqual(acts(out), [A.UNCHANGED, A.TURN_OFF, A.TURN_OFF])
+        self.assertEqual(acts(out), [A.TURN_OFF, A.TURN_OFF, A.TURN_OFF])         # unbekannte Phase: blind AUS
+        self.assertEqual([o.blind for o in out], [True, False, False])
 
     def test_max_temp_turns_off_reachable_phases_even_if_one_unknown(self):
         out = self.run_([None, True, True], temp=64.2, budget=9999)
-        self.assertEqual(acts(out), [A.UNCHANGED, A.TURN_OFF, A.TURN_OFF])
+        self.assertEqual(acts(out), [A.TURN_OFF, A.TURN_OFF, A.TURN_OFF])
+        self.assertTrue(out[0].blind and not out[1].blind)
         self.assertIn("storage_max_temp", out[1].reason)
+        self.assertIn("AUS wird trotzdem gesendet", out[0].reason)
+
+    def test_blind_off_for_every_shutdown_reason(self):
+        for kw in (dict(temp=65.0, budget=9999),                      # Max-Temp
+                   dict(temp=None, budget=9999),                       # Temperatur unlesbar
+                   dict(budget=9999, summer="stop", summer_reason="Ziel erreicht"),   # Sommermodus-Stopp
+                   dict(budget=9999, force="off")):                    # manuell AUS
+            out = self.run_([None, False, False], **kw)
+            self.assertEqual((out[0].action, out[0].blind), (A.TURN_OFF, True), kw)
+            self.assertEqual(out[1].action, A.UNCHANGED, kw)           # bekannte, schon aus: nichts
+
+    def test_on_is_never_sent_to_an_unknown_phase(self):
+        out = self.run_([None, False, False], budget=9999)               # genug Budget für alle
+        self.assertEqual(out[0].action, A.UNCHANGED)
+        self.assertFalse(out[0].blind)
+        out = self.run_([None, False, False], budget=0, summer="heat", summer_reason="Netz-Heizen")
+        self.assertEqual(out[0].action, A.UNCHANGED)
+        self.assertEqual(acts(out)[1:], [A.TURN_ON, A.TURN_ON])
+        out = self.run_([None, False, False], budget=0, force="on")
+        self.assertEqual(out[0].action, A.UNCHANGED)
+
+    def test_surplus_target_below_running_turns_surplus_unknown_phase_off(self):
+        out = self.run_([None, True, True], budget=1600)                 # Ziel 1 Phase, 3 gelten als laufend
+        self.assertEqual(acts(out), [A.UNCHANGED, A.TURN_OFF, A.TURN_OFF])   # unbekannte bleibt (zählt zum Ziel)
+        out = self.run_([None, None, True], budget=1600)
+        self.assertEqual(acts(out), [A.UNCHANGED, A.TURN_OFF, A.TURN_OFF])   # 2 unbekannte zählen schon > Ziel
+        self.assertTrue(out[1].blind and not out[2].blind)
+
+    def test_blind_off_respects_min_on_for_budget_but_not_for_safety(self):
+        young = [NOW - timedelta(seconds=30)] * 3
+        out = self.run_([None, False, False], budget=0, last=young)
+        self.assertEqual(out[0].action, A.UNCHANGED)
+        self.assertIn("Mindestlaufzeit", out[0].reason)
+        out = self.run_([None, False, False], temp=65.0, budget=0, last=young)
+        self.assertEqual((out[0].action, out[0].blind), (A.TURN_OFF, True))
 
     def test_max_temp_ignores_min_on_and_fail_safe(self):
         out = self.run_([True, True, True], temp=65.0, budget=None, surplus_fail_safe=True,

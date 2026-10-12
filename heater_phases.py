@@ -14,8 +14,11 @@ höchstens eine Phase pro Lauf.
 
 Über allem stehen (dürfen jederzeit abschalten, auch innerhalb der Mindestlaufzeit):
 Speichertemperatur ≥ Max, Speichertemperatur unbekannt, Sommermodus-Stopp, manuelles AUS.
-Eine nicht erreichbare Phase (``state is None``) wird nicht geschaltet und im Budget
-vorsichtshalber als laufend gezählt.
+Eine nicht erreichbare Phase (``state is None``) wird im Budget vorsichtshalber als laufend gezählt.
+**AUS darf auch an eine Phase mit unbekanntem Zustand gesendet werden („blind“), AN nie**: bei allen
+Abschaltgründen (Max-Temp, Temperatur unbekannt, Sommermodus-Stopp, manuell AUS) und wenn das
+Budget-Ziel weniger Phasen als laufend vorsieht. Der Befehl wird in jedem Lauf erneut gesendet,
+solange der Zustand unbekannt bleibt.
 """
 from __future__ import annotations
 
@@ -51,6 +54,7 @@ class PhaseIn:
 class PhaseOut:
     action: PhaseAction
     reason: str
+    blind: bool = False                 # AUS an eine Phase mit unbekanntem Zustand
 
 
 def classify_temp(temp: float, p: HeaterParams) -> TempStatus:
@@ -101,7 +105,11 @@ def decide_phases(
             if ph.disabled:
                 out.append(PhaseOut(PhaseAction.UNCHANGED, "deaktiviert"))
             elif ph.state is None:
-                out.append(PhaseOut(PhaseAction.UNCHANGED, "nicht erreichbar – nicht schaltbar"))
+                if action is PhaseAction.TURN_OFF:
+                    out.append(PhaseOut(PhaseAction.TURN_OFF, f"{text}; Zustand unbekannt – AUS wird trotzdem gesendet",
+                                        blind=True))
+                else:
+                    out.append(PhaseOut(PhaseAction.UNCHANGED, "nicht erreichbar – AN nie ohne bekannten Zustand"))
             elif action is PhaseAction.TURN_OFF:
                 out.append(PhaseOut(PhaseAction.TURN_OFF if ph.state else PhaseAction.UNCHANGED, text))
             else:
@@ -142,6 +150,9 @@ def decide_phases(
     if status is TempStatus.HYSTERESIS_BAND and n_cur == 0:
         target, band_note = 0, " Hysteresebereich: keine neue Phase ohne laufenden Zyklus."
 
+    # unbekannte Phasen gelten als laufend; sieht das Ziel weniger vor, bekommen die überzähligen AUS
+    unknown_idx = [i for i, ph in enumerate(phases) if ph.state is None and not ph.disabled]
+    off_unknown = set(unknown_idx[min(n_unknown, target):])
     slots = max(0, target - n_unknown)         # Phasen, die erreichbare Phasen belegen dürfen
     # bevorzugt bereits laufende Phasen behalten (niedrigster Index zuerst), dann auffüllen
     reachable = [i for i, ph in enumerate(phases) if ph.state is not None and not ph.disabled]
@@ -160,6 +171,13 @@ def decide_phases(
     for i, ph in enumerate(phases):
         if ph.disabled:
             out.append(PhaseOut(PhaseAction.UNCHANGED, "deaktiviert"))
+        elif ph.state is None and i in off_unknown:
+            if elapsed(ph) < p.min_on_s:
+                out.append(PhaseOut(PhaseAction.UNCHANGED,
+                                    f"{head}; nicht erreichbar, Mindestlaufzeit {elapsed(ph):.0f}/{p.min_on_s:.0f} s"))
+            else:
+                out.append(PhaseOut(PhaseAction.TURN_OFF,
+                                    f"{head}; Zustand unbekannt – AUS wird gesendet", blind=True))
         elif ph.state is None:
             out.append(PhaseOut(PhaseAction.UNCHANGED,
                                 f"{head}; nicht erreichbar – wird als laufend gezählt"))

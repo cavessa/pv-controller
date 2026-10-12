@@ -60,25 +60,28 @@ class ShellyPlugClient:
             log.debug("Shelly %s read relay state failed: %s", self.name, e)  # Dauerausfall meldet der Controller einmalig
             return None
 
-    def set_relay(self, on: bool) -> bool:
+    def set_relay(self, on: bool, timeout: Optional[float] = None, quiet: bool = False) -> bool:
+        """Relais schalten. ``timeout`` überschreibt den Standard; ``quiet``: Fehler nur im Debug-Log
+        (Aufrufer meldet selbst, z. B. wiederholte Blind-AUS-Befehle an eine unerreichbare Phase)."""
         action = "on" if on else "off"
+        to = self.timeout if timeout is None else timeout
         try:
             if self.type_ == "shelly_gen2":
                 r = requests.post(
                     f"{self.base_url}/rpc/Switch.Set",
                     json={"id": self.channel, "on": on},
-                    timeout=self.timeout,
+                    timeout=to,
                 )
             else:
                 r = requests.get(
                     f"{self.base_url}/relay/{self.channel}",
                     params={"turn": action},
-                    timeout=self.timeout,
+                    timeout=to,
                 )
             r.raise_for_status()
             return True
         except requests.RequestException as e:
-            log.error("Shelly %s switch %s failed: %s", self.name, action, e)
+            (log.debug if quiet else log.error)("Shelly %s switch %s failed: %s", self.name, action, e)
             return False
 
 

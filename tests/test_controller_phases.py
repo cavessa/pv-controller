@@ -25,7 +25,10 @@ class FakePlug:
         time.sleep(self.delay)
         return self.state
 
-    def set_relay(self, on):
+    def set_relay(self, on, timeout=None, quiet=False):
+        self.timeouts = getattr(self, "timeouts", []) + [(timeout, quiet)]
+        if getattr(self, "set_fails", False):
+            return False
         self.sets.append(on)
         self.state = on
         return True
@@ -69,6 +72,7 @@ class ControllerPhaseTest(unittest.TestCase):
         db.init_db()
         db.init_pv_logging_tables()
         db.init_cascade_tables()
+        db.init_cascade_settings_table()
         raw = json.load(open(EXAMPLE))
         raw["wallbox"]["enabled"] = False
         raw["runtime"]["dry_run"] = False
@@ -103,7 +107,41 @@ class ControllerPhaseTest(unittest.TestCase):
     def test_max_temp_turns_off_reachable_phases_even_if_one_is_dead(self):
         c = self.make(ph=(None, True, True), temp=65.0, main=0.0, heater=3000.0)
         c.run()
-        self.assertEqual(self.sets(c), [[], [False], [False]])
+        self.assertEqual(self.sets(c), [[False], [False], [False]])      # auch die unlesbare Phase bekommt AUS
+
+    def test_blind_off_is_sent_every_run_with_short_timeout_and_never_on(self):
+        for _ in range(2):                                    # in jedem Lauf erneut
+            c = self.make(ph=(None, False, False), temp=65.0, main=0.0)
+            res = c.run()
+            self.assertEqual(c.ph1.sets, [False])
+            self.assertEqual(c.ph1.timeouts, [(1.5, True)])    # 1,5 s, leise (Fehler meldet der Controller selbst)
+            self.assertTrue(res.decisions[0].blind)
+        c = self.make(ph=(None, False, False), temp=50.0, main=-9000.0)   # viel Überschuss: AN nie an unbekannte
+        c.run()
+        self.assertEqual(c.ph1.sets, [])
+        self.assertEqual(c.ph2.sets, [True])
+
+    def test_blind_off_is_not_booked_as_phase_change(self):
+        c = self.make(ph=(None, False, False), temp=65.0, main=0.0)
+        c.run()
+        self.assertNotIn(1, db.get_last_phase_changes())
+
+    def test_blind_off_failure_is_logged_once_per_series(self):
+        def run_failing():
+            c = self.make(ph=(None, False, False), temp=65.0, main=0.0)
+            c.ph1.set_fails = True
+            return c.run()
+        with self.assertLogs("controller", level="ERROR") as cm:
+            run_failing()
+            run_failing()
+            run_failing()
+        msgs = [m for m in cm.output if "AUS-Befehl ohne Antwort" in m]
+        self.assertEqual(len(msgs), 1)                         # nur der erste Fehlschlag
+        c = self.make(ph=(None, False, False), temp=65.0, main=0.0)
+        c.run()                                                # Erfolg beendet die Serie
+        with self.assertLogs("controller", level="ERROR") as cm:
+            run_failing()                                      # neue Serie: wieder einmal
+        self.assertEqual(len([m for m in cm.output if "AUS-Befehl ohne Antwort" in m]), 1)
 
     def test_max_temp_applies_even_with_main_meter_down(self):
         c = self.make(ph=(True, True, False), temp=64.5, main=None)

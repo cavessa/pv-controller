@@ -30,7 +30,9 @@ def maybe_log(result: ControllerResult) -> None:
     except Exception:
         log.exception("pv_logger: string anomaly check fehlgeschlagen")
     try:
-        db.cleanup_old_hourly(90)
+        pruned = db.maybe_prune()          # einmal täglich (erster Lauf ab 03:00)
+        if pruned is not None:
+            log.info("Bereinigung: %s", ", ".join(f"{k}: {v}" for k, v in pruned.items() if v) or "nichts zu löschen")
     except Exception:
         log.exception("pv_logger: cleanup fehlgeschlagen")
 

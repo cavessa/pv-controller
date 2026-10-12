@@ -363,7 +363,9 @@ function renderEnergyFlow(heater, wb, cs, zd) {
   const feeding = gridW < -50;
   const drawing = gridW > 50;
   const gridOn  = feeding || drawing;
-  const heatOn  = heaterW > 50 || phases > 0;
+  // „Heizt“ nur bei gemessener Leistung: ein eingeschaltetes Relais ohne Last (Speicher voll, Thermostat)
+  // darf den Energiefluss nicht als Laden zeigen
+  const heatOn  = heaterW > 50;
   // Phasen-Punkte; ist ein Phasenstatus nicht lesbar (Shelly offline, null), die Zahl der
   // laufenden Phasen aus der gemessenen Heizstab-Leistung schätzen (≈ 1,5 kW je Phase)
   const phaseOff = ["ph1", "ph2", "ph3"].map(k => heater.phases_disabled?.[k] === true);

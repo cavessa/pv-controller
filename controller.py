@@ -41,6 +41,7 @@ from db import (
     get_last_phase_changes,
     log_phase_change,
     mark_device_alerted,
+    note_blind_off,
     smooth_heater_budgets,
 )
 from heater_phases import HeaterParams, PhaseIn, decide_phases
@@ -386,6 +387,22 @@ class Controller:
             log.info(
                 "[DRY-RUN] %s: würde %s ausführen", decision.name, decision.action.value
             )
+            return
+        if decision.blind:
+            # AUS an eine Phase mit unbekanntem Zustand: kurzer Timeout, jeden Lauf erneut, Fehler nur
+            # beim ersten Fehlschlag einer Serie loggen (kein Fehlertext im Decision-Log jede Minute)
+            ok = plug.set_relay(False, timeout=SHELLY_READ_TIMEOUT_S, quiet=True)
+            decision.executed = ok
+            try:
+                phase_no = int(decision.name[2:])
+                if note_blind_off(phase_no, ok):
+                    log.error(
+                        "%s: AUS-Befehl ohne Antwort (Zustand unbekannt, Gerät nicht erreichbar) – "
+                        "wird in jedem Lauf erneut gesendet; weitere Fehlschläge nur im Debug-Log.",
+                        decision.name,
+                    )
+            except Exception:
+                log.debug("Blind-AUS-Merker nicht fortgeschrieben", exc_info=True)
             return
         target = decision.action == PhaseAction.TURN_ON
         ok = plug.set_relay(target)
@@ -807,10 +824,10 @@ class Controller:
             surplus_fail_safe=bool(critical),
         )
         for i, out in enumerate(outs):
-            d = PhaseDecision(f"PH{i + 1}", states[i], out.action, out.reason)
+            d = PhaseDecision(f"PH{i + 1}", states[i], out.action, out.reason, blind=out.blind)
             self._execute(d, plugs[i])
             decisions.append(d)
-            if d.executed and d.action in (PhaseAction.TURN_ON, PhaseAction.TURN_OFF):
+            if d.executed and not d.blind and d.action in (PhaseAction.TURN_ON, PhaseAction.TURN_OFF):
                 try:
                     log_phase_change(i + 1, "on" if d.action == PhaseAction.TURN_ON else "off")
                 except Exception:

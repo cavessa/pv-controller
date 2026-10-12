@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -415,7 +415,7 @@ def record_main_meter(power_w: float) -> None:
             (now.strftime("%Y-%m-%d %H:%M"), power_w, power_w, power_w),
         )
         if now.minute == 0 and now.second < 20:
-            conn.execute("DELETE FROM main_meter_min WHERE ts < date('now', '-35 days')")
+            conn.execute("DELETE FROM main_meter_min WHERE ts < date('now', ?)", (f"-{RETENTION_DAYS['minute_tables']} days",))
     if power_w > 0:
         update_house_peak(power_w)
 
@@ -467,7 +467,7 @@ def record_zendure(soc, charge_w: float, discharge_w: float) -> None:
             (ts, soc, charge_w, discharge_w),
         )
         if ts.endswith(":00"):
-            conn.execute("DELETE FROM zendure_min WHERE ts < date('now', '-35 days')")
+            conn.execute("DELETE FROM zendure_min WHERE ts < date('now', ?)", (f"-{RETENTION_DAYS['minute_tables']} days",))
 
 
 def get_zendure_day(date_str: str) -> list[list]:
@@ -651,6 +651,89 @@ def get_grid_week_data(end_date: Optional[str] = None) -> dict:
             for r in rows
         ],
     }
+
+
+# ── Aufbewahrung (Retention) ─────────────────────────────────────────────────
+
+RETENTION_DAYS = {
+    "cascade_events": 365,     # cascade_log: Schaltvorgänge und Ereignisse
+    "cascade_verbose": 2,      # cascade_log: keep_*/budget (nur mit cascade.log_verbose)
+    "pv_hourly_log": 90,
+    "minute_tables": 35,       # main_meter_min, zendure_min (Tagesverlauf-Ansicht reicht so weit zurück)
+    "heater_budget_log": 14,
+}
+PRUNE_BATCH = 5000
+PRUNE_AFTER_HOUR = 3
+
+
+def _prune_rules(now: datetime) -> list[tuple[str, str, str, tuple]]:
+    """(Name, Tabelle, WHERE-Bedingung, Parameter). Grenze: nur **strikt ältere** Zeilen werden gelöscht."""
+    utc = datetime.fromtimestamp(now.timestamp(), tz=timezone.utc).replace(tzinfo=None)   # cascade_log: UTC
+    def cut(days: int, fmt: str, base: datetime) -> str:
+        return (base - timedelta(days=days)).strftime(fmt)
+    R = RETENTION_DAYS
+    verbose_ph = ",".join("?" for _ in CASCADE_LOG_VERBOSE_ONLY)
+    verbose = tuple(sorted(CASCADE_LOG_VERBOSE_ONLY))
+    return [
+        # cascade_log: Zeitstempel in UTC (datetime('now'))
+        ("cascade_log (Ereignisse)", "cascade_log",
+         f"timestamp < ? AND action NOT IN ({verbose_ph})",
+         (cut(R["cascade_events"], "%Y-%m-%d %H:%M:%S", utc),) + verbose),
+        ("cascade_log (keep_*/budget)", "cascade_log",
+         f"timestamp < ? AND action IN ({verbose_ph})",
+         (cut(R["cascade_verbose"], "%Y-%m-%d %H:%M:%S", utc),) + verbose),
+        ("pv_hourly_log", "pv_hourly_log", "timestamp < ?", (cut(R["pv_hourly_log"], "%Y-%m-%d %H:00", now),)),
+        ("main_meter_min", "main_meter_min", "ts < ?", (cut(R["minute_tables"], "%Y-%m-%d %H:%M", now),)),
+        ("zendure_min", "zendure_min", "ts < ?", (cut(R["minute_tables"], "%Y-%m-%d %H:%M", now),)),
+        ("heater_budget_log", "heater_budget_log", "ts < ?", (cut(R["heater_budget_log"], "%Y-%m-%d %H:%M", now),)),
+    ]
+
+
+def prune(now: Optional[datetime] = None, dry_run: bool = False, batch: int = PRUNE_BATCH) -> dict[str, int]:
+    """Alte Zeilen aus den wachsenden Tabellen löschen (in Batches, kein VACUUM).
+
+    Unbegrenzt bleiben pv_daily_log, weather_log, house_peak_day, storage_day (klein, Jahresvergleich).
+    Mit ``dry_run`` wird nur gezählt. Gibt {Regelname: Zeilenzahl} zurück.
+    """
+    now = now or datetime.now()
+    out: dict[str, int] = {}
+    for name, table, where, params in _prune_rules(now):
+        with sqlite3.connect(DB_PATH, timeout=30) as conn:
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is None:
+                out[name] = 0
+                continue
+            if dry_run:
+                out[name] = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}", params).fetchone()[0]
+                continue
+        total = 0
+        while True:
+            with sqlite3.connect(DB_PATH, timeout=30) as conn:
+                cur = conn.execute(
+                    f"DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE {where} LIMIT {int(batch)})",
+                    params,
+                )
+                n = cur.rowcount
+            total += n
+            if n < batch:
+                break
+        out[name] = total
+    return out
+
+
+def maybe_prune(now: Optional[datetime] = None) -> Optional[dict[str, int]]:
+    """Einmal pro Tag (erster Lauf ab 03:00) ``prune`` ausführen; Merker in cascade_settings."""
+    now = now or datetime.now()
+    if now.hour < PRUNE_AFTER_HOUR:
+        return None
+    today = now.strftime("%Y-%m-%d")
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        conn.execute("INSERT OR IGNORE INTO cascade_settings (key, value) VALUES ('last_prune', '')")
+        claimed = conn.execute(
+            "UPDATE cascade_settings SET value = ? WHERE key = 'last_prune' AND value != ?", (today, today)
+        ).rowcount
+    if not claimed:
+        return None
+    return prune(now)
 
 
 def cleanup_old_hourly(keep_days: int = 90) -> None:
@@ -900,7 +983,8 @@ _CASCADE_COLS = (
     "power_watts, priority, enabled, min_on_minutes, min_off_minutes, "
     "hysteresis_watts, is_on, turned_on_at, turned_off_at, "
     "manual_override_action, manual_override_until, created_at, updated_at, "
-    "consecutive_errors, last_status_power_w, last_status_ok, retry_after"
+    "consecutive_errors, last_status_power_w, last_status_ok, retry_after, "
+    "last_action, last_reason, last_decision_at"
 )
 
 
@@ -942,6 +1026,9 @@ def init_cascade_tables() -> None:
             ("last_status_power_w", "REAL"),
             ("last_status_ok",      "INTEGER DEFAULT 1"),
             ("retry_after",         "TEXT"),
+            ("last_action",         "TEXT"),      # aktuelle Entscheidung (jede Minute überschrieben)
+            ("last_reason",         "TEXT"),
+            ("last_decision_at",    "TEXT"),
         ):
             try:
                 conn.execute(
@@ -1103,20 +1190,64 @@ def clear_cascade_override(device_id: str) -> None:
         )
 
 
+# Dauerhaft geloggt werden nur Ereignisse. Die aktuelle Entscheidung samt Grund steht immer in
+# cascade_devices.last_* (wird überschrieben, wächst nicht) und im Status der Weboberfläche.
+CASCADE_LOG_VERBOSE_ONLY = frozenset({"keep_on", "keep_off", "budget"})        # nur bei cascade.log_verbose
+CASCADE_LOG_ON_CHANGE = frozenset({                                             # nur beim Wechsel der Entscheidung
+    "manual_override", "skip_min_on", "skip_min_off",
+    "unreachable", "blocked", "hold", "idle", "charge", "discharge", "override",
+})
+
+
 def log_cascade_action(
     surplus_watts: int,
     device_id: str,
     action: str,
     reason: str,
     remaining_watts: int,
-) -> None:
+    verbose: bool = False,
+) -> bool:
+    """Entscheidung festhalten. Gibt zurück, ob eine Zeile in cascade_log geschrieben wurde.
+
+    - Immer: aktuelle Entscheidung am Gerät (``last_action``/``last_reason``) überschreiben.
+    - Immer persistent: Schaltvorgänge (turn_on/turn_off), automatische (De-)Aktivierung, Unbekanntes.
+    - Nur beim Wechsel der Entscheidung (erste Minute eines Zustands): manuelle Übersteuerung,
+      Mindestzeit-Sperren (``skip_min_*``), Batterie-Betriebsarten, nicht erreichbar.
+    - Nur mit ``verbose`` (``cascade.log_verbose``): keep_on/keep_off/budget.
+    """
+    now = datetime.now().isoformat(timespec="seconds")
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            "INSERT INTO cascade_log "
-            "(surplus_watts, device_id, action, reason, remaining_watts) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (surplus_watts, device_id, action, reason, remaining_watts),
-        )
+        row = conn.execute("SELECT last_action FROM cascade_devices WHERE id = ?", (device_id,)).fetchone()
+        prev = row[0] if row else None
+        if row is not None:
+            conn.execute(
+                "UPDATE cascade_devices SET last_action = ?, last_reason = ?, last_decision_at = ? WHERE id = ?",
+                (action, reason, now, device_id),
+            )
+        if action in CASCADE_LOG_VERBOSE_ONLY:
+            persist = verbose
+        elif action in CASCADE_LOG_ON_CHANGE:
+            persist = verbose or action != prev
+        else:
+            persist = True
+        if persist:
+            conn.execute(
+                "INSERT INTO cascade_log "
+                "(surplus_watts, device_id, action, reason, remaining_watts) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (surplus_watts, device_id, action, reason, remaining_watts),
+            )
+    return persist
+
+
+def get_cascade_decisions() -> dict[str, dict]:
+    """Aktuelle Entscheidung je Gerät: {device_id: {action, reason, at}}."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT id, last_action, last_reason, last_decision_at FROM cascade_devices "
+            "WHERE last_action IS NOT NULL"
+        ).fetchall()
+    return {r[0]: {"action": r[1], "reason": r[2] or "", "at": r[3]} for r in rows}
 
 
 def get_cascade_log(limit: int = 100) -> list[dict]:
@@ -1408,6 +1539,26 @@ def device_health_update(device_id: str, ok: bool) -> dict:
         down_min = (now - first).total_seconds() / 60.0
         return {"down_min": down_min, "since": first.strftime("%H:%M"),
                 "alerted": bool(alerted), "recovered": False}
+
+
+def note_blind_off(phase: int, ok: bool) -> bool:
+    """Ergebnis eines Blind-AUS-Befehls (Zustand der Phase unbekannt) merken.
+
+    Gibt True zurück, wenn dies der **erste** Fehlschlag einer Serie ist (der Aufrufer loggt dann
+    einmal einen Fehler); weitere Fehlschläge in Folge geben False. Ein Erfolg beendet die Serie.
+    Merker in cascade_settings (kein neuer Alarm im Dashboard)."""
+    key = f"blind_off_fail_ph{phase}"
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        row = conn.execute("SELECT 1 FROM cascade_settings WHERE key = ?", (key,)).fetchone()
+        if ok:
+            if row:
+                conn.execute("DELETE FROM cascade_settings WHERE key = ?", (key,))
+            return False
+        if row:
+            return False
+        conn.execute("INSERT INTO cascade_settings (key, value) VALUES (?, ?)",
+                     (key, datetime.now().isoformat(timespec="seconds")))
+        return True
 
 
 def mark_device_alerted(device_id: str) -> None:

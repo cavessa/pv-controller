@@ -138,6 +138,7 @@ class PhaseDecision:
     reason: str
     executed: bool = False
     execution_error: Optional[str] = None
+    blind: bool = False          # AUS an eine Phase mit unbekanntem Zustand (kein Statuswechsel gesichert)
 
 
 @dataclass

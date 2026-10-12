@@ -353,6 +353,22 @@ class ServiceIntegrationTest(unittest.TestCase):
         decision = db.get_zendure_ctl()["decision"]
         self.assertIn("discharge 400 W", decision)
 
+    def test_cascade_log_has_no_keep_or_budget_rows_unless_verbose(self):
+        def actions():
+            with sqlite3.connect(db.DB_PATH) as conn:
+                return {r[0] for r in conn.execute("SELECT DISTINCT action FROM cascade_log")}
+        import sqlite3
+        svc = self.service(False, 45.0, -3000.0)
+        svc.run_cascade(); svc.run_cascade()
+        self.assertFalse(actions() & {"keep_on", "keep_off", "budget"})
+        dec = db.get_cascade_decisions()
+        self.assertIn("heizstab", dec)                         # aktuelle Entscheidung bleibt sichtbar
+        self.assertIn("Budget", dec["heizstab"]["reason"])
+        self.raw["cascade"] = {"log_verbose": True}
+        svc = self.service(False, 45.0, -3000.0)
+        svc.run_cascade()
+        self.assertTrue(actions() & {"keep_on", "keep_off", "budget"})
+
     def test_battery_disabled_means_heater_gets_everything(self):
         self.raw["zendure"]["enabled"] = False
         svc = self.service(False, 45.0, -3000.0)

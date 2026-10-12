@@ -42,3 +42,5 @@ Voraussetzung: `/etc/sudoers.d/pvcontroller` (siehe `sudoers.pvcontroller`) – 
 
 
 **Alltag nach dem Umzug:** in `~/pvcontroller` (Dev, Dry-Run) entwickeln → committen → pushen (nach Freigabe) → `~/pvcontroller-prod/deploy/deploy.sh`.
+
+**Wartung:** `python3 deploy/maintenance/prune_once.py` (Dry-Run) bzw. `--apply` räumt `cascade_log` einmalig auf (Snapshot, Lock, VACUUM, integrity_check). Danach hält `db.prune()` im Minuten-Lauf (täglich ab 03:00) die Tabellen klein.

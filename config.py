@@ -214,6 +214,12 @@ class SummerModeConfig:
 
 
 @dataclass
+class CascadeConfig:
+    # Debug: keep_on/keep_off/budget wie früher jede Minute in cascade_log schreiben (wächst stark)
+    log_verbose: bool = False
+
+
+@dataclass
 class Config:
     solax: SolaxConfig
     shelly: ShellyConfig
@@ -227,6 +233,7 @@ class Config:
     # Warnmarke für die Hausanschluss-Belastung (kW), Lastspitzen-Anzeige
     house_max_load_kw: float = 11.0
     zendure: Optional[ZendureConfig] = None
+    cascade: CascadeConfig = field(default_factory=CascadeConfig)
 
     @property
     def comfort_min_temp(self) -> float:
@@ -295,4 +302,7 @@ def load_config(path: str | Path) -> Config:
         solax2=parse_solax2(raw),
         house_max_load_kw=float(raw.get("house_max_load_kw", 11.0)),
         zendure=parse_zendure(raw),
+        cascade=CascadeConfig(**{
+            k: v for k, v in raw.get("cascade", {}).items() if k in CascadeConfig.__dataclass_fields__
+        }),
     )

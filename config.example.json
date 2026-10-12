@@ -94,5 +94,8 @@
     "enabled": false,
     "min_temp": 45,
     "target_temp": 52
+  },
+  "cascade": {
+    "log_verbose": false
   }
 }

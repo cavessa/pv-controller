@@ -29,6 +29,7 @@ from clients.solax_client import SolaxClient
 from clients.zendure_client import ZendureClient
 from config import Config
 from db import (
+    log_cascade_action,
     ensure_zendure_cascade_device,
     auto_reenable_cascade_device,
     clear_cascade_override,
@@ -38,7 +39,6 @@ from db import (
     get_cascade_devices_due_for_retry,
     get_cascade_settings,
     increment_cascade_device_errors,
-    log_cascade_action,
     reset_cascade_device_errors,
     set_cascade_budget,
     smooth_heater_budgets,
@@ -86,6 +86,10 @@ class CascadeService:
             self.zendure_ctl = ZendureControl(
                 config, self.zendure_client, dry_run=config.runtime.dry_run
             )
+
+    def _log(self, surplus: int, device_id: str, action: str, reason: str, remaining: int) -> None:
+        """Entscheidung festhalten (nur Ereignisse dauerhaft, siehe db.log_cascade_action)."""
+        log_cascade_action(surplus, device_id, action, reason, remaining, verbose=self.cfg.cascade.log_verbose)
 
     # ── Hauptmethode ─────────────────────────────────────────────────────────
 
@@ -260,7 +264,9 @@ class CascadeService:
         target = max(0, min(n_ph, math.floor((budget + h.grid_assist_w) / h.phase_power_w)))
         now = datetime.now()
         active = target >= 1
+        action = "budget"                      # laufende Budget-Entscheidung (nur mit log_verbose in cascade_log)
         if active != device["is_on"]:
+            action = "turn_on" if active else "turn_off"      # Budget erlaubt/verbietet den Heizstab: Ereignis
             update_cascade_device_state(
                 device["id"], active,
                 turned_on_at=now if active else None, turned_off_at=None if active else now,
@@ -277,7 +283,7 @@ class CascadeService:
             + (f"; Speicher {temp:.1f} °C{stage}" if temp is not None else "; Speichertemperatur unbekannt")
             + (f"; manuell {force.upper()}" if force else "")
         )
-        log_cascade_action(surplus, device["id"], "budget", reason, remaining_w)
+        self._log(surplus, device["id"], action, reason, remaining_w)
         log.info("Kaskade: %s → %s, remaining=%d W", device["name"], reason, remaining_w)
         return reason
 
@@ -294,7 +300,7 @@ class CascadeService:
                 # Gemessene statt nominale Leistung abziehen (Phantom-Budget vermeiden)
                 remaining -= int(actual_device_w.get(device["id"], device["power_watts"]))
             reason = f"manual_override ({override})"
-            log_cascade_action(
+            self._log(
                 surplus, device["id"], "manual_override",
                 f"Manuelle Übersteuerung: {override} aktiv bis {device['manual_override_until']}",
                 remaining,
@@ -325,7 +331,7 @@ class CascadeService:
             remaining -= device["power_watts"]
             device = {**device, "is_on": True}
 
-        log_cascade_action(surplus, device["id"], action, reason, remaining)
+        self._log(surplus, device["id"], action, reason, remaining)
         log.info("Kaskade: %s → %s, remaining=%d W | %s", device["name"], action, remaining, reason)
         self._dispatch(device, action)
         return remaining, reason
@@ -411,7 +417,7 @@ class CascadeService:
             (st.charge_w if st.state == "charging" else st.discharge_w) if st is not None else 0.0,
             st is not None,
         )
-        log_cascade_action(surplus, device["id"], p.action, p.reason, int(avail_w - charge_w))
+        self._log(surplus, device["id"], p.action, p.reason, int(avail_w - charge_w))
         log.info("Kaskade: %s → %s %d W, verfügbar %d W | %s", device["name"], p.mode, p.limit_w, avail_w, p.reason)
         return float(charge_w), p.reason
 
@@ -481,7 +487,7 @@ class CascadeService:
                 device["name"],
                 _AUTO_RETRY_HOURS,
             )
-            log_cascade_action(0, device["id"], "auto_reenabled", "Automatischer Retry", 0)
+            self._log(0, device["id"], "auto_reenabled", "Automatischer Retry", 0)
 
         shelly_devices = [
             d for d in get_cascade_devices()
@@ -521,7 +527,7 @@ class CascadeService:
             f"Automatisch deaktiviert nach {_MAX_ERRORS} aufeinanderfolgenden Fehlern "
             f"(Retry um {retry_at.strftime('%H:%M')} Uhr)"
         )
-        log_cascade_action(0, device["id"], "auto_disabled", reason, 0)
+        self._log(0, device["id"], "auto_disabled", reason, 0)
         log.error("Kaskade: %s — %s", device["name"], reason)
 
     # ── Gerätetyp-spezifische Aktionen ───────────────────────────────────────

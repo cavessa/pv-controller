@@ -1569,11 +1569,13 @@ def cascade_status(response: Response, profile: Optional[str] = None) -> dict[st
         log.warning("cascade/status: Controller-Lesefehler", exc_info=True)
 
     devices = _visible_cascade_devices()
-    recent_log = get_cascade_log(limit=50)
-    # Letzten Logeintrag pro Gerät ermitteln
-    last_action: dict[str, str] = {}
-    last_reason: dict[str, str] = {}
-    for entry in reversed(recent_log):
+    # Aktuelle Entscheidung samt Grund je Gerät (wird jede Minute überschrieben; cascade_log enthält
+    # nur noch Ereignisse). Fallback auf das Ereignis-Log für Geräte ohne Entscheidung.
+    from db import get_cascade_decisions
+    decisions = get_cascade_decisions()
+    last_action: dict[str, str] = {k: v["action"] for k, v in decisions.items()}
+    last_reason: dict[str, str] = {k: v["reason"] for k, v in decisions.items()}
+    for entry in reversed(get_cascade_log(limit=50)):
         did = entry["device_id"]
         if did not in last_action:
             last_action[did] = entry["action"]
