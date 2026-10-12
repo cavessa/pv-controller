@@ -110,8 +110,9 @@ class CascadeService:
         battery_dev = by_id.get(BATTERY)
 
         season = "summer" if self.cfg.summer_mode.enabled else "winter"
+        comfort_min = self.cfg.comfort_min_for(season)       # None = keine „bis Min“-Stufe im Profil
         order = []
-        for key in get_cascade_profile(season):
+        for key in get_cascade_profile(season, comfort_min is not None):
             if key in HEATER_STAGES:
                 if heater_dev is not None:
                     order.append(key)
@@ -190,7 +191,7 @@ class CascadeService:
         actual_heater_w = float(actual_device_w.get(heater_dev["id"], 0.0)) if heater_dev else 0.0
         ctx = HeaterCtx(
             phase_w=h.phase_power_w, grid_assist_w=h.grid_assist_w, n_phases=n_ph, temp=temp,
-            comfort_min=self.cfg.comfort_min_temp, max_temp=h.storage_max_temp, actual_w=actual_heater_w,
+            comfort_min=comfort_min if comfort_min is not None else 0.0, max_temp=h.storage_max_temp, actual_w=actual_heater_w,
         )
         results: list[dict] = []
         battery_plan: dict = {}
@@ -212,9 +213,9 @@ class CascadeService:
             results.append(self._result(device, reason))
             return new_remaining
 
-        def heater_fn(budget_w: int, battery_w: int, remaining_w: int) -> None:
+        def heater_fn(gross_w: int, battery_w: int, remaining_w: int) -> None:
             reason = self._store_heater_budget(
-                heater_dev, budget_w, battery_w, remaining_w, surplus, season, temp, ctx,
+                heater_dev, gross_w, battery_w, remaining_w, surplus, season, temp, ctx,
                 actual_heater_w, self._active_override(heater_dev),
             )
             results.append(self._result(heater_dev, reason))
@@ -228,11 +229,14 @@ class CascadeService:
     # ── Heizstab: Kaskade legt nur das Budget fest ───────────────────────────
 
     def _store_heater_budget(
-        self, device: dict, raw: int, battery_w: int, remaining_w: int, surplus: int, season: str,
+        self, device: dict, gross_w: int, battery_w: int, remaining_w: int, surplus: int, season: str,
         temp: Optional[float], ctx: HeaterCtx, actual_w: float, override: Optional[str],
     ) -> str:
-        """Gesamt-Budget des Heizstabs (beide Stufen) glätten und für den Controller ablegen.
+        """Heizstab-Budget für den Controller ablegen.
 
+        Geglättet wird der Gesamt-Überschuss ``gross_w`` (vor der Batterie); die **aktuelle**
+        Batterie-Ladung ``battery_w`` wird erst danach ungeglättet abgezogen. So steigt das Budget
+        sofort, wenn die Batterie voll wird (kein Nachlaufen des Mittelwerts).
         Welche Phasen innerhalb des Budgets laufen, entscheidet allein der Controller
         (heater_phases.decide_phases; Mindestzeiten, Hysterese, Max-Temp).
         """
@@ -245,9 +249,13 @@ class CascadeService:
             budget = budget_down = int(h.phase_power_w * n_ph)
             force = "on"
         else:
-            up, down = smooth_heater_budgets(raw, h.budget_smooth_min, h.budget_smooth_down_min)
-            budget, budget_down, force = int(round(up)), int(round(down)), None
-        set_cascade_budget(device["id"], budget, raw, force, budget_down)
+            up, down = smooth_heater_budgets(gross_w, h.budget_smooth_min, h.budget_smooth_down_min)
+            # Zuschalten nie über dem jetzt tatsächlich freien Überschuss: Bricht der Überschuss ein, würde
+            # das noch hohe Mittel den Heizstab sonst aus dem Netz starten (mit Batterie nimmt sie zudem den
+            # Rest). Abschalten nutzt weiter das kurze Mittel.
+            up = min(up, gross_w)
+            budget, budget_down, force = int(round(up)) - battery_w, int(round(down)) - battery_w, None
+        set_cascade_budget(device["id"], budget, gross_w, force, budget_down)
 
         target = max(0, min(n_ph, math.floor((budget + h.grid_assist_w) / h.phase_power_w)))
         now = datetime.now()
@@ -258,16 +266,15 @@ class CascadeService:
                 turned_on_at=now if active else None, turned_off_at=None if active else now,
             )
 
-        stages = []
-        if ctx.temp is not None:
-            stages.append("bis Min" if ctx.stage_active(HEATER_MIN) else "Min erreicht")
+        stage = ""
+        if temp is not None and ctx.comfort_min > 0:
+            stage = " (bis Min)" if ctx.stage_active(HEATER_MIN) else " (Min erreicht)"
         reason = (
-            f"Budget {budget} W zu / {budget_down} W ab (roh {raw} W, Mittel {h.budget_smooth_min}/"
-            f"{h.budget_smooth_down_min} min) → bis zu {target} Phase(n); "
-            f"Startschwelle {int(h.phase_power_w - h.grid_assist_w)} W, Ist {int(actual_w)} W"
-            + (f"; Speicher {temp:.1f} °C" if temp is not None else "; Speichertemperatur unbekannt")
-            + (f" ({', '.join(stages)})" if stages and season == "summer" else "")
-            + (f"; Batterie {battery_w} W" if battery_w else "")
+            f"Budget {budget} W zu / {budget_down} W ab (Überschuss roh {gross_w} W, Mittel "
+            f"{h.budget_smooth_min}/{h.budget_smooth_down_min} min, abzüglich Batterie {battery_w} W jetzt) "
+            f"→ bis zu {target} Phase(n); Startschwelle {int(h.phase_power_w - h.grid_assist_w)} W, "
+            f"Ist {int(actual_w)} W"
+            + (f"; Speicher {temp:.1f} °C{stage}" if temp is not None else "; Speichertemperatur unbekannt")
             + (f"; manuell {force.upper()}" if force else "")
         )
         log_cascade_action(surplus, device["id"], "budget", reason, remaining_w)

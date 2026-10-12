@@ -95,6 +95,9 @@ class HeaterConfig:
     # Komfort-Mindesttemperatur des Wasserspeichers: bis hierher hat der Heizstab in der
     # Kaskade (Sommerprofil) Vorrang vor der Batterie. None = summer_mode.target_temp.
     comfort_min_temp: Optional[float] = None
+    # Winterprofil: Untergrenze, bis zu der der Wasserspeicher VOR der Batterie geheizt wird
+    # (Öl sichert die Wärme, aber ein ausgekühlter Speicher soll nicht leer bleiben). None = aus.
+    winter_comfort_min_temp: Optional[float] = 40.0
 
     @property
     def disabled_phases(self) -> tuple[bool, bool, bool]:
@@ -231,6 +234,13 @@ class Config:
         t = self.heater.comfort_min_temp
         t = self.summer_mode.target_temp if t is None else float(t)
         return min(t, self.heater.storage_max_temp)
+
+    def comfort_min_for(self, season: str) -> Optional[float]:
+        """Untergrenze der Stufe „Wasserspeicher bis Min“ je Profil; None = Stufe gibt es nicht."""
+        if season == "summer":
+            return self.comfort_min_temp
+        t = self.heater.winter_comfort_min_temp
+        return None if t is None else min(float(t), self.heater.storage_max_temp)
 
     @property
     def zendure_active(self) -> bool:

@@ -1233,7 +1233,7 @@ def update_cascade_settings(**kwargs: object) -> dict:
 
 # ── Kaskaden-Profile (Sommer/Winter) ─────────────────────────────────────────
 
-def get_cascade_profile(season: str) -> list[str]:
+def get_cascade_profile(season: str, min_stage: bool = False) -> list[str]:
     """Gespeicherte Reihenfolge des Profils (normalisiert; ohne gespeicherten Wert: Default)."""
     import json
     from cascade_plan import normalize_profile
@@ -1246,14 +1246,14 @@ def get_cascade_profile(season: str) -> list[str]:
         order = json.loads(row[0]) if row else None
     except ValueError:
         order = None
-    return normalize_profile(season, order, ids)
+    return normalize_profile(season, order, ids, min_stage)
 
 
-def set_cascade_profile(season: str, order: list[str]) -> list[str]:
+def set_cascade_profile(season: str, order: list[str], min_stage: bool = False) -> list[str]:
     import json
     from cascade_plan import normalize_profile
     ids = [d["id"] for d in get_cascade_devices()]
-    clean = normalize_profile(season, order, ids)
+    clean = normalize_profile(season, order, ids, min_stage)
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             "INSERT OR REPLACE INTO cascade_settings (key, value) VALUES (?, ?)",

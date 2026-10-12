@@ -6,7 +6,8 @@ Ein Profil ist eine Reihenfolge von Einträgen:
 - ``heizstab_max``  Wasserspeicher „bis Max“ (aktiv, solange Temp < storage_max_temp)
 - sonst die ID eines Kaskaden-Geräts (eBike-Shelly, Wallbox …)
 
-Defaults: Winter (Öl heizt) ``[Batterie, Wasserspeicher bis Max]``, Sommer (Öl aus)
+Defaults: Winter (Öl heizt) ``[Wasserspeicher bis Winter-Untergrenze, Batterie, Wasserspeicher
+bis Max]`` (Untergrenze optional, Default 40 °C), Sommer (Öl aus)
 ``[Wasserspeicher bis Min, Batterie, Wasserspeicher bis Max]``; bestehende Geräte behalten
 ihre Position (der Heizstab-Block ersetzt den bisherigen Heizstab-Eintrag).
 
@@ -30,36 +31,40 @@ HEATER_STAGES = (HEATER_MIN, HEATER_MAX)
 SEASONS = ("summer", "winter")
 
 
-def heater_block(season: str) -> list[str]:
-    return [HEATER_MIN, BATTERY, HEATER_MAX] if season == "summer" else [BATTERY, HEATER_MAX]
+def heater_block(season: str, min_stage: bool = False) -> list[str]:
+    """Standard-Block: Sommer immer mit „bis Min“-Stufe, Winter nur mit Winter-Untergrenze."""
+    with_min = season == "summer" or min_stage
+    return [HEATER_MIN, BATTERY, HEATER_MAX] if with_min else [BATTERY, HEATER_MAX]
 
 
-def default_profile(season: str, device_ids_by_priority: Iterable[str]) -> list[str]:
+def default_profile(season: str, device_ids_by_priority: Iterable[str], min_stage: bool = False) -> list[str]:
     """Aktuelle Geräteliste (nach Priorität) → Profil; Heizstab-/Batterie-Eintrag wird zum Block."""
     out: list[str] = []
     placed = False
     for did in device_ids_by_priority:
         if did in (HEATER_ID, BATTERY):
             if not placed:
-                out.extend(heater_block(season))
+                out.extend(heater_block(season, min_stage))
                 placed = True
             continue
         out.append(did)
     if not placed:
-        out = heater_block(season) + out
+        out = heater_block(season, min_stage) + out
     return out
 
 
 def normalize_profile(season: str, order: Optional[Iterable[str]],
-                      device_ids_by_priority: Iterable[str]) -> list[str]:
+                      device_ids_by_priority: Iterable[str], min_stage: bool = False) -> list[str]:
     """Gespeicherte Reihenfolge bereinigen: unbekannte/doppelte Einträge entfernen, fehlende
     (neue Geräte) hinten anhängen, Heizstab-Stufen und Batterie sicherstellen.
 
-    Winter hat nur die Stufe „bis Max“ (Öl sichert das Minimum); Sommer beide, „bis Min“ vor „bis Max“.
+    Die Stufe „bis Min“ gibt es im Sommer immer, im Winter nur mit gesetzter Winter-Untergrenze
+    (``min_stage``); sie steht vor der Batterie bzw. vor „bis Max“.
     """
+    with_min = season == "summer" or min_stage
     ids = [d for d in device_ids_by_priority if d not in (HEATER_ID, BATTERY)]
     valid = set(ids) | {HEATER_MIN, HEATER_MAX, BATTERY}
-    if season != "summer":
+    if not with_min:
         valid.discard(HEATER_MIN)
     seen: set[str] = set()
     out: list[str] = []
@@ -68,17 +73,17 @@ def normalize_profile(season: str, order: Optional[Iterable[str]],
             out.append(k)
             seen.add(k)
     if not out:
-        return default_profile(season, device_ids_by_priority)
+        return default_profile(season, device_ids_by_priority, min_stage)
     # Pflichteinträge an sinnvoller Stelle ergänzen
     if HEATER_MAX not in seen:
         out.append(HEATER_MAX)
         seen.add(HEATER_MAX)
-    if season == "summer" and HEATER_MIN not in seen:
-        out.insert(out.index(HEATER_MAX), HEATER_MIN)
-        seen.add(HEATER_MIN)
     if BATTERY not in seen:
         out.insert(out.index(HEATER_MAX), BATTERY)
         seen.add(BATTERY)
+    if with_min and HEATER_MIN not in seen:
+        out.insert(out.index(BATTERY), HEATER_MIN)
+        seen.add(HEATER_MIN)
     # „bis Min“ muss vor „bis Max“ stehen (sonst würde Max das Minimum überholen)
     if HEATER_MIN in out and out.index(HEATER_MIN) > out.index(HEATER_MAX):
         out.remove(HEATER_MIN)
@@ -114,7 +119,8 @@ class HeaterCtx:
 
 @dataclass
 class WalkResult:
-    heater_budget_w: int = 0
+    heater_budget_w: int = 0              # Budget abzüglich der Batterie-Ladung (momentan, ungeglättet)
+    heater_gross_w: int = 0               # Budget vor Abzug der Batterie (das wird geglättet)
     heater_phases: int = 0
     battery_w: int = 0
     remaining_w: int = 0
@@ -134,8 +140,10 @@ def walk(
 
     ``battery_fn(avail_w)`` → geplante Ladeleistung der Batterie; ``device_fn(key, remaining)`` →
     Restbudget nach einem sonstigen Gerät. Die Heizstab-Phasenzahl ist nur die Budget-Obergrenze
-    (der Controller entscheidet mit Mindestzeiten/Hysterese). ``heater_fn(budget_w, battery_w,
-    remaining_w)`` wird an der Position der letzten Heizstab-Stufe aufgerufen (Budget steht fest).
+    (der Controller entscheidet mit Mindestzeiten/Hysterese). ``heater_fn(gross_w, battery_w,
+    remaining_w)`` wird an der Position der letzten Heizstab-Stufe aufgerufen; ``gross_w`` ist das
+    Budget **vor** Abzug der aktuellen Batterie-Ladung ``battery_w`` (der Aufrufer glättet ``gross_w``
+    und zieht ``battery_w`` danach ungeglättet ab).
     """
     res = WalkResult()
     remaining = float(surplus_w)
@@ -143,12 +151,14 @@ def walk(
     last_stage = stage_idx[-1] if stage_idx else -1
     first_r: Optional[float] = None
     battery_after_first = 0.0
+    battery_sum = 0.0
     budget: Optional[float] = None
 
     for i, key in enumerate(order):
         if key == BATTERY:
             b = max(0.0, float(battery_fn(max(0.0, remaining))))
             remaining -= b
+            battery_sum += b
             res.battery_w = int(round(b))
             if first_r is not None:
                 battery_after_first += b
@@ -165,8 +175,9 @@ def walk(
                     budget = remaining                       # Speicher voll: Budget nur informativ
                     remaining -= heater.actual_w
                 res.trace.append(f"Heizstab-Budget {budget:.0f} W")
+                res.heater_gross_w = int(round(budget + battery_sum))
                 if heater_fn is not None:
-                    heater_fn(int(round(budget)), res.battery_w, int(round(remaining)))
+                    heater_fn(res.heater_gross_w, int(round(battery_sum)), int(round(remaining)))
             elif active:
                 # vorgelagerte Stufe: beansprucht nur ihre ganzen Phasen, Rest geht weiter
                 n = phases_for(remaining, heater.phase_w, heater.grid_assist_w, heater.n_phases)

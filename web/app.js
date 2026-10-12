@@ -3221,6 +3221,7 @@ async function loadSettings() {
     setFormValue(f, "heater.storage_max_temp", lastConfig.heater?.storage_max_temp);
     setFormValue(f, "heater.storage_temp_hysteresis", lastConfig.heater?.storage_temp_hysteresis);
     setFormValue(f, "heater.comfort_min_temp", lastConfig.heater?.comfort_min_temp ?? "");
+    setFormValue(f, "heater.winter_comfort_min_temp", "winter_comfort_min_temp" in (lastConfig.heater || {}) ? (lastConfig.heater.winter_comfort_min_temp ?? "") : 40);
     setFormValue(f, "heater.min_pv_power_ph1", lastConfig.heater?.min_pv_power_ph1);
     setFormValue(f, "heater.min_pv_power_ph2", lastConfig.heater?.min_pv_power_ph2);
     setFormValue(f, "heater.min_pv_power_ph3", lastConfig.heater?.min_pv_power_ph3);
@@ -3327,6 +3328,10 @@ async function saveSettings(e) {
     heater: {
       storage_max_temp: numField("heater.storage_max_temp"),
       storage_temp_hysteresis: numField("heater.storage_temp_hysteresis"),
+      winter_comfort_min_temp: (() => {                // leer = aus
+        const v = f.elements.namedItem("heater.winter_comfort_min_temp")?.value;
+        return v === "" || v == null ? null : Number(v);
+      })(),
       comfort_min_temp: (() => {                       // leer = Default (Zieltemperatur Sommermodus)
         const v = f.elements.namedItem("heater.comfort_min_temp")?.value;
         return v === "" || v == null ? null : Number(v);
@@ -3704,7 +3709,9 @@ function renderCascadeProfileTabs(status) {
     hint.textContent = sel === active
       ? (sel === "summer"
           ? `Sommerprofil ist aktiv (Öl aus): Wasserspeicher bis ${status.comfort_min_temp} °C → Batterie → Wasserspeicher bis ${status.storage_max_temp} °C.`
-          : `Winterprofil ist aktiv (Öl heizt): Batterie → Wasserspeicher bis Max.`)
+          : (status.comfort_min_temp != null
+              ? `Winterprofil ist aktiv (Öl heizt): Wasserspeicher bis ${status.comfort_min_temp} °C → Batterie → Wasserspeicher bis Max.`
+              : `Winterprofil ist aktiv (Öl heizt): Batterie → Wasserspeicher bis Max.`))
       : `Dieses Profil ist gerade nicht aktiv – es gilt, sobald der Sommermodus ${sel === "summer" ? "eingeschaltet" : "ausgeschaltet"} wird.`;
   }
 }

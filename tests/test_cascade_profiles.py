@@ -104,6 +104,32 @@ class DistributionTest(unittest.TestCase):
         self.assertEqual(seen, [2500])                     # gemessene Leistung, nicht Nominal
 
 
+class WinterFloorTest(unittest.TestCase):
+    WINTER_FLOOR = [HEATER_MIN, BATTERY, HEATER_MAX]
+
+    def test_cold_water_gets_heater_before_battery(self):
+        r = run(self.WINTER_FLOOR, 3000, 35, 50, comfort_min=40.0)
+        self.assertEqual((r.battery_w, r.heater_phases), (0, 2))
+
+    def test_above_floor_battery_comes_first(self):
+        r = run(self.WINTER_FLOOR, 3000, 45, 50, comfort_min=40.0)
+        self.assertEqual((r.battery_w, r.heater_phases), (2400, 0))
+
+    def test_small_surplus_below_floor_still_charges_battery(self):
+        r = run(self.WINTER_FLOOR, 800, 35, 50, comfort_min=40.0)
+        self.assertEqual((r.battery_w, r.heater_phases), (800, 0))
+
+
+class SmoothingTest(unittest.TestCase):
+    def test_gross_is_reported_before_battery(self):
+        seen = []
+        ctx = HeaterCtx(temp=45, grid_assist_w=400)
+        r = walk(WINTER, 6000, ctx, battery_model(50), lambda k, rem: rem,
+                 lambda g, b, rem: seen.append((g, b, rem)))
+        self.assertEqual(seen, [(6000, 2400, 3600)])
+        self.assertEqual((r.heater_gross_w, r.heater_budget_w), (6000, 3600))
+
+
 class DischargeTest(unittest.TestCase):
     def discharge(self, **kw):
         st = ZendureStatus(soc=50, home_out_w=kw.pop("home_out_w", 0))
@@ -180,6 +206,13 @@ class ProfileTest(unittest.TestCase):
         out = normalize_profile("winter", [BATTERY, "gone", HEATER_MAX, BATTERY], self.DEVICES + ["neu"])
         self.assertEqual(out, [BATTERY, HEATER_MAX, "ebike", "wallbox", "neu"])
 
+    def test_winter_floor_adds_min_stage_before_battery(self):
+        self.assertEqual(default_profile("winter", self.DEVICES, True),
+                         ["ebike", HEATER_MIN, BATTERY, HEATER_MAX, "wallbox"])
+        out = normalize_profile("winter", [BATTERY, HEATER_MAX, "ebike", "wallbox"], self.DEVICES, True)
+        self.assertEqual(out[:3], [HEATER_MIN, BATTERY, HEATER_MAX])
+        self.assertNotIn(HEATER_MIN, normalize_profile("winter", [HEATER_MIN, BATTERY, HEATER_MAX], self.DEVICES, False))
+
     def test_winter_has_no_min_stage_summer_orders_min_before_max(self):
         self.assertNotIn(HEATER_MIN, normalize_profile("winter", [HEATER_MIN, BATTERY, HEATER_MAX], self.DEVICES))
         out = normalize_profile("summer", [HEATER_MAX, HEATER_MIN, BATTERY], self.DEVICES)
@@ -230,7 +263,7 @@ class ServiceIntegrationTest(unittest.TestCase):
         return svc
 
     def budget(self):
-        return db.get_cascade_budget("heizstab")["raw_w"]
+        return db.get_cascade_budget("heizstab")["budget_w"]
 
     def test_winter_profile_battery_first(self):
         svc = self.service(False, 45.0, -3000.0)
@@ -248,6 +281,64 @@ class ServiceIntegrationTest(unittest.TestCase):
         svc = self.service(True, 55.0, -3000.0)
         svc.run_cascade()
         self.assertEqual(self.budget(), 600)
+
+    def test_winter_floor_cold_water_heats_before_battery(self):
+        svc = self.service(False, 35.0, -3000.0)             # Untergrenze 40 °C (Default)
+        svc.run_cascade()
+        self.assertEqual(self.budget(), 3000)
+
+    def test_winter_floor_can_be_switched_off(self):
+        self.raw["heater"]["winter_comfort_min_temp"] = None
+        svc = self.service(False, 35.0, -3000.0)
+        svc.run_cascade()
+        self.assertEqual(self.budget(), 600)                 # Batterie zuerst, Rest 600 W
+
+    def test_battery_full_raises_heater_budget_in_the_same_cycle(self):
+        import sqlite3
+        from datetime import datetime, timedelta
+        def seed():
+            with sqlite3.connect(db.DB_PATH) as conn:
+                conn.execute("CREATE TABLE IF NOT EXISTS heater_budget_log (ts TEXT PRIMARY KEY, raw_w REAL)")
+                conn.execute("DELETE FROM heater_budget_log")
+                for i in range(1, 10):
+                    ts = (datetime.now() - timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M")
+                    conn.execute("INSERT OR REPLACE INTO heater_budget_log (ts, raw_w) VALUES (?, ?)", (ts, 5400))
+        # Gesamt-Überschuss seit 9 Minuten 5,4 kW; Batterie lädt jetzt 2,4 kW → Budget 3 kW
+        seed()
+        svc = self.service(False, 45.0, -3000.0, soc=50, zd=ZendureStatus(soc=50, charge_w=2400.0))
+        svc.run_cascade()
+        self.assertEqual(self.budget(), 3000)
+        # Batterie ist voll: dasselbe Mittel, aber nichts mehr abzuziehen → sofort 5,4 kW
+        seed()
+        svc = self.service(False, 45.0, -3000.0, soc=100, zd=ZendureStatus(soc=100, charge_w=2400.0))
+        svc.run_cascade()
+        self.assertEqual(self.budget(), 5400)
+
+    def test_collapsing_surplus_does_not_start_heater_from_the_old_average(self):
+        import sqlite3
+        from datetime import datetime, timedelta
+        with sqlite3.connect(db.DB_PATH) as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS heater_budget_log (ts TEXT PRIMARY KEY, raw_w REAL)")
+            for i in range(1, 10):
+                ts = (datetime.now() - timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M")
+                conn.execute("INSERT OR REPLACE INTO heater_budget_log (ts, raw_w) VALUES (?, ?)", (ts, 5400))
+        # Überschuss bricht auf 500 W ein: Batterie nimmt ihn, der Heizstab startet nicht auf dem Mittel 4,9 kW
+        svc = self.service(False, 45.0, -500.0, soc=50)
+        svc.run_cascade()
+        self.assertEqual(self.budget(), 0)
+
+    def test_heater_start_is_capped_at_current_surplus_even_without_battery(self):
+        import sqlite3
+        from datetime import datetime, timedelta
+        self.raw["zendure"]["enabled"] = False
+        with sqlite3.connect(db.DB_PATH) as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS heater_budget_log (ts TEXT PRIMARY KEY, raw_w REAL)")
+            for i in range(1, 10):
+                ts = (datetime.now() - timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M")
+                conn.execute("INSERT OR REPLACE INTO heater_budget_log (ts, raw_w) VALUES (?, ?)", (ts, 5400))
+        svc = self.service(False, 45.0, -500.0)
+        svc.run_cascade()
+        self.assertEqual(self.budget(), 500)                  # nicht das Mittel 4,9 kW
 
     def test_charging_battery_is_added_back_to_the_surplus(self):
         # Batterie lädt 1 kW, Netz −2 kW (Einspeisung) → Kaskaden-Überschuss 3 kW

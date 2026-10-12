@@ -671,6 +671,7 @@ _ALLOWED_HEATER_KEYS = {
     "phase2_disabled",
     "phase3_disabled",
     "comfort_min_temp",
+    "winter_comfort_min_temp",
 }
 _BOOL_HEATER_KEYS = {"phase1_disabled", "phase2_disabled", "phase3_disabled"}
 _ALLOWED_WALLBOX_KEYS = {
@@ -732,12 +733,12 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
         if bad:
             raise HTTPException(400, f"heater keys not allowed: {sorted(bad)}")
         for k, v in patch.heater.items():
-            if k == "comfort_min_temp" and v is None:
-                pass  # leer = Default (Sommermodus-Zieltemperatur)
-            elif k == "comfort_min_temp" and (
+            if k in ("comfort_min_temp", "winter_comfort_min_temp") and v is None:
+                pass  # leer = Default (Sommer: Zieltemperatur Sommermodus) bzw. aus (Winter)
+            elif k in ("comfort_min_temp", "winter_comfort_min_temp") and (
                 not isinstance(v, (int, float)) or isinstance(v, bool) or not 20 <= v <= 90
             ):
-                raise HTTPException(400, "heater.comfort_min_temp must be a number between 20 and 90 (or null)")
+                raise HTTPException(400, f"heater.{k} must be a number between 20 and 90 (or null)")
             elif k in _BOOL_HEATER_KEYS:
                 if not isinstance(v, bool):
                     raise HTTPException(400, f"heater.{k} must be boolean")
@@ -1521,13 +1522,14 @@ def cascade_reorder(body: _CascadeReorder) -> dict[str, Any]:
         from db import set_cascade_profile
         if body.profile not in SEASONS:
             raise HTTPException(400, "profile muss 'summer' oder 'winter' sein")
+        min_stage = _load_cfg().comfort_min_for(body.profile) is not None
         valid = {d["id"] for d in get_cascade_devices()} - {"heizstab"} | {HEATER_MIN, HEATER_MAX, BATTERY}
         missing = [i for i in body.deviceIds if i not in valid]
         if missing:
             raise HTTPException(404, f"Unbekannte Einträge: {missing}")
         if len(body.deviceIds) != len(set(body.deviceIds)):
             raise HTTPException(400, "deviceIds enthält Duplikate")
-        return {"profile": body.profile, "order": set_cascade_profile(body.profile, body.deviceIds)}
+        return {"profile": body.profile, "order": set_cascade_profile(body.profile, body.deviceIds, min_stage)}
     existing_ids = {d["id"] for d in get_cascade_devices()}
     missing = [i for i in body.deviceIds if i not in existing_ids]
     if missing:
@@ -1615,9 +1617,9 @@ def cascade_status(response: Response, profile: Optional[str] = None) -> dict[st
     active = "summer" if cfg.summer_mode.enabled else "winter"
     season = profile if profile in SEASONS else active
     by_id = {d["id"]: _enrich(d) for d in devices}
-    comfort, tmax = cfg.comfort_min_temp, cfg.heater.storage_max_temp
+    comfort, tmax = cfg.comfort_min_for(season), cfg.heater.storage_max_temp
     entries: list[dict[str, Any]] = []
-    for key in get_cascade_profile(season):
+    for key in get_cascade_profile(season, comfort is not None):
         if key in (HEATER_MIN, HEATER_MAX):
             base = by_id.get("heizstab")
             if base is None:
@@ -1625,15 +1627,15 @@ def cascade_status(response: Response, profile: Optional[str] = None) -> dict[st
             e = dict(base)
             e["device_id"] = "heizstab"
             e["id"] = e["stage"] = key
-            below = storage_temp is not None and storage_temp < comfort
+            below = storage_temp is not None and comfort is not None and storage_temp < comfort
             if key == HEATER_MIN:
-                e["name"] = f"Wasserspeicher (bis {comfort:.0f} °C)"
+                e["name"] = f"Wasserspeicher (bis {comfort:.0f} °C)" if comfort is not None else "Wasserspeicher (bis Min)"
                 e["is_on"] = bool(base["is_on"]) and below
                 e["skipped"] = storage_temp is not None and not below
             else:
                 e["name"] = (f"Wasserspeicher (bis {tmax:.0f} °C)" if season == "summer"
                              else f"Wasserspeicher (bis Max {tmax:.0f} °C)")
-                e["is_on"] = bool(base["is_on"]) and (season != "summer" or not below)
+                e["is_on"] = bool(base["is_on"]) and (comfort is None or not below)
                 e["skipped"] = storage_temp is not None and storage_temp >= tmax
         elif key in by_id:
             e = dict(by_id[key])

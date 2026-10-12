@@ -732,6 +732,7 @@
             <legend>Heizstab &amp; Wasserspeicher</legend>
             <label>storage_max_temp (°C)<input type="number" step="0.1" name="heater.storage_max_temp"></label>
             <label>storage_temp_hysteresis (K)<input type="number" step="0.1" name="heater.storage_temp_hysteresis"></label>
+            <label>Winter-Untergrenze (°C)<input type="number" step="0.5" min="20" max="90" name="heater.winter_comfort_min_temp" placeholder="leer = aus (Default 40)"><small class="field-hint">Winterprofil: bis hierher wird der Wasserspeicher VOR der Batterie geheizt, damit er nicht auskühlt (Öl heizt zusätzlich). Leer = Winterprofil ohne diese Stufe.</small></label>
             <label>Komfort-Mindesttemperatur (°C)<input type="number" step="0.5" min="20" max="90" name="heater.comfort_min_temp" placeholder="leer = Sommermodus-Zieltemperatur"><small class="field-hint">Bis hierher hat der Wasserspeicher im Sommerprofil Vorrang vor der Batterie (Kaskade-Stufe „Wasserspeicher bis …“). Leer = Zieltemperatur des Sommermodus.</small></label>
             <label>min_pv_power_ph1 (W, veraltet – ohne Wirkung)<input type="number" step="50" name="heater.min_pv_power_ph1"></label>
             <label>min_pv_power_ph2 (W, veraltet – ohne Wirkung)<input type="number" step="50" name="heater.min_pv_power_ph2"></label>
@@ -941,6 +942,6 @@
   </footer>
   </div>
 
-  <script src="/static/app.js?v=20261012g" defer></script>
+  <script src="/static/app.js?v=20261012h" defer></script>
 </body>
 </html>

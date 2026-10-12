@@ -184,13 +184,13 @@ class ControllerPhaseTest(unittest.TestCase):
         ctx = HeaterCtx(temp=50.0, actual_w=1500.0)
         res = walk([HEATER_MAX], 4000, ctx, lambda a: 0.0, lambda k, r: r)
         self.assertEqual(res.remaining_w, 4000 - 1500)  # gemessene, nicht nominale Leistung
-        svc._store_heater_budget(dev, res.heater_budget_w, 0, res.remaining_w, 4000, "winter", 50.0, ctx, 1500.0, None)
+        svc._store_heater_budget(dev, res.heater_gross_w, 0, res.remaining_w, 4000, "winter", 50.0, ctx, 1500.0, None)
         info = db.get_cascade_budget("heizstab")
         self.assertEqual(info["raw_w"], 4000)
         self.assertEqual(info["budget_w"], 4000)      # erste Minute: Mittel = Rohwert
         self.assertEqual(info["budget_down_w"], 4000)
         res0 = walk([HEATER_MAX], 0, HeaterCtx(temp=50.0), lambda a: 0.0, lambda k, r: r)
-        svc._store_heater_budget(dev, res0.heater_budget_w, 0, res0.remaining_w, 0, "winter", 50.0, HeaterCtx(temp=50.0), 0.0, "off")
+        svc._store_heater_budget(dev, res0.heater_gross_w, 0, res0.remaining_w, 0, "winter", 50.0, HeaterCtx(temp=50.0), 0.0, "off")
         self.assertEqual(db.get_cascade_budget("heizstab")["force"], "off")
 
 if __name__ == "__main__":

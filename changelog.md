@@ -1,5 +1,80 @@
 # Changelog
 
+## 2026-10-12 – Batterie: Winter-Untergrenze, Glättung vor Batterie, pvlog.py (Dev, nicht deployt)
+
+**1. Winter-Untergrenze `heater.winter_comfort_min_temp`** (Default **40 °C**, leer = aus; Einstellung unter Heizstab & Wasserspeicher). Das Winterprofil bekommt die Stufe „Wasserspeicher (bis 40 °C)“ **vor** der Batterie: `Wasserspeicher bis 40 °C → Batterie → Wasserspeicher bis Max`; sie nimmt nur ganze Phasen, der Rest geht wie gehabt an die Batterie. Nur PV-Überschuss, kein Netz-Heizen. Ohne Batterie ändert sich nichts. `Config.comfort_min_for(season)`, `cascade_plan.normalize_profile(..., min_stage)`; API/UI zeigen die Stufe im Winter nur, wenn gesetzt. Hinweis: Fehlt der Schlüssel in der `config.json`, gilt der Default 40 °C.
+
+**2. Glättung:** Geglättet wird jetzt der **Gesamt-Überschuss** (vor der Batterie), die **aktuelle** Batterie-Ladung wird danach ungeglättet abgezogen (`_store_heater_budget`, `walk(..., heater_fn)` liefert `gross_w` und `battery_w`). Wird die Batterie voll, steigt das Budget im selben Zyklus. Ergänzung gegenüber der Vorgabe („Deckel immer“): Das Zuschalt-Mittel wird **immer** auf den jetzt freien Überschuss gedeckelt (`min(Mittel, Überschuss jetzt)`, auch ohne Batterie), sonst startet der Heizstab nach einem Einbruch auf dem noch hohen Mittel aus dem Netz. Simulation 07.–12.10. ohne Batterie: Heizstab-Energie nicht aus Überschuss 3,54 → 2,08 kWh, Netzbezug −1,7 kWh, Phasenwechsel 4,6 → 3,9/h. Abschalten nutzt weiter das kurze Mittel. **Das ändert auch das Verhalten ohne Batterie** (Start nur noch bei aktuell vorhandenem Überschuss).
+
+**3. `pvlog.py`** nutzt jetzt dieselben Logger wie der Minuten-Lauf (`pv_logger._log_hourly/_log_daily`, Messwerte per `Controller._read_all()`): Gesamt-PV und Hausverbrauch inkl. Pergola und Batterie (+ Entladung, − Ladung), Eigenverbrauch/Autarkie aus Gesamt-PV, Einspeisung/Bezug aus dem Hauptzähler. Die alte Prognose-Berechnung entfiel: Der Wert (Prognose für morgen in der heutigen Zeile) wurde schon bisher vom Minuten-Lauf (`INSERT OR REPLACE` in `log_daily_summary`) sofort wieder überschrieben; die Prognose schreiben `web.api_forecast` → `db.upsert_daily_forecast` und `db.backfill_historical_forecasts()` (läuft bei jedem `import db`, füllt NULL-Werte vergangener Tage). **Die beiden pvlog-Cron-Jobs wurden aus der Crontab entfernt** (Sicherung `~/backup/crontab/crontab.pre-pvlog-removal`).
+
+Beobachtung (nicht geändert): `log_daily_summary` überschreibt die Prognose-Spalten der heutigen Zeile jede Minute mit NULL; sichtbar wird die Prognose eines Tages erst, wenn der Backfill sie nach Mitternacht nachträgt. Für 13.10. (steht in der Zeile 12.10.) ist daher noch kein Wert gespeichert; Wetterdaten für den 13.10. liegen vor.
+
+**Tests:** 94 (vorher 80; neu u. a. Winter-Untergrenze, Glättung „Batterie wird voll → Budget steigt im selben Zyklus“, Überschuss-Einbruch, `tests/test_pvlog.py`).
+
+**Simulation** (07.–12.10., Methode wie oben; neu: Speichertemperatur wird je Tag auf die Messung zurückgesetzt):
+
+### Heizstab-kWh je Tag (gemessen | Sim ohne Bat. | Winter | Winter+40 °C | Sommer)
+| Tag | gemessen | Sim ohne Bat. | Winter | Winter + 40 °C | Sommer |
+|---|---|---|---|---|---|
+| 2026-10-07 | 6.3 | 6.3 | 6.2 | 6.2 | 6.2 |
+| 2026-10-08 | 0.9 | 1.1 | 0.2 | 0.2 | 0.9 |
+| 2026-10-09 | 7.0 | 7.0 | 6.7 | 6.7 | 6.9 |
+| 2026-10-10 | 2.0 | 2.5 | 1.4 | 1.4 | 1.6 |
+| 2026-10-11 | 6.0 | 7.5 | 4.0 | 4.0 | 5.5 |
+| 2026-10-12 | 2.5 | 2.2 | 0.4 | 1.9 | 1.9 |
+| Σ | 24.6 | 26.6 | 19.0 | 20.5 | 23.0 |
+
+### Batterie geladen kWh (Winter | Winter+40 | Sommer) und Netzbezug Σ
+| | Winter | Winter + 40 °C | Sommer |
+|---|---|---|---|
+| Batterie geladen Σ | 17.1 | 15.6 | 12.2 |
+| Einspeisung Σ | 14.8 | 14.9 | 14.8 |
+| Netzbezug Σ | 190.4 | 190.5 | 193.0 |
+
+### Glättung (Σ 6 Tage): alt = Budget nach Batterie glätten | wörtlich = Gesamt-Überschuss glätten, Batterie danach | umgesetzt = wörtlich + Start nie über dem jetzt freien Überschuss
+| Profil / Variante | Einspeisung | Netzbezug | Heizstab | davon nicht aus Überschuss | Batterie geladen |
+|---|---|---|---|---|---|
+| Winter alt | 14.99 | 189.0 | 17.3 | 2.35 | 16.7 |
+| Winter wörtlich | 14.71 | 191.0 | 19.6 | 4.27 | 17.1 |
+| Winter umgesetzt | 14.75 | 190.4 | 19.0 | 3.75 | 17.1 |
+| Sommer alt | 15.41 | 193.2 | 22.5 | 2.84 | 11.8 |
+| Sommer wörtlich | 15.08 | 193.5 | 23.2 | 3.60 | 12.2 |
+| Sommer umgesetzt | 14.85 | 193.0 | 23.0 | 3.15 | 12.2 |
+| (Sim ohne Batterie) | 18.78 | 200.8 | 26.6 | 3.54 | 0 |
+
+### Phasenwechsel (Σ / Stunden / je Stunde)
+- ohne: 96 / 21 / 4.6
+- winter_alt: 68 / 20 / 3.4
+- winter_lit: 93 / 20 / 4.7
+- winter: 87 / 20 / 4.3
+- winter40: 92 / 20 / 4.6
+- summer_alt: 94 / 21 / 4.5
+- summer_lit: 106 / 21 / 5.0
+- summer: 102 / 21 / 4.9
+
+### Speichertemperatur 12.10. (gemessen | Winter | Winter + 40 °C | Sommer)
+| Uhrzeit | gemessen | Winter | Winter + 40 °C | Sommer |
+|---|---|---|---|---|
+| 00:00 | 51.1 | 51.1 | 51.1 | 51.1 |
+| 01:00 | 50.8 | 50.8 | 50.8 | 50.8 |
+| 02:00 | 50.5 | 50.5 | 50.5 | 50.5 |
+| 03:00 | 50.2 | 50.2 | 50.2 | 50.2 |
+| 04:00 | 49.8 | 49.8 | 49.8 | 49.8 |
+| 05:00 | 49.5 | 49.5 | 49.5 | 49.5 |
+| 06:00 | 49.2 | 49.2 | 49.2 | 49.2 |
+| 07:00 | 46.8 | 46.8 | 46.8 | 46.8 |
+| 08:00 | 36.3 | 36.3 | 36.3 | 36.3 |
+| 09:00 | 34.9 | 34.9 | 34.9 | 34.9 |
+| 10:00 | 35.6 | 35.7 | 35.7 | 35.7 |
+| 11:00 | 36.1 | 36.1 | 36.1 | 36.1 |
+| 12:00 | 33.1 | 32.9 | 32.9 | 32.9 |
+| 13:00 | 36.6 | 33.1 | 34.3 | 34.3 |
+- Winter: min 31.4 °C, 285 min unter 40 °C
+- Winter + 40 °C: min 32.1 °C, 285 min unter 40 °C
+- Sommer: min 32.1 °C, 285 min unter 40 °C
+- gemessen: min 32.4 °C, 364 min unter 40 °C
+
 ## 2026-10-12 – Batterie in der Kaskade: Sommer-/Winterprofil, Grundlast-Entladen, batterieneutraler Überschuss (Dev, nicht deployt)
 
 `zendure.control_enabled` bleibt aus; alles Neue wirkt erst mit aktiver Batterie. Entwickelt im Dev-Verzeichnis (dry_run, Kaskade aus).

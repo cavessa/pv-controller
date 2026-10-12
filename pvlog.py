@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""PV-Daten Logging: stündliche Snapshots und tägliche Zusammenfassung.
+"""PV-Daten Logging: stündliche Snapshots und tägliche Zusammenfassung (eigenständiger Cron-Aufruf).
 
-Cron-Einträge hinzufügen (crontab -e):
-  0 * * * * /home/openhabian/pvcontroller/.venv/bin/python /home/openhabian/pvcontroller/pvlog.py --mode hourly
-  55 23 * * * /home/openhabian/pvcontroller/.venv/bin/python /home/openhabian/pvcontroller/pvlog.py --mode daily
+Schreibt dieselben Werte wie der Minuten-Lauf (`main.py` → `pv_logger`): Gesamt-PV und Hausverbrauch
+inklusive Pergola und Batterie, Einspeisung/Bezug aus dem Hauptzähler. Der Minuten-Lauf überschreibt
+die Zeilen ohnehin laufend; dieser Aufruf bleibt für Setups ohne Controller-Cron nützlich.
+(Die frühere Prognose-Berechnung entfiel: Die Morgen-Prognose landete in der Zeile von heute und wurde
+vom Minuten-Lauf sofort überschrieben; Prognosen schreibt `/api/forecast`.)
+
+Cron-Einträge (crontab -e), Pfade des Produktionsverzeichnisses:
+  0 * * * * /home/openhabian/pvcontroller-prod/.venv/bin/python /home/openhabian/pvcontroller-prod/pvlog.py --mode hourly
+  55 23 * * * /home/openhabian/pvcontroller-prod/.venv/bin/python /home/openhabian/pvcontroller-prod/pvlog.py --mode daily
 """
 
 from __future__ import annotations
@@ -17,78 +23,57 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from clients.openmeteo_client import get_today_weather, get_tomorrow_weather
-from clients.solax_client import SolaxClient
 from config import load_config
-from db import get_daily_history, log_daily_summary, log_hourly_snapshot
 
 CONFIG_PATH = PROJECT_ROOT / "config.json"
 log = logging.getLogger("pvlog")
 
 
-def _linear_forecast(history: list[dict], ghi_tomorrow: float) -> float | None:
-    pairs = [
-        (e["ghi_kwh_m2"], e["pv_kwh"])
-        for e in history
-        if e.get("ghi_kwh_m2") and e.get("pv_kwh") and e["pv_kwh"] > 0
-    ]
-    if len(pairs) < 3:
-        return None
-    xs, ys = [p[0] for p in pairs], [p[1] for p in pairs]
-    n = len(xs)
-    mx, my = sum(xs) / n, sum(ys) / n
-    cov = sum((xs[i] - mx) * (ys[i] - my) for i in range(n)) / n
-    var_x = sum((x - mx) ** 2 for x in xs) / n
-    if var_x < 1e-6:
-        return None
-    slope = cov / var_x
-    return max(0.0, round(slope * ghi_tomorrow + (my - slope * mx), 1))
+def _read_result(cfg):
+    """Alle Messwerte wie im Controller-Lauf lesen (Haupt-WR, Pergola, Batterie, Hauptzähler, …).
+
+    Liefert ein Objekt mit ``readings`` und ``wallbox_status`` – genau das, was die Logger-Funktionen
+    in ``pv_logger`` brauchen. Damit schreibt dieser (Legacy-)Cron dieselben Werte wie der
+    Minuten-Lauf: Hausverbrauch inkl. Pergola und Batterie, Gesamt-PV, Eigenverbrauch und
+    Tagesbilanz aus dem Hauptzähler.
+    """
+    from types import SimpleNamespace
+    from controller import Controller
+    c = Controller(cfg)
+    readings = c._read_all()
+    wallbox_status = None
+    try:
+        wallbox_status, _ = c._read_wallbox_status()
+    except Exception:
+        log.warning("Wallbox-Status nicht lesbar", exc_info=True)
+    return SimpleNamespace(readings=readings, wallbox_status=wallbox_status)
 
 
 def hourly_job(cfg) -> None:
-    client = SolaxClient(cfg.solax.url, cfg.solax.pwd, cfg.runtime.request_timeout_seconds)
-    data = client.get_realtime_data()
-    if data is None:
+    import pv_logger
+    result = _read_result(cfg)
+    if result.readings.pv_power_w is None:
         log.error("Solax read failed for hourly log")
         return
-    log_hourly_snapshot(
-        pv_w=int(data.pv_total_w), feed_in_w=int(data.feed_in_w),
-        consumption_w=int(data.consumption_w),
-        str1_w=int(data.pv1_power_w), str2_w=int(data.pv2_power_w),
-        str1_v=data.pv1_voltage_v, str1_a=data.pv1_current_a,
-        str2_v=data.pv2_voltage_v, str2_a=data.pv2_current_a,
-    )
-    log.info("Hourly snapshot: pv=%dW str1=%dW str2=%dW",
-             int(data.pv_total_w), int(data.pv1_power_w), int(data.pv2_power_w))
+    pv_logger._log_hourly(result)
+    r = result.readings
+    log.info("Hourly snapshot: pv=%dW (Pergola %s W) Batterie %+d W",
+             int(r.pv_power_w), "n/a" if r.pv2_power_w is None else int(r.pv2_power_w), int(r.battery_net_w))
 
 
 def daily_job(cfg) -> None:
-    client = SolaxClient(cfg.solax.url, cfg.solax.pwd, cfg.runtime.request_timeout_seconds)
-    data = client.get_realtime_data()
-    if data is None:
+    import pv_logger
+    result = _read_result(cfg)
+    if result.readings.pv_power_w is None:
         log.error("Solax read failed for daily log")
         return
-    today      = date.today().isoformat()
-    weather    = get_today_weather()
-    weather_tm = get_tomorrow_weather()
-    history      = get_daily_history(30)
-    forecast_ghi = weather_tm.get("ghi_kwh_m2") if weather_tm else None
-    forecast     = _linear_forecast(history, forecast_ghi) if forecast_ghi else None
-    log_daily_summary(
-        date_str=today,
-        pv_kwh=data.yield_today_kwh,
-        feed_out_kwh=data.grid_out_today_kwh,
-        feed_in_kwh=data.grid_in_today_kwh,
-        sunshine_h=weather.get("sunshine_h") if weather else None,
-        ghi_kwh_m2=weather.get("ghi_kwh_m2") if weather else None,
-        cloud_cover_pct=weather.get("cloud_cover_pct") if weather else None,
-        temp_avg_c=weather.get("temp_avg_c") if weather else None,
-        forecast_kwh=forecast,
-        forecast_ghi=forecast_ghi,
-    )
-    log.info("Daily log: date=%s pv=%.1f kWh forecast=%s",
-             today, data.yield_today_kwh,
-             f"{forecast:.1f} kWh" if forecast else "n/a")
+    try:
+        pv_logger._fetch_weather_if_needed()
+    except Exception:
+        log.warning("Wetter-Abruf fehlgeschlagen", exc_info=True)
+    pv_logger._log_daily(result)
+    log.info("Daily log: date=%s pv=%.1f kWh", date.today().isoformat(),
+             (result.readings.solax_yield_today_kwh or 0.0) + (result.readings.pv2_today_kwh or 0.0))
 
 
 def main(argv: list[str] | None = None) -> int:
