@@ -93,6 +93,35 @@ class PvlogTest(unittest.TestCase):
         self.assertEqual(d["pv2_kwh"], 2.0)
         self.assertEqual(d["selfuse_kwh"], 9.0)                    # 12 − 3 Einspeisung
 
+    def test_daily_log_keeps_forecast_and_house_peak(self):
+        # Prognose (von /api/forecast bzw. Backfill) und Tageshoch dürfen einen _log_daily-Lauf überleben
+        import sqlite3
+        today = datetime.now().strftime("%Y-%m-%d")
+        db.upsert_daily_forecast(today, 21.5, 2.7)
+        db.update_house_peak(6200.0)
+        FakeController.readings = self.readings()
+        pvlog.daily_job(SimpleNamespace())
+        with sqlite3.connect(db.DB_PATH) as conn:
+            row = conn.execute("SELECT forecast_kwh, forecast_ghi, pv_kwh FROM pv_daily_log WHERE date = ?",
+                               (today,)).fetchone()
+        self.assertEqual(row, (21.5, 2.7, 12.0))                  # Kennzahlen neu, Prognose erhalten
+        self.assertEqual(db.get_house_peak(today)["peak_w"], 6200)
+        pvlog.daily_job(SimpleNamespace())                         # und auch ein zweiter Lauf
+        with sqlite3.connect(db.DB_PATH) as conn:
+            self.assertEqual(conn.execute("SELECT forecast_kwh FROM pv_daily_log WHERE date = ?", (today,)).fetchone()[0], 21.5)
+
+    def test_daily_log_keeps_weather_when_not_passed_and_updates_when_given(self):
+        import sqlite3
+        today = datetime.now().strftime("%Y-%m-%d")
+        db.log_daily_summary(today, 5.0, 1.0, 1.0, sunshine_h=6.5, ghi_kwh_m2=3.1, forecast_kwh=18.0)
+        db.log_daily_summary(today, 6.0, 1.5, 1.0)                # ohne Wetter/Prognose
+        with sqlite3.connect(db.DB_PATH) as conn:
+            self.assertEqual(conn.execute("SELECT pv_kwh, sunshine_h, ghi_kwh_m2, forecast_kwh FROM pv_daily_log WHERE date = ?",
+                                          (today,)).fetchone(), (6.0, 6.5, 3.1, 18.0))
+        db.log_daily_summary(today, 6.0, 1.5, 1.0, sunshine_h=7.0)  # neuer Wert überschreibt
+        with sqlite3.connect(db.DB_PATH) as conn:
+            self.assertEqual(conn.execute("SELECT sunshine_h FROM pv_daily_log WHERE date = ?", (today,)).fetchone()[0], 7.0)
+
     def test_unreadable_inverter_writes_nothing(self):
         FakeController.readings = Readings()
         pvlog.hourly_job(SimpleNamespace())

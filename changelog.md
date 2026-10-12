@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-12 – Fix: `log_daily_summary` nullte Prognose und Wetter (Dev, nicht deployt)
+
+`pv_logger._log_daily` → `db.log_daily_summary` schrieb mit `INSERT OR REPLACE` in `pv_daily_log`. REPLACE löscht die ganze Zeile und nullte damit jede Minute die Spalten, die der Aufruf nicht kennt (`forecast_kwh`, `forecast_ghi`; bei fehlendem Wetterabruf auch `sunshine_h`, `ghi_kwh_m2`, `cloud_cover_pct`, `temp_avg_c`; Pergola-/Batterie-Spalten). Folge: Die Prognose von `/api/forecast` hielt höchstens bis zum nächsten Minuten-Lauf; sichtbar wurde sie erst, wenn `backfill_historical_forecasts()` sie nach Mitternacht nachtrug. Jetzt `INSERT … ON CONFLICT(date) DO UPDATE`: Kennzahlen (PV, Einspeisung, Bezug, Eigenverbrauch, Autarkie) werden immer neu gesetzt, optionale Spalten (Wetter, Prognose, Pergola, Batterie) nur bei übergebenem Wert (`COALESCE`).
+Das Tageshoch (`house_peak_day`) war nicht betroffen: eigene Tabelle. Geprüft, kein Handlungsbedarf: `pv_hourly_log` (schreibt alle 18 Spalten), `weather_log` (alle 8), `storage_day` (alle 5), `cascade_settings`/`heater_budget_log` (Schlüssel/Wert). Neue Tests (`tests/test_pvlog.py`, schlagen mit dem alten Code fehl): Prognose und Tageshoch überleben `_log_daily`; Wetter bleibt ohne Neuwert erhalten, ein Neuwert überschreibt. 96 Tests.
+
 ## 2026-10-12 – Batterie: Winter-Untergrenze, Glättung vor Batterie, pvlog.py (Dev, nicht deployt)
 
 **1. Winter-Untergrenze `heater.winter_comfort_min_temp`** (Default **40 °C**, leer = aus; Einstellung unter Heizstab & Wasserspeicher). Das Winterprofil bekommt die Stufe „Wasserspeicher (bis 40 °C)“ **vor** der Batterie: `Wasserspeicher bis 40 °C → Batterie → Wasserspeicher bis Max`; sie nimmt nur ganze Phasen, der Rest geht wie gehabt an die Batterie. Nur PV-Überschuss, kein Netz-Heizen. Ohne Batterie ändert sich nichts. `Config.comfort_min_for(season)`, `cascade_plan.normalize_profile(..., min_stage)`; API/UI zeigen die Stufe im Winter nur, wenn gesetzt. Hinweis: Fehlt der Schlüssel in der `config.json`, gilt der Default 40 °C.

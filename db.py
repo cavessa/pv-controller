@@ -159,7 +159,7 @@ def init_pv_logging_tables() -> None:
             )
         """)
         # Lastspitze (Netzbezug am Hauptzähler) pro Tag; eigene Tabelle, damit das
-        # INSERT OR REPLACE in pv_daily_log sie nicht überschreibt
+        # das Schreiben von pv_daily_log sie nicht berührt
         conn.execute("""
             CREATE TABLE IF NOT EXISTS house_peak_day (
                 date      TEXT PRIMARY KEY,
@@ -298,14 +298,34 @@ def log_daily_summary(
     selfuse_pct = round(selfuse / pv_kwh * 100, 1) if pv_kwh > 0 else 0.0
     denom = selfuse + feed_in_kwh
     autarky_pct = round(selfuse / denom * 100, 1) if denom > 0 else 100.0
+    # UPSERT statt INSERT OR REPLACE: REPLACE löscht die ganze Zeile und nullt damit Spalten, die
+    # dieser Aufruf nicht kennt (z. B. die Prognose, die /api/forecast bzw. der Backfill schreibt).
+    # Kennzahlen werden immer neu gesetzt; optionale Werte (Wetter, Prognose, Pergola, Batterie)
+    # nur, wenn sie übergeben wurden (COALESCE) – sonst bleibt der gespeicherte Wert.
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
-            """INSERT OR REPLACE INTO pv_daily_log
+            """INSERT INTO pv_daily_log
                (date, pv_kwh, feed_out_kwh, feed_in_kwh,
                 selfuse_kwh, selfuse_pct, autarky_pct,
                 sunshine_h, ghi_kwh_m2, cloud_cover_pct, temp_avg_c, forecast_kwh, forecast_ghi,
                 pv2_kwh, zendure_charged_kwh, zendure_discharged_kwh)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(date) DO UPDATE SET
+                 pv_kwh = excluded.pv_kwh,
+                 feed_out_kwh = excluded.feed_out_kwh,
+                 feed_in_kwh = excluded.feed_in_kwh,
+                 selfuse_kwh = excluded.selfuse_kwh,
+                 selfuse_pct = excluded.selfuse_pct,
+                 autarky_pct = excluded.autarky_pct,
+                 sunshine_h = COALESCE(excluded.sunshine_h, pv_daily_log.sunshine_h),
+                 ghi_kwh_m2 = COALESCE(excluded.ghi_kwh_m2, pv_daily_log.ghi_kwh_m2),
+                 cloud_cover_pct = COALESCE(excluded.cloud_cover_pct, pv_daily_log.cloud_cover_pct),
+                 temp_avg_c = COALESCE(excluded.temp_avg_c, pv_daily_log.temp_avg_c),
+                 forecast_kwh = COALESCE(excluded.forecast_kwh, pv_daily_log.forecast_kwh),
+                 forecast_ghi = COALESCE(excluded.forecast_ghi, pv_daily_log.forecast_ghi),
+                 pv2_kwh = COALESCE(excluded.pv2_kwh, pv_daily_log.pv2_kwh),
+                 zendure_charged_kwh = COALESCE(excluded.zendure_charged_kwh, pv_daily_log.zendure_charged_kwh),
+                 zendure_discharged_kwh = COALESCE(excluded.zendure_discharged_kwh, pv_daily_log.zendure_discharged_kwh)""",
             (date_str, round(pv_kwh, 2), round(feed_out_kwh, 2), round(feed_in_kwh, 2),
              round(selfuse, 2), selfuse_pct, autarky_pct,
              sunshine_h, ghi_kwh_m2, cloud_cover_pct, temp_avg_c, forecast_kwh, forecast_ghi,
