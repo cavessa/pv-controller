@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-12 – Heizstab-Punkte: Schätzung bei nicht lesbarem Phasenstatus
+
+**Anlass (User):** Der Heizstab lief (1,59 kW), aber alle drei Punkte im Energiefluss waren leer.
+
+**Ursache:** Der Shelly von Phase 1 (192.168.2.53) ist nicht erreichbar → `ph1_on = null` („Lesefehler bei: ph1_state", Fail-safe). Die Punkte zeigten nur Phasen mit Status `true`.
+
+**Fix:** In `renderEnergyFlow` (`web/app.js`) wird bei unbekanntem Phasenstatus (`null`) und Heizstab-Leistung > 50 W die Zahl der laufenden Phasen aus der Leistung geschätzt (≈ 1,5 kW je Phase, mindestens 1, höchstens 3) und die ersten unbekannten Phasen gefüllt dargestellt. Bekannte Zustände (`true`/`false`) gelten unverändert. `app.js?v=20261012c`.
+
+**Hinweis:** Das behebt nur die Anzeige. Solange der Phase-1-Shelly offline ist, bleibt der Controller im Fail-safe und schaltet nichts.
+
 ## 2026-10-12 – Zendure SolarFlow: Phase 2 (Steuerung)
 
 **Anlass (User):** Nach Phase 1 soll die Batterie gesteuert werden: Laden aus PV-Überschuss, Entladen bei Netzbezug, Wallbox-Schutz, Verlauf.

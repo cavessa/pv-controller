@@ -348,6 +348,11 @@ function renderEnergyFlow(heater, wb, cs, zd) {
   const drawing = gridW > 50;
   const gridOn  = feeding || drawing;
   const heatOn  = heaterW > 50 || phases > 0;
+  // Phasen-Punkte; ist ein Phasenstatus nicht lesbar (Shelly offline, null), die Zahl der
+  // laufenden Phasen aus der gemessenen Heizstab-Leistung schätzen (≈ 1,5 kW je Phase)
+  const phaseStates = ["ph1", "ph2", "ph3"].map(k => heater.phases?.[k]);
+  const estPhases = heaterW > 50 ? Math.min(3, Math.max(1, Math.round(heaterW / 1500))) : 0;
+  const phaseDots = phaseStates.map((st, i) => st === true || (st == null && heaterW > 50 && i < estPhases));
   const wbOn    = wbChrg && wbPwrW > 50;
 
   // Shelly cascade devices
@@ -501,7 +506,7 @@ ${node(pv.x, pv.y, NW, NH, { icon:"☀️", label:"PV", value:kwOrW(pv1W), sub:"
 ${pergolaOn_ ? node(pg.x, pg.y, PG_W, pg.nh, { icon:"☀️", label:pgName, value: heater.pv2_power == null ? "n/a" : kwOrW(pgW), sub:"", aktiv:pgOn, accent:PVC, always:true }) : ""}
 ${node(nz.x, nz.y, NW, NH, { icon:"⚡", label:"NETZ", value:nzVal, sub:nzSub, aktiv:gridOn })}
 ${hausNode()}
-${node(hz.x, hz.y, NW, NH, { icon:"🔥", label:"HEIZSTAB", value:hzKw, sub:`${phases}/3 Ph.`, aktiv:heatOn, dots:["ph1","ph2","ph3"].map(k => heater.phases?.[k] === true) })}
+${node(hz.x, hz.y, NW, NH, { icon:"🔥", label:"HEIZSTAB", value:hzKw, sub:`${phases}/3 Ph.`, aktiv:heatOn, dots:phaseDots })}
 ${bots.map(b => node(b.x, b.y, b.w, NH, { icon:b.icon, label:b.label, value:b.value, sub:b.sub, aktiv:b.aktiv })).join("\n")}
 </svg>`;
 }
