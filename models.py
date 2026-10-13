@@ -50,6 +50,8 @@ class Readings:
     zendure: Optional[Any] = None  # ZendureStatus oder None (aus / nicht erreichbar)
     main_meter_power_w: Optional[float] = None
     heater_meter_power_w: Optional[float] = None
+    # Herkunft von heater_meter_power_w: "meter" (3EM) oder "phase_sum" (Ersatz aus den Phasen-Shellys)
+    heater_power_source: str = "meter"
     storage_temp_c: Optional[float] = None
     ph1_on: Optional[bool] = None
     ph2_on: Optional[bool] = None

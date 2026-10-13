@@ -95,7 +95,7 @@ function renderStatus(s) {
     const alerts = s.device_alerts ?? [];
     if (alerts.length) {
       devBanner.className = "wb-banner warn";
-      devBanner.textContent = alerts.map(a => `${a.label} seit ${a.since} Uhr nicht erreichbar`).join(" · ");
+      devBanner.textContent = alerts.map(a => a.text ?? `${a.label} seit ${a.since} Uhr nicht erreichbar`).join(" · ");
     } else {
       devBanner.className = "wb-banner warn hidden";
     }
@@ -527,7 +527,8 @@ function renderEnergyFlow(heater, wb, cs, zd) {
   // display values
   const nzVal = Math.abs(gridW) > 50 ? kwOrW(Math.abs(gridW)) : "~0 W";
   const nzSub = feeding ? "Einsp." : drawing ? "Bezug" : "";
-  const hzKw  = kwOrW(heaterW);
+  const hzEst = heater.heater_power_source === "phase_sum";   // Zähler tot: Ersatzwert aus den Phasen
+  const hzKw  = (hzEst ? "≈" : "") + kwOrW(heaterW);
 
   el.innerHTML = `<svg viewBox="0 0 ${W} ${SVG_H}" width="100%" style="display:block;margin-top:8px">
 ${conn.join("\n")}
@@ -535,7 +536,7 @@ ${node(pv.x, pv.y, NW, NH, { icon:"☀️", label:"PV", value:kwOrW(pv1W), sub:"
 ${pergolaOn_ ? node(pg.x, pg.y, PG_W, pg.nh, { icon:"☀️", label:pgName, value: heater.pv2_power == null ? "n/a" : kwOrW(pgW), sub:"", aktiv:pgOn, accent:PVC, always:true }) : ""}
 ${node(nz.x, nz.y, NW, NH, { icon:"⚡", label:"NETZ", value:nzVal, sub:nzSub, aktiv:gridOn })}
 ${hausNode()}
-${node(hz.x, hz.y, NW, NH, { icon:"🔥", label:"HEIZSTAB", value:hzKw, sub:`${phases}/3 Ph.`, aktiv:heatOn, dots:phaseDots })}
+${node(hz.x, hz.y, NW, NH, { icon:"🔥", label:"HEIZSTAB", value:hzKw, sub:hzEst ? "aus Phasen" : `${phases}/3 Ph.`, aktiv:heatOn, dots:phaseDots })}
 ${bots.map(b => node(b.x, b.y, b.w, NH, { icon:b.icon, label:b.label, value:b.value, sub:b.sub, aktiv:b.aktiv })).join("\n")}
 </svg>`;
 }
@@ -795,7 +796,7 @@ function renderPvNetz(h, wb) {
       ${bar}
     </div>
     <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-bottom:14px;flex-wrap:wrap;gap:4px">
-      <span>Heizstab: ${heizstabW} W</span>
+      <span>Heizstab: ${h.heater_power_source === "phase_sum" ? `≈${heizstabW} W (aus Phasen)` : `${heizstabW} W`}</span>
       ${wbLabel}
       <span>Haus: ${grundlastW} W</span>
       <span>Netz: ${zaehlerW} W</span>

@@ -1507,6 +1507,21 @@ def get_last_phase_changes() -> dict[int, datetime]:
     return out
 
 
+def get_last_phase_states() -> dict[int, str]:
+    """Letzter protokollierter Zustand je Phase ('on'/'off') aus HeizstabPhaseLog."""
+    out: dict[int, str] = {}
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            for phase, state in conn.execute(
+                "SELECT phase, state FROM HeizstabPhaseLog WHERE id IN "
+                "(SELECT MAX(id) FROM HeizstabPhaseLog GROUP BY phase)"
+            ):
+                out[int(phase)] = str(state)
+    except sqlite3.Error:
+        pass
+    return out
+
+
 def device_health_update(device_id: str, ok: bool) -> dict:
     """Erreichbarkeit eines Geräts fortschreiben.
 

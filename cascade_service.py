@@ -24,10 +24,12 @@ from typing import Optional
 from clients.goe_client import GoeClient, GoeError
 from clients.shelly_cascade_client import ShellyCascadeClient, ShellyCascadeError
 from cascade_plan import BATTERY, HEATER_MIN, HEATER_STAGES, HeaterCtx, walk
-from clients.shelly_client import Shelly3EMClient, ShellyStorageTempClient
+from clients.shelly_client import Shelly3EMClient, ShellyPlugClient, ShellyStorageTempClient
 from clients.solax_client import SolaxClient
 from clients.zendure_client import ZendureClient
 from config import Config
+from heater_power import PhaseRead
+from heater_power import resolve as resolve_heater_power
 from db import (
     log_cascade_action,
     ensure_zendure_cascade_device,
@@ -38,6 +40,7 @@ from db import (
     get_cascade_profile,
     get_cascade_devices_due_for_retry,
     get_cascade_settings,
+    get_last_phase_states,
     increment_cascade_device_errors,
     reset_cascade_device_errors,
     set_cascade_budget,
@@ -592,6 +595,19 @@ class CascadeService:
             log.warning("Kaskade: Solax-Lesefehler", exc_info=True)
         return 0
 
+    def _heater_phase_reads(self) -> list[Optional[PhaseRead]]:
+        """Zustand + Leistung der Heizstab-Phasen (stillgelegte = None), parallel, kurzes Timeout."""
+        sh = self.cfg.shelly
+        disabled = self.cfg.heater.disabled_phases
+        plugs = [
+            ShellyPlugClient(getattr(sh, f"ph{i}_url"), _METER_READ_TIMEOUT_S, name=f"PH{i}",
+                             type_=getattr(sh, f"ph{i}_type"), channel=getattr(sh, f"ph{i}_channel"))
+            for i in (1, 2, 3)
+        ]
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="cascade-ph") as ex:
+            futs = [None if disabled[i] else ex.submit(p.get_status) for i, p in enumerate(plugs)]
+            return [None if f is None else PhaseRead(*f.result()) for f in futs]
+
     def _get_controlled_loads_w(self, devices: list[dict]) -> tuple[float, dict[str, float]]:
         """Liest aktuelle Leistung der kaskaden-gesteuerten Festlasten.
 
@@ -606,24 +622,25 @@ class CascadeService:
         per_device: dict[str, float] = {}
 
         if any(d["type"] == "heizstab" for d in devices):
-            heizstab_actual: float | None = None
             try:
                 power = self.heater_meter.get_total_power_w()
-                if power is not None:
-                    heizstab_actual = max(0.0, power)
-                    total += heizstab_actual
-                    log.debug("Kaskade: Heizstab-Ist %.0f W", heizstab_actual)
-                else:
-                    raise ValueError("3EM returned None")
             except Exception:
-                log.warning("Kaskade: Heizstab-Meter-Lesefehler – nutze DB-Wert", exc_info=True)
-                for d in devices:
-                    if d["type"] == "heizstab" and d["is_on"]:
-                        total += d["power_watts"]
-                        heizstab_actual = float(d["power_watts"])
+                log.warning("Kaskade: Heizstab-Meter-Lesefehler", exc_info=True)
+                power = None
+            if power is not None:
+                heizstab_actual = max(0.0, power)
+                log.debug("Kaskade: Heizstab-Ist %.0f W", heizstab_actual)
+            else:
+                # Zähler tot: Summe der Phasen-Shellys (wie der Controller), nie stillschweigend 0 W
+                hp = resolve_heater_power(None, self._heater_phase_reads(), self.cfg.heater.phase_power_w,
+                                          get_last_phase_states())
+                heizstab_actual = hp.watts
+                log.warning("Kaskade: Heizstab-Zähler nicht lesbar – Ersatzwert aus Phasen %.0f W (%s)",
+                            hp.watts, hp.detail)
+            total += heizstab_actual
             for d in devices:
                 if d["type"] == "heizstab":
-                    per_device[d["id"]] = heizstab_actual if heizstab_actual is not None else 0.0
+                    per_device[d["id"]] = heizstab_actual
 
         if any(d["type"] == "wallbox" for d in devices) and self.goe is not None:
             wallbox_actual: float | None = None

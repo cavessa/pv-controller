@@ -333,7 +333,10 @@ def _device_alerts(cfg: Config) -> list[dict[str, Any]]:
         if a["id"] in off:       # stillgelegte Phasen melden nichts
             continue
         label = names.get(a["id"], a["id"]).replace("http://", "")
-        out.append({**a, "label": label})
+        text = f"{label} seit {a['since']} Uhr nicht erreichbar"
+        if a["id"] == "heater_meter":
+            text = f"Heizstab-Zähler ({cfg.shelly.heater_meter_url}) seit {a['since']} Uhr nicht erreichbar – Ersatzwert aus Phasen".replace("http://", "")
+        out.append({**a, "label": label, "text": text})
     return out
 
 
@@ -366,6 +369,7 @@ def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
             "pv2_enabled": cfg.solax2_active,
             "main_meter_power": r.main_meter_power_w,
             "heater_meter_power": r.heater_meter_power_w,
+            "heater_power_source": r.heater_power_source,   # "meter" | "phase_sum" (Ersatz aus Phasen)
             "surplus_without_heater": r.surplus_without_heater_w,
             "true_surplus": r.true_surplus_w,
             "wallbox_power": r.wallbox_power_w,

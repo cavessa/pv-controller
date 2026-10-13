@@ -18,12 +18,15 @@ EXAMPLE = Path(__file__).resolve().parent.parent / "config.example.json"
 
 
 class FakePlug:
-    def __init__(self, state, delay=0.0):
-        self.state, self.delay, self.sets = state, delay, []
+    def __init__(self, state, delay=0.0, power=None):
+        self.state, self.delay, self.sets, self.power = state, delay, [], power
 
     def get_relay_state(self):
+        return self.get_status()[0]
+
+    def get_status(self):
         time.sleep(self.delay)
-        return self.state
+        return (self.state, None if self.state is None else self.power)
 
     def set_relay(self, on, timeout=None, quiet=False):
         self.timeouts = getattr(self, "timeouts", []) + [(timeout, quiet)]
@@ -186,8 +189,8 @@ class ControllerPhaseTest(unittest.TestCase):
         self.cfg.heater.phase1_disabled = True
         c = self.make(ph=(None, False, False))
         reads = []
-        orig = c.ph1.get_relay_state
-        c.ph1.get_relay_state = lambda: (reads.append(1), orig())[1]
+        orig = c.ph1.get_status
+        c.ph1.get_status = lambda: (reads.append(1), orig())[1]
         res = c.run()
         self.assertEqual(reads, [])                                   # nicht gelesen
         self.assertEqual(self.sets(c), [[], [True], []])              # PH2 startet, PH1 bleibt unberührt

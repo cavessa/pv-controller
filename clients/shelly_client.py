@@ -15,6 +15,13 @@ class ShellyError(Exception):
     pass
 
 
+def _float_or_none(v) -> Optional[float]:
+    try:
+        return None if v is None else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 class ShellyPlugClient:
     """Plug/Relay für PH1/PH2/PH3.
 
@@ -42,6 +49,14 @@ class ShellyPlugClient:
         self.channel = channel
 
     def get_relay_state(self) -> Optional[bool]:
+        return self.get_status()[0]
+
+    def get_status(self) -> tuple[Optional[bool], Optional[float]]:
+        """(Relais an?, gemessene Leistung in W) in einem Abruf; (None, None) wenn nicht lesbar.
+
+        Gen2/Gen3: Switch.GetStatus liefert output + apower. Gen1: /status mit relays[]
+        und meters[] (Plug S, 1PM); ohne Messung (Shelly 1) ist die Leistung None.
+        """
         try:
             if self.type_ == "shelly_gen2":
                 r = requests.get(
@@ -50,15 +65,18 @@ class ShellyPlugClient:
                     timeout=self.read_timeout,
                 )
                 r.raise_for_status()
-                return bool(r.json()["output"])
-            r = requests.get(
-                f"{self.base_url}/relay/{self.channel}", timeout=self.read_timeout
-            )
+                j = r.json()
+                return bool(j["output"]), _float_or_none(j.get("apower"))
+            r = requests.get(f"{self.base_url}/status", timeout=self.read_timeout)
             r.raise_for_status()
-            return bool(r.json()["ison"])
-        except (requests.RequestException, KeyError, ValueError) as e:
+            j = r.json()
+            on = bool(j["relays"][self.channel]["ison"])
+            meters = j.get("meters") or []
+            power = _float_or_none(meters[self.channel].get("power")) if len(meters) > self.channel else None
+            return on, power
+        except (requests.RequestException, KeyError, IndexError, ValueError, TypeError) as e:
             log.debug("Shelly %s read relay state failed: %s", self.name, e)  # Dauerausfall meldet der Controller einmalig
-            return None
+            return None, None
 
     def set_relay(self, on: bool, timeout: Optional[float] = None, quiet: bool = False) -> bool:
         """Relais schalten. ``timeout`` überschreibt den Standard; ``quiet``: Fehler nur im Debug-Log

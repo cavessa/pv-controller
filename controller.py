@@ -39,12 +39,15 @@ from db import (
     device_health_update,
     get_cascade_budget,
     get_last_phase_changes,
+    get_last_phase_states,
     log_phase_change,
     mark_device_alerted,
     note_blind_off,
     smooth_heater_budgets,
 )
 from heater_phases import HeaterParams, PhaseIn, decide_phases
+from heater_power import PhaseRead
+from heater_power import resolve as resolve_heater_power
 from models import (
     ControllerResult,
     PhaseAction,
@@ -234,14 +237,15 @@ class Controller:
             f_temp = ex.submit(self.storage.get_temperature_c)
             disabled = self.cfg.heater.disabled_phases
             f_ph = [
-                None if disabled[i] else ex.submit(p.get_relay_state)
+                None if disabled[i] else ex.submit(p.get_status)
                 for i, p in enumerate((self.ph1, self.ph2, self.ph3))
             ]
             for f in (f_inv, f_zd, f_main):
                 f.result()
             r.heater_meter_power_w = f_heat.result()
             r.storage_temp_c = f_temp.result()
-            ph_states = [None if f is None else f.result() for f in f_ph]
+            ph_reads = [None if f is None else PhaseRead(*f.result()) for f in f_ph]
+        ph_states = [None if ph is None else ph.on for ph in ph_reads]
 
         r.ph1_on, r.ph2_on, r.ph3_on = ph_states
 
@@ -273,19 +277,13 @@ class Controller:
                            f"({self.cfg.shelly.main_meter_url.replace('http://', '')})",
                            r.main_meter_power_w is not None)
 
-        # Fallback: heater_meter nicht erreichbar → aus Phasenzuständen schätzen.
-        # Jede Phase hat phase_power_w (1500 W); eine unbekannte Phase zählt vorsichtshalber als laufend.
+        # Fallback: heater_meter nicht erreichbar → Summe der Phasen-Shellys (gemessen bzw. Nennleistung,
+        # siehe heater_power). Nie stillschweigend 0 W; die Quelle steht in heater_power_source.
         if r.heater_meter_power_w is None:
-            phases_on = sum(
-                1 for i, ph in enumerate(ph_states)
-                if not disabled[i] and (ph is True or ph is None)
-            )
-            r.heater_meter_power_w = float(phases_on * self.cfg.heater.phase_power_w)
-            log.warning(
-                "heater_meter nicht erreichbar – schätze %d W aus %d aktiven/unbekannten Phasen",
-                r.heater_meter_power_w,
-                phases_on,
-            )
+            hp = resolve_heater_power(None, ph_reads, self.cfg.heater.phase_power_w, get_last_phase_states())
+            r.heater_meter_power_w = hp.watts
+            r.heater_power_source = hp.source
+            log.warning("heater_meter nicht erreichbar – Ersatzwert aus Phasen: %d W (%s)", hp.watts, hp.detail)
             r.errors = [e for e in r.errors if e != "heater_meter"]
 
         return r

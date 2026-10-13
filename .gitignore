@@ -1,6 +1,7 @@
 # Config mit echten Daten
 config.json
 config.backup-*.json
+config.json.bak-*
 
 # Datenbanken
 *.db
