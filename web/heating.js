@@ -11,6 +11,7 @@ const HEAT = {
   form: {},             // room_id → Eingaben „+ Zeitplan“ (überleben das 30-s-Neuzeichnen)
   timer: null,
   roomsSig: null,       // Raumliste der gerenderten Cards (Neuaufbau nur bei Änderung)
+  loadSeq: 0,           // nur das zuletzt gestartete Laden wird angezeigt (Poll vs. Laden nach Änderung)
   chat: { history: [], busy: false, proposal: null, status: null },
 };
 const HEAT_DAYS = [["mo", "Mo"], ["di", "Di"], ["mi", "Mi"], ["do", "Do"], ["fr", "Fr"], ["sa", "Sa"], ["so", "So"]];
@@ -41,11 +42,13 @@ document.addEventListener("visibilitychange", () => {
 
 async function loadHeating() {
   const banner = $("#heat-banner");
+  const seq = ++HEAT.loadSeq;
   try {
     const [s, sch] = await Promise.all([
       api("/api/heating/status"),
       api("/api/heating/schedules").catch(() => null),
     ]);
+    if (seq !== HEAT.loadSeq) return;                // inzwischen neuer geladen (z. B. nach Löschen) → verwerfen
     HEAT.status = s;
     if (sch) HEAT.sched = sch.items;
     renderChatStatus(s.chat, s.enabled && s.openhab_configured);
@@ -115,6 +118,11 @@ function _roomSkeleton(r) {
       </div>`;
 }
 
+function _typingIn(el) {
+  const a = document.activeElement;
+  return !!a && el.contains(a) && a.matches(".heat-sched-form input:not([type=checkbox]), .heat-sched-form select, .heat-sched-form textarea");
+}
+
 function _setSlot(el, html) {
   if (el && el._html !== html) { el.innerHTML = html; el._html = html; }
 }
@@ -154,8 +162,9 @@ function updateHeatRoom(roomId, force = false) {
   _setSlot(slot("toggles"), `<button type="button" class="heat-hist-toggle" data-hist="${_hq(r.id)}">${HEAT.open[r.id] ? "▾" : "▸"} Verlauf 24 h</button>`
     + (r.controllable ? `<button type="button" class="heat-hist-toggle" data-sched="${_hq(r.id)}">${HEAT.schedOpen[r.id] ? "▾" : "▸"} Zeitpläne (${HEAT.sched.filter(e => e.room_id === r.id).length})</button>` : ""));
   const sch = slot("sched");
-  // während im Zeitplan-Formular getippt wird: nicht ersetzen (Eingabe/Fokus bleiben)
-  if (force || !sch.contains(document.activeElement)) _setSlot(sch, r.controllable && HEAT.schedOpen[r.id] ? _schedPanel(r, s) : "");
+  // nur während im Formular getippt wird nicht ersetzen (Fokus in einem Eingabefeld) – ein fokussierter
+  // Button/Schalter (✕, An/Aus, Wochentag) blockiert nichts
+  if (force || !_typingIn(sch)) _setSlot(sch, r.controllable && HEAT.schedOpen[r.id] ? _schedPanel(r, s) : "");
 }
 
 // ── Chat ───────────────────────────────────────────────────────────────────
@@ -390,6 +399,7 @@ async function _heatSend(roomId) {
   } finally {
     delete HEAT.pending[roomId];
     updateHeatRoom(roomId);
+    loadHeating();                                   // sofort: Soll, Hinweise, „Nächste Änderung“
     // openHAB/CCU brauchen einen Moment, bis der neue Wert zurückgemeldet ist
     setTimeout(loadHeating, 3000);
   }

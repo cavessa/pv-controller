@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-13 – Fix: Zeitplan-Liste blieb nach Löschen/Umschalten stehen (seit d83c81f)
+
+**Ursache:** Der Schutz „Formular nicht überschreiben“ griff, sobald irgendein Element im Zeitplan-Bereich den Fokus hatte. Nach einem Klick auf ✕ oder den An/Aus-Schalter behält genau dieser Button den Fokus → die Liste wurde beim Neuladen nicht ersetzt (Zähler und „Nächste Änderung“ schon). Im Browser reproduziert; der Chat war betroffen, wenn der Fokus vorher in der Liste lag.
+**Fix (`web/heating.js`):** Schutz nur noch, wenn ein Eingabefeld des Formulars (Uhrzeit, Soll, Datum) fokussiert ist. Überlappende Ladevorgänge: nur das zuletzt gestartete Laden wird angezeigt (ein älterer Poll kann ein Laden nach einer Änderung nicht mehr überschreiben). −/+ lädt sofort nach dem Senden neu und zusätzlich nach 3 s (Rückmeldung des Geräts). Löschen, An/Aus, Anlegen und Chat „Übernehmen“ laden bereits sofort neu.
+**Geprüft im Browser (Dev):** Löschen → sofort weg; Toggle aus/an → sofort grau/normal, „Nächste Änderung“ passt; Anlegen → sofort da; Chat „Übernehmen“ (löschen) mit Fokus in der Liste → Liste und „Nächste Änderung“ aktualisiert; 30-s-Poll übernimmt Änderungen von außen in Liste und „Nächste Änderung“; während des Tippens bleibt das Formular, danach wird aktualisiert; −/+ lädt sofort.
+
 ## 2026-10-13 – „aktualisiert“-Pill zeigt die Zeit des aktiven Tabs
 
 Seit das Dashboard-Polling auf anderen Tabs pausiert, stand die Pill dort auf der letzten Dashboard-Zeit. Jetzt: Heizung → Zeit des letzten Heizungs-Updates (wie „Stand …“ unten im Tab), Settings → ausgeblendet (`visibility: hidden`, Kopfzeile behält ihr Layout), übrige Tabs → Dashboard-Status wie bisher. Gleiche Klasse, Größe und Position (im Browser geprüft).
