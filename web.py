@@ -32,6 +32,7 @@ from pydantic import BaseModel
 
 import heating as _heating
 import heating_schedule as _hsched
+import heating_chat as _hchat
 from clients.goe_client import GoeClient, GoeError
 from config import Config, load_config
 from controller import ControllerMode, run_controller
@@ -1839,6 +1840,7 @@ def heating_status(response: Response) -> dict[str, Any]:
         "dry_run": _heating_dry_run(raw),
         "openhab_configured": client is not None,
         "schedules_enabled": hcfg.schedules_enabled,
+        "chat": _chat_status(raw, hcfg),
     }
     if not hcfg.enabled or client is None:
         return {**base, "ok": True, "error": None, "rooms": []}
@@ -1949,9 +1951,13 @@ def heating_config_get() -> dict[str, Any]:
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         raw = json.load(f)
     oh = raw.get("openhab") or {}
+    a = raw.get("assistant") or {}
     return {
         "heating": raw.get("heating") or {"enabled": False, "setpoint_min": 5, "setpoint_max": 26, "rooms": []},
         "openhab": {"url": oh.get("url", ""), "token_set": bool(oh.get("token"))},
+        "assistant": {"enabled": bool(a.get("enabled", False)), "model": a.get("model") or _hchat.DEFAULT_MODEL,
+                      "max_requests_per_day": a.get("max_requests_per_day", _hchat.DEFAULT_LIMIT),
+                      "key_set": bool(a.get("api_key"))},
     }
 
 
@@ -1961,6 +1967,7 @@ class _HeatingConfigUpdate(BaseModel):
     setpoint_max: float
     rooms: list[dict[str, Any]]
     schedules_enabled: Optional[bool] = None    # None = unverändert lassen
+    assistant: Optional[dict[str, Any]] = None   # {enabled, model, max_requests_per_day}; api_key nie
 
 
 @app.put("/api/heating/config")
@@ -1980,8 +1987,16 @@ def heating_config_put(body: _HeatingConfigUpdate) -> dict[str, Any]:
     }
     new_cfg = copy.deepcopy(current)
     new_cfg["heating"] = block
+    old_chat = bool((current.get("assistant") or {}).get("enabled", False))
+    if body.assistant is not None:
+        a = dict(current.get("assistant") or {})          # api_key bleibt, kommt nie vom Frontend
+        for k in ("enabled", "model", "max_requests_per_day"):
+            if k in body.assistant:
+                a[k] = body.assistant[k]
+        new_cfg["assistant"] = a
     try:
         _heating.parse_heating(new_cfg)
+        _hchat.parse_assistant(new_cfg)
     except ValueError as e:
         raise HTTPException(400, str(e))
     if block["enabled"] and not (new_cfg.get("openhab") or {}).get("url"):
@@ -1989,6 +2004,9 @@ def heating_config_put(body: _HeatingConfigUpdate) -> dict[str, Any]:
     backup = _write_config(new_cfg)
     if block["schedules_enabled"] != old_se:
         _app_log(f"Zeitpläne {'aktiviert' if block['schedules_enabled'] else 'deaktiviert'} (Settings)")
+    new_chat = bool((new_cfg.get("assistant") or {}).get("enabled", False))
+    if new_chat != old_chat:
+        _app_log(f"Chat {'aktiviert' if new_chat else 'deaktiviert'} (Settings)")
     return {"ok": True, "backup": backup, "heating": block}
 
 
@@ -2056,3 +2074,119 @@ def heating_schedule_delete(sid: int) -> dict[str, Any]:
     room = hcfg.room(entry["room_id"])
     _app_log(f"Zeitplan gelöscht: {room.name if room else entry['room_id']} {entry['time']} → {entry['setpoint']:g} °C")
     return {"ok": True, "id": sid}
+
+
+
+# ── Heizung: Chat (Phase 3) ─────────────────────────────────────────────────
+
+
+def _chat_status(raw: dict[str, Any], hcfg: "_heating.HeatingConfig") -> dict[str, Any]:
+    try:
+        return _hchat.status(hcfg, _hchat.parse_assistant(raw))
+    except ValueError as e:
+        return {"enabled": False, "ready": False, "hint": f"assistant-Config ungültig: {e}",
+                "used_today": 0, "limit": 0, "key_set": False, "model": ""}
+
+
+class _ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class _ChatRequest(BaseModel):
+    messages: list[_ChatMessage]
+
+
+class _ChatApply(BaseModel):
+    proposal_id: str
+
+
+def _chat_ctx() -> tuple[dict[str, Any], "_heating.HeatingConfig", Any, "_hchat.AssistantConfig"]:
+    raw, hcfg, client = _heating_ctx()
+    try:
+        acfg = _hchat.parse_assistant(raw)
+    except ValueError as e:
+        raise HTTPException(500, f"assistant-Config ungültig: {e}")
+    if not acfg.enabled:
+        raise HTTPException(409, "Chat ist aus (Settings → Heizung → „Chat aktiv“).")
+    if not hcfg.enabled or client is None:
+        raise HTTPException(409, "Heizung nicht aktiv oder openHAB nicht konfiguriert")
+    return raw, hcfg, client, acfg
+
+
+@app.post("/api/heating/chat")
+def heating_chat(body: _ChatRequest) -> dict[str, Any]:
+    """Text → Antwort: Abfrage aus der DB, Rückfrage oder Vorschlag (nichts wird gespeichert)."""
+    raw, hcfg, client, acfg = _chat_ctx()
+    hist = [{"role": m.role, "content": m.content.strip()[:_hchat.MAX_TEXT]}
+            for m in body.messages[-_hchat.MAX_HISTORY:] if m.role in ("user", "assistant") and m.content.strip()]
+    while hist and hist[0]["role"] != "user":
+        hist.pop(0)
+    if not hist or hist[-1]["role"] != "user":
+        raise HTTPException(400, "Leere Nachricht")
+    now = datetime.now(_hsched.TZ)
+    entries = _hsched.list_schedules()
+    base = {"chat": None}
+    answer = _hchat.local_answer(hist[-1]["content"], hcfg, entries, now)
+    if answer is not None:
+        return {**base, "type": "answer", "text": answer, "chat": _hchat.status(hcfg, acfg, now)}
+    st = _hchat.status(hcfg, acfg, now)
+    if not st["ready"]:
+        kind = "limit" if st["key_set"] and st["used_today"] >= st["limit"] else "unavailable"
+        return {**base, "type": kind, "text": st["hint"], "chat": st}
+    if not _hchat.try_consume(acfg.max_requests_per_day, now):
+        st = _hchat.status(hcfg, acfg, now)
+        return {**base, "type": "limit", "text": st["hint"], "chat": st}
+    rooms = _heating.read_status(hcfg, client).get("rooms", [])
+    context = _hchat.build_context(hcfg, rooms, entries, now)
+    try:
+        inp = _hchat.call_model(acfg, context, hist)
+    except _hchat.ChatError as e:
+        return {**base, "type": "error", "kind": e.kind, "text": str(e), "chat": _hchat.status(hcfg, acfg, now)}
+    st = _hchat.status(hcfg, acfg, now)
+    q = inp.get("question")
+    if isinstance(q, str) and q.strip() and not (inp.get("entries") or inp.get("immediate") or inp.get("delete_ids")):
+        return {**base, "type": "question", "text": q.strip()[:400], "chat": st}
+    proposal, errors = _hchat.validate_proposal(hcfg, inp, now)
+    if errors:
+        log.info("Chat: Vorschlag abgelehnt: %s", "; ".join(errors))
+        return {**base, "type": "invalid", "text": "Das kann ich so nicht übernehmen:\n" + "\n".join(errors),
+                "chat": st}
+    if not (proposal.entries or proposal.immediate or proposal.deletes):
+        return {**base, "type": "question", "text": "Ich habe nichts zum Planen gefunden. Was soll geschehen?",
+                "chat": st}
+    proposal.note = hist[-1]["content"][:200]
+    _hchat.store(proposal)
+    return {**base, "type": "proposal", "proposal": _hchat.preview(hcfg, proposal, now),
+            "schedules_enabled": hcfg.schedules_enabled, "dry_run": _heating_dry_run(raw), "chat": st}
+
+
+@app.post("/api/heating/chat/apply")
+def heating_chat_apply(body: _ChatApply) -> dict[str, Any]:
+    """Bestätigter Vorschlag: noch einmal prüfen, dann speichern/löschen/sofort setzen."""
+    raw, hcfg, client, _acfg = _chat_ctx()
+    p = _hchat.take(body.proposal_id)
+    if p is None:
+        raise HTTPException(410, "Vorschlag abgelaufen – bitte neu fragen.")
+    now = datetime.now(_hsched.TZ)
+    try:                                                  # Zeit kann seit der Vorschau vergangen sein
+        for e in p.entries:
+            _hsched.validate_entry(hcfg, e["room_id"], e["setpoint"], e["time"],
+                                   days=e["days"].split(",") if e["days"] else None, date=e["date"], now=now)
+    except ValueError as e:
+        raise HTTPException(400, f"Vorschlag nicht mehr gültig: {e}")
+    created = [_hsched.create_schedule(e, source="chat", note=p.note) for e in p.entries]
+    for e in created:
+        room = hcfg.room(e["room_id"])
+        _app_log(f"Zeitplan angelegt (Chat): {room.name} {e['time']} → {e['setpoint']:g} °C "
+                 f"({e['date'] or ','.join(e['days'])})")
+    deleted = []
+    for d in p.deletes:
+        if _hsched.delete_schedule(d["id"]):
+            deleted.append(d["id"])
+            room = hcfg.room(d["room_id"])
+            _app_log(f"Zeitplan gelöscht (Chat): {room.name if room else d['room_id']} {d['time']} → "
+                     f"{d['setpoint']:g} °C")
+    sent = [_heating_send(raw, hcfg, client, hcfg.room(i["room_id"]), i["setpoint"], "Chat") for i in p.immediate]
+    return {"ok": all(r["ok"] for r in sent), "created": [e["id"] for e in created], "deleted": deleted,
+            "immediate": sent, "schedules_enabled": hcfg.schedules_enabled}

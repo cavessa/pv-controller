@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=68">
+  <link rel="stylesheet" href="/static/styles.css?v=70">
 </head>
 <body>
   <div class="app-shell">
@@ -648,6 +648,16 @@
       <div id="heat-banner" class="banner hidden"></div>
       <p class="heat-dry hidden" id="heat-dry">Dry-Run: Änderungen werden nur geloggt, nicht an openHAB gesendet.</p>
       <p class="heat-dry hidden" id="heat-sched-off">Zeitpläne sind nicht aktiv: Pläne werden gespeichert, aber nicht ausgeführt. Einschalten unter Settings → Heizung → „Zeitpläne aktiv“.</p>
+      <div class="card heat-chat" id="heat-chat">
+        <div class="heat-chat-head"><h2>💬 Chat</h2><span class="heat-chat-count" id="heat-chat-count"></span></div>
+        <div class="heat-chat-log" id="heat-chat-log" aria-live="polite"></div>
+        <div id="heat-chat-preview"></div>
+        <form class="heat-chat-form" id="heat-chat-form" autocomplete="off">
+          <input type="text" id="heat-chat-input" maxlength="500" disabled placeholder="z. B. „morgen Bad um 7 auf 21 Grad und um 11 wieder auf 19“">
+          <button type="submit" class="btn primary" id="heat-chat-send" disabled>Senden</button>
+        </form>
+        <p class="note heat-chat-hint hidden" id="heat-chat-hint"></p>
+      </div>
       <div id="heat-rooms"><div class="chart-empty">Lade…</div></div>
       <p class="note" id="heat-updated"></p>
     </section>
@@ -855,6 +865,10 @@
           <p class="note" id="hs-openhab"></p>
           <label class="check"><input type="checkbox" id="hs-enabled"> Heizung-Tab aktiv</label>
           <label class="check"><input type="checkbox" id="hs-sched"> Zeitpläne aktiv (der Minuten-Cron führt fällige Pläne aus)</label>
+          <label class="check"><input type="checkbox" id="hs-chat"> Chat aktiv (Zeitpläne per Text über die Claude API, jede Änderung mit Bestätigung)</label>
+          <p class="note" id="hs-chat-key"></p>
+          <label>Chat-Modell<input type="text" id="hs-model" placeholder="claude-haiku-5-5" autocomplete="off"></label>
+          <label>Chat-Anfragen pro Tag (Limit)<input type="number" id="hs-limit" min="1" max="10000" step="1"></label>
           <label>Sollwert min (°C)<input type="number" step="0.5" min="4.5" max="30.5" id="hs-min"></label>
           <label>Sollwert max (°C)<input type="number" step="0.5" min="4.5" max="30.5" id="hs-max"></label>
           <datalist id="hs-items"></datalist>
@@ -970,6 +984,6 @@
   </div>
 
   <script src="/static/app.js?v=20261013c" defer></script>
-  <script src="/static/heating.js?v=20261013d" defer></script>
+  <script src="/static/heating.js?v=20261013f" defer></script>
 </body>
 </html>

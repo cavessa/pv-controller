@@ -10,6 +10,7 @@ const HEAT = {
   schedOpen: {},        // room_id → Zeitpläne aufgeklappt
   form: {},             // room_id → Eingaben „+ Zeitplan“ (überleben das 30-s-Neuzeichnen)
   timer: null,
+  chat: { history: [], busy: false, proposal: null, status: null },
 };
 const HEAT_DAYS = [["mo", "Mo"], ["di", "Di"], ["mi", "Mi"], ["do", "Do"], ["fr", "Fr"], ["sa", "Sa"], ["so", "So"]];
 const HEAT_SEND_DELAY_MS = 900;
@@ -39,6 +40,7 @@ async function loadHeating() {
     ]);
     HEAT.status = s;
     if (sch) HEAT.sched = sch.items;
+    renderChatStatus(s.chat, s.enabled && s.openhab_configured);
     banner.classList.add("hidden");
     if (!s.enabled || !s.openhab_configured) {
       const why = !s.openhab_configured
@@ -114,6 +116,110 @@ function renderHeatRooms(s) {
         ${r.controllable && HEAT.schedOpen[r.id] ? _schedPanel(r, s) : ""}
       </div>`;
   }).join("");
+}
+
+// ── Chat ───────────────────────────────────────────────────────────────────
+
+function renderChatStatus(st, heatingOn) {
+  HEAT.chat.status = st;
+  const card = $("#heat-chat");
+  if (!card) return;
+  card.classList.toggle("hidden", !heatingOn);
+  const ready = !!(st && st.ready);
+  const inp = $("#heat-chat-input");
+  inp.disabled = !ready || HEAT.chat.busy;
+  $("#heat-chat-send").disabled = !ready || HEAT.chat.busy;
+  card.classList.toggle("disabled", !ready);
+  const hint = $("#heat-chat-hint");
+  hint.textContent = st?.hint || "";
+  hint.classList.toggle("hidden", !st?.hint);
+  $("#heat-chat-count").textContent = st && st.enabled ? `${st.used_today}/${st.limit} heute` : "";
+}
+
+function _chatAdd(role, text, cls = "") {
+  const log = $("#heat-chat-log");
+  const div = document.createElement("div");
+  div.className = `heat-msg ${role}${cls ? " " + cls : ""}`;
+  div.textContent = text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+function _fmtSp(v) { return String(v).replace(".", ",") + " °C"; }
+
+function _renderProposal(res) {
+  const p = res.proposal;
+  const box = $("#heat-chat-preview");
+  if (!p) { box.innerHTML = ""; return; }
+  const groups = p.groups.map(g => `<div class="heat-prev-group"><div class="heat-prev-label">${escapeHtml(g.label)}</div>
+      ${g.rows.map(r => `<div class="heat-prev-row"><span>${_hq(r.time)}</span><span>${escapeHtml(r.room)} → ${_fmtSp(r.setpoint)}</span></div>`).join("")}</div>`).join("");
+  const imm = p.immediate.length ? `<div class="heat-prev-group"><div class="heat-prev-label">Sofort</div>
+      ${p.immediate.map(i => `<div class="heat-prev-row"><span>jetzt</span><span>${escapeHtml(i.room)} → ${_fmtSp(i.setpoint)}</span></div>`).join("")}</div>` : "";
+  const del = p.deletes.length ? `<div class="heat-prev-group del"><div class="heat-prev-label">Löschen</div>
+      ${p.deletes.map(d => `<div class="heat-prev-row"><span>${_hq(d.time)}</span><span>${escapeHtml(d.room)} → ${_fmtSp(d.setpoint)} · ${escapeHtml(d.when)}</span></div>`).join("")}</div>` : "";
+  const warn = [
+    p.groups.length && !res.schedules_enabled ? "„Zeitpläne aktiv“ ist aus: die Pläne werden gespeichert, aber nicht ausgeführt." : "",
+    p.immediate.length && res.dry_run ? "Dry-Run: Sofort-Änderungen werden nur geloggt." : "",
+  ].filter(Boolean).map(t => `<p class="heat-prev-warn">${t}</p>`).join("");
+  box.innerHTML = `<div class="heat-prev">
+      ${p.summary ? `<div class="heat-prev-sum">${escapeHtml(p.summary)}</div>` : ""}
+      ${groups}${imm}${del}${warn}
+      <div class="heat-prev-actions">
+        <button type="button" class="btn primary" data-chat-apply="${_hq(p.id)}">Übernehmen</button>
+        <button type="button" class="btn" data-chat-cancel="1">Abbrechen</button>
+      </div></div>`;
+}
+
+async function chatSend(text) {
+  const c = HEAT.chat;
+  if (!text || c.busy) return;
+  c.proposal = null; _renderProposal({});
+  _chatAdd("user", text);
+  c.history.push({ role: "user", content: text });
+  c.busy = true; renderChatStatus(c.status, true);
+  const wait = document.createElement("div");
+  wait.className = "heat-msg assistant pending"; wait.textContent = "…";
+  $("#heat-chat-log").appendChild(wait);
+  try {
+    const res = await api("/api/heating/chat", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: c.history }) });
+    wait.remove();
+    if (res.chat) c.status = res.chat;
+    if (res.type === "question") {
+      _chatAdd("assistant", res.text);
+      c.history.push({ role: "assistant", content: res.text });
+    } else if (res.type === "proposal") {
+      _chatAdd("assistant", "Vorschlag – bitte prüfen:");
+      c.proposal = res.proposal; _renderProposal(res);
+    } else {
+      const cls = { error: "err", invalid: "err", limit: "info", unavailable: "info", answer: "" }[res.type] ?? "";
+      _chatAdd("assistant", res.text, cls);
+      c.history = [];
+    }
+  } catch (e) {
+    wait.remove();
+    _chatAdd("assistant", "Fehler: " + e.message, "err");
+  } finally {
+    c.busy = false; renderChatStatus(c.status, true);
+    $("#heat-chat-input").focus();
+  }
+}
+
+async function chatApply(id) {
+  const c = HEAT.chat;
+  try {
+    const r = await api("/api/heating/chat/apply", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ proposal_id: id }) });
+    const parts = [];
+    if (r.created.length) parts.push(`${r.created.length} ${r.created.length > 1 ? "Zeitpläne" : "Zeitplan"} angelegt`);
+    if (r.deleted.length) parts.push(`${r.deleted.length} gelöscht`);
+    if (r.immediate.length) parts.push(`${r.immediate.filter(x => x.ok).length}/${r.immediate.length} sofort gesetzt`);
+    _chatAdd("assistant", "✓ Übernommen: " + (parts.join(", ") || "nichts zu tun"), r.ok ? "ok" : "err");
+  } catch (e) {
+    _chatAdd("assistant", "Nicht übernommen: " + e.message, "err");
+  }
+  c.proposal = null; c.history = []; _renderProposal({});
+  loadHeating();
 }
 
 // ── Zeitpläne ──────────────────────────────────────────────────────────────
@@ -315,6 +421,13 @@ async function loadHeatingSettings() {
     const h = c.heating;
     $("#hs-enabled").checked = !!h.enabled;
     $("#hs-sched").checked = !!h.schedules_enabled;
+    const a = c.assistant || {};
+    $("#hs-chat").checked = !!a.enabled;
+    $("#hs-model").value = a.model || "claude-haiku-5-5";
+    $("#hs-limit").value = a.max_requests_per_day ?? 100;
+    $("#hs-chat-key").textContent = a.key_set
+      ? "API-Key: gesetzt (nur in config.json, wird nie angezeigt)"
+      : "API-Key: fehlt – assistant.api_key in config.json eintragen";
     $("#hs-min").value = h.setpoint_min ?? 5;
     $("#hs-max").value = h.setpoint_max ?? 26;
     HS_ROOMS = (h.rooms || []).map(r => ({ ...r }));
@@ -363,6 +476,8 @@ async function saveHeatingSettings() {
   const body = {
     enabled: $("#hs-enabled").checked,
     schedules_enabled: $("#hs-sched").checked,
+    assistant: { enabled: $("#hs-chat").checked, model: $("#hs-model").value.trim(),
+                 max_requests_per_day: Number($("#hs-limit").value) },
     setpoint_min: Number($("#hs-min").value),
     setpoint_max: Number($("#hs-max").value),
     rooms: HS_ROOMS.map(({ _open, ...r }) => r),
@@ -420,6 +535,21 @@ function bootHeating() {
   });
 
   $("#hs-save")?.addEventListener("click", saveHeatingSettings);
+  $("#heat-chat-form")?.addEventListener("submit", e => {
+    e.preventDefault();
+    const inp = $("#heat-chat-input");
+    const t = inp.value.trim();
+    inp.value = "";
+    chatSend(t);
+  });
+  $("#heat-chat")?.addEventListener("click", e => {
+    const a = e.target.closest("[data-chat-apply]");
+    if (a) { a.disabled = true; chatApply(a.dataset.chatApply); return; }
+    if (e.target.closest("[data-chat-cancel]")) {
+      HEAT.chat.proposal = null; HEAT.chat.history = []; _renderProposal({});
+      _chatAdd("assistant", "Verworfen – nichts gespeichert.", "info");
+    }
+  });
   $("#hs-add")?.addEventListener("click", () => {
     _hsCollect();
     HS_ROOMS.push({ id: "", name: "", _open: true });

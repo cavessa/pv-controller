@@ -1666,3 +1666,28 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 .heat-form-row label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-muted); }
 .heat-form-row input { background: rgba(255,255,255,0.04); border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 6px 8px; font-family: inherit; font-size: 13px; color-scheme: dark; }
 .heat-form-row input[type="number"] { width: 80px; }
+
+/* Heizung: Chat */
+.heat-chat.disabled .heat-chat-form { opacity: 0.45; }
+.heat-chat-head { display: flex; align-items: baseline; justify-content: space-between; }
+.heat-chat-head h2 { margin-bottom: 8px; }
+.heat-chat-count { font-size: 11px; color: var(--text-muted); }
+.heat-chat-log { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
+.heat-chat-log:empty { display: none; }
+.heat-msg { max-width: 88%; padding: 7px 10px; border-radius: 10px; font-size: 13px; line-height: 1.4; white-space: pre-wrap; }
+.heat-msg.user { align-self: flex-end; background: rgba(91,140,255,0.18); color: var(--text); }
+.heat-msg.assistant { align-self: flex-start; background: rgba(255,255,255,0.05); color: var(--text-dim); }
+.heat-msg.assistant.err { color: var(--error); }
+.heat-msg.assistant.info { color: var(--warn); }
+.heat-msg.assistant.ok { color: var(--ok); }
+.heat-msg.pending { opacity: 0.6; }
+.heat-chat-form { display: flex; gap: 8px; margin-top: 10px; }
+.heat-chat-form input { flex: 1; min-width: 0; background: rgba(255,255,255,0.04); border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 8px 10px; font-family: inherit; font-size: 13px; }
+.heat-chat-hint { margin: 8px 0 0; color: var(--warn); }
+.heat-prev { margin-top: 8px; border: 1px solid var(--accent); border-radius: 10px; padding: 10px 12px; display: grid; gap: 8px; }
+.heat-prev-sum { font-size: 12px; color: var(--text-dim); }
+.heat-prev-label { font-size: 11px; letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: 2px; }
+.heat-prev-row { display: grid; grid-template-columns: 52px 1fr; gap: 8px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.heat-prev-group.del .heat-prev-row { color: var(--error); }
+.heat-prev-warn { margin: 0; font-size: 11px; color: var(--warn); }
+.heat-prev-actions { display: flex; gap: 8px; }

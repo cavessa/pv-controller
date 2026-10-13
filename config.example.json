@@ -125,5 +125,11 @@
         "humidity_item": "LuftfeuchteWaschkuche_Humidity"
       }
     ]
+  },
+  "assistant": {
+    "enabled": false,
+    "api_key": "",
+    "model": "claude-haiku-5-5",
+    "max_requests_per_day": 100
   }
 }
