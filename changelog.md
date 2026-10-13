@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-13 – Heizung-Tab: kein Flackern mehr (Werte in place statt Neuaufbau)
+
+**Vorher:** `renderHeatRooms` ersetzte bei jedem Poll (30 s), nach jedem −/+ und jedem Klick in den Zeitplänen alle Cards per `innerHTML` – inkl. SVG-Verlauf und Zeitplan-Formular (gemessen: 8 Cards je Poll ersetzt). 24-h-Verlauf alle 10 min neu geladen und bei jedem Poll neu gezeichnet. Polling lief bei verdeckter Seite weiter.
+**Jetzt (`web/heating.js`):** Cards werden einmal aufgebaut (neu nur, wenn sich die Raumliste ändert); `updateHeatRoom` aktualisiert je Card nur geänderte Slots (Ist + Farbe, Soll, Ventil/Feuchte, Batterie, Modus, „Nächste Änderung“, Warnung, Fehler, Zeitplan-Zähler/-Liste). Ein gesammelter −/+-Wert bleibt sichtbar, der Zeitplan-Bereich wird nicht ersetzt, solange darin getippt wird; Chat-Eingabe und Vorschau fasst das Polling nicht an. Aufgeklappte Verläufe/Zeitpläne und die Scrollposition bleiben. Polling alle 30 s, pausiert bei anderem Tab und bei `document.hidden`, beim Zurückkommen sofort ein Update. 24-h-Verlauf höchstens alle 5 min geladen und nur bei geänderten Daten neu gezeichnet.
+**Gemessen (Dev, Headless-Browser, 65 s Heizung-Tab mit offenem Verlauf + Zeitplänen):** Heizungs-Requests unverändert 4/min (status + schedules je 30 s); ersetzte Cards 8 → 0; Verlauf/Zeitpläne offen, Scroll unverändert; 0 Heizungs-Requests bei anderem Tab oder verdeckter Seite. Geprüft: Chat-Eingabe, gesammelter Sollwert und Fokus/Wert im Zeitplan-Formular überstehen einen Poll.
+**Andere Tabs (nur berichtet, nicht geändert):** Das Dashboard-Polling (`refreshStatus`, alle 10 s, ≈ 78 Requests/min) läuft unabhängig vom aktiven Tab und auch bei verdeckter Seite weiter; es ersetzt Charts/Listen per `innerHTML` (Wallbox-Chart, Strings-Chart, Kaskaden-Mini, Phasen-Timeline: ≈ 400 DOM-Knoten je 30 s). Prioritäten baut die Kaskaden-Liste zusätzlich alle 10 s neu (≈ 470 Knoten je 30 s). Logs: Auto-Refresh alle 5 s ersetzt den Text und springt ans Ende.
+
 ## 2026-10-13 – Chat: ChatGPT (OpenAI) als Anbieter, wählbar in den Settings
 
 **Warum:** Der User hat API-Zugang und Guthaben bei OpenAI, nicht bei Anthropic.
