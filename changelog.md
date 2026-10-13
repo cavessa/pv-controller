@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-13 – „Warum?“ Phase 1, Nachträge: schlankere Phasen-Einträge, openHAB-Check alle 5 min, Wallbox-Texte deutsch
+
+- **Schnappschuss entschlackt:** Die Budget-Zahlen der drei Heizstab-Phasen (`budget_w`, `budget_down_w`, `target_phases`, `running`, `threshold_w`) stehen einmal in `snap["phases"]` statt in jeder Phase; an der Phase bleibt nur Eigenes (z. B. `remaining_s`). `rest_w` entfällt, wo es gleich `budget_w` ist. `decisions.device_data()` / `reason_text()` fügen beim Lesen wieder zusammen. Größe mit Prod-Geräten ~1,45 KB statt ~1,65 KB je Lauf (~2,1 MB/Tag).
+- **openHAB-Gesundheit:** `decisions.check_openhab` – im Cron alle 5 min (Minute durch 5 teilbar) ein `GET /rest/` mit 2 s Timeout, ohne Token, nur lesend; Ergebnis als `offline_ab` / `wieder_da` im Ereignislog. Damit werden Ausfälle auch ohne fälligen Zeitplan erfasst. Fehler werden abgefangen; im Detail steht nur die Fehlerart.
+- **Keine Adressen in den neuen Protokollen:** `redact.scrub_addresses` entfernt URLs, Hostangaben, IPs und MACs aus `device_health_event.detail` und `schedule_result.message` (openHAB-Fehlertexte enthalten Host und Port). Das Textlog bleibt unverändert.
+- **Wallbox-Texte deutsch** (`controller.py`): Begründungen in `/api/status` und Log („go-e ist nicht im PV-Überschussmodus (Eco). Manuelles/normales Laden wird nicht angefasst.“, „Wallbox in der Config deaktiviert.“, „… Fail-safe: keine Änderung.“) sowie die go-e-Logzeilen (DRY-RUN/READ-ONLY/gesetzt/fehlgeschlagen, „Wallbox-Entscheidung“, „Grund“). Entscheidung und Schaltbefehle unverändert.
+- Die Kaskaden-ID `shelly_test` (Gerät „eBike“) bleibt, wie sie ist.
+- Tests: +6 in `tests/test_decisions.py` (Phasen-Zahlen, openHAB-Check, Adress-Bereinigung, Wallbox-Texte). Suite: 521 grün.
+
 ## 2026-10-13 – „Warum?“-Antworten, Phase 1: Grund-Codes, Entscheidungs-Schnappschuss, Zeitplan-Verlauf, Geräte-Ereignislog
 
 Reines Protokoll als Grundlage für Warum-Fragen im Chat (Phase 2). **Entscheidungslogik, Schaltverhalten, bestehende Texte und Logs unverändert** – die 452 bestehenden Tests laufen unverändert grün.

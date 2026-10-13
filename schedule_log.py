@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 import db
+import redact
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +58,8 @@ def record(kind: str, schedule_id: Optional[int], target_id: str, code: str, now
     (für Zustände, die sonst jede Minute wiederkämen). Gibt zurück, ob geschrieben wurde; wirft nie."""
     try:
         day = now.date().isoformat()
+        if message:
+            message = redact.scrub_addresses(redact.redact(str(message)))[:300]
         with _conn() as conn:
             if once_per_day and conn.execute(
                     "SELECT 1 FROM schedule_result WHERE day = ? AND kind = ? AND schedule_id IS ? AND target_id = ? "

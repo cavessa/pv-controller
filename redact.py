@@ -22,6 +22,20 @@ def redact(text: str) -> str:
     return _KEY_RE.sub(MASK, text) if "sk-" in text else text
 
 
+_URL_RE = re.compile(r"https?://[^\s'\")>,]+")
+_HOST_RE = re.compile(r"host='[^']*'(?:, port=\d+)?")
+_IP_RE = re.compile(r"(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(?![\d.])")
+_MAC_RE = re.compile(r"(?i)\b[0-9a-f]{2}(?:[:-][0-9a-f]{2}){5}\b")
+
+
+def scrub_addresses(text: str) -> str:
+    """URLs, Hostangaben, IPs und MACs aus einem Text entfernen (für Protokolle, die an den Chat gehen)."""
+    text = _URL_RE.sub("[Adresse]", text)
+    text = _HOST_RE.sub("[Adresse]", text)
+    text = _MAC_RE.sub("[Adresse]", text)
+    return _IP_RE.sub("[Adresse]", text)
+
+
 class RedactFilter(logging.Filter):
     """Maskiert Keys in jeder Log-Zeile (Nachricht nach dem Einsetzen der Argumente, auch im Traceback)."""
 

@@ -331,8 +331,18 @@ class SnapshotTest(TempDb):
         self.assertEqual(d["zendure"]["reason"], "not_in_cascade")                # vorgesehen, leer
         self.assertEqual((d["heizstab"]["reason"], d["heizstab"]["data"]["threshold_w"]),
                          ("below_start_threshold", 1100))
+        self.assertNotIn("rest_w", d["heizstab"]["data"])
+        self.assertEqual(decisions.reason_text(snap, d["heizstab"]), "Überschuss 820 W unter der Startschwelle 1100 W")
         self.assertEqual((d["heizstab_phase1"]["action"], d["heizstab_phase1"]["reason"]),
                          ("keep_off", "below_start_threshold"))
+        # Budget-Zahlen der Phasen stehen einmal im Schnappschuss, nicht in jeder Phase
+        self.assertEqual(snap["phases"], {"budget_w": 820, "target_phases": 0, "running": 0, "threshold_w": 1100})
+        for i in (1, 2, 3):
+            self.assertNotIn("data", d[f"heizstab_phase{i}"])
+        self.assertEqual(decisions.device_data(snap, d["heizstab_phase1"]),
+                         {"budget_w": 820, "target_phases": 0, "running": 0, "threshold_w": 1100, "rest_w": 820})
+        self.assertEqual(decisions.reason_text(snap, d["heizstab_phase1"]),
+                         "Überschuss 820 W unter der Startschwelle 1100 W")
         self.assertEqual(d["wallbox_control"]["reason"], "wallbox_disabled")
         self.assertEqual(decisions.latest(), snap)
         for dev in snap["devices"]:
@@ -355,8 +365,8 @@ class SnapshotTest(TempDb):
         d = self.by_id(snap)
         self.assertEqual((d["heizstab_phase1"]["action"], d["heizstab_phase1"]["reason"]),
                          ("keep_on", "failsafe_global"))
-        self.assertEqual(d["heizstab_phase1"]["data"]["unreadable"], ["Hauptzähler"])
-        self.assertIn("Hauptzähler nicht lesbar", reasons.text("failsafe_global", d["heizstab_phase1"]["data"]))
+        self.assertNotIn("data", d["heizstab_phase1"])
+        self.assertIn("Hauptzähler nicht lesbar", decisions.reason_text(snap, d["heizstab_phase1"]))
         self.assertIn({"id": "main_meter", "name": "Hauptzähler", "offline_since": snap["ts"]}, snap["health"])
 
     def test_max_temp_and_unknown_phase_in_snapshot(self):
@@ -379,6 +389,7 @@ class SnapshotTest(TempDb):
         self.assertTrue(res.summer_mode_heating)
         d = self.by_id(snap)["heizstab_phase1"]
         self.assertEqual((d["action"], d["reason"], d["data"]["temp_c"]), ("turn_on", "summer_mode_grid_heat", 41.0))
+        self.assertNotIn("phases", snap)
         self.assertTrue(snap["summer_mode_heating"])
 
     def test_no_addresses_or_secrets_in_snapshot(self):
@@ -389,6 +400,18 @@ class SnapshotTest(TempDb):
         self.assertNotRegex(text, r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}")
         self.assertNotRegex(text, r"(?i)([0-9a-f]{2}:){5}[0-9a-f]{2}")
         self.assertNotRegex(text, r"(?i)https?://|token|passw|pwd|api[_-]?key|sk-")
+
+    def test_phase_specific_numbers_stay_at_the_phase(self):
+        cfg = self.config()
+        db.log_phase_change(1, "on")                                   # Phase 1 läuft seit eben: Mindestlaufzeit
+        cas = self.cascade(cfg, main=1500.0, heater=1500.0, pv=0.0).run_cascade()
+        res = self.controller(cfg, ph=(True, False, False), main=1500.0, heater=1500.0, pv=0.0).run()
+        snap = decisions.build(cfg, cas, res, datetime(2026, 10, 14, 14, 32, tzinfo=TZ))
+        d = self.by_id(snap)
+        self.assertEqual(d["heizstab_phase1"]["reason"], "min_on_time")
+        self.assertEqual(list(d["heizstab_phase1"]["data"]), ["remaining_s"])
+        self.assertNotIn("data", d["heizstab_phase2"])
+        self.assertRegex(decisions.reason_text(snap, d["heizstab_phase1"]), r"Mindestlaufzeit läuft noch \(4\d\d s\)")
 
     def test_record_run_never_raises(self):
         cfg = self.config()
@@ -410,6 +433,79 @@ class SnapshotTest(TempDb):
             decisions.save(decisions.build(cfg, None, None, (now - timedelta(hours=hours)).replace(tzinfo=TZ)))
         self.assertEqual(db.prune(now)["decision_snapshot"], 2)
         self.assertEqual(len(decisions.snapshots()), 2)
+
+
+class OpenHabCheckTest(TempDb):
+    RAW = {"openhab": {"url": "http://192.168.2.5:8080", "token": "oh.geheim"}}
+
+    def at(self, minute):
+        return datetime(2026, 10, 14, 12, minute, tzinfo=TZ)
+
+    def test_every_five_minutes_short_timeout_no_token(self):
+        calls = []
+
+        def get(url, timeout, headers):
+            calls.append((url, timeout, headers))
+            return SimpleNamespace(status_code=200)
+        self.assertEqual([decisions.check_openhab(self.RAW, self.at(m), get=get) for m in range(0, 11)],
+                         [True, None, None, None, None, True, None, None, None, None, True])
+        self.assertEqual(calls[0], ("http://192.168.2.5:8080/rest/", 2.0, {"Accept": "application/json"}))
+        self.assertEqual(decisions.health_events(), [])                # erreichbar von Anfang an: kein Ereignis
+
+    def test_outage_without_due_schedule_is_logged_without_address(self):
+        def dead(url, timeout, headers):
+            raise ConnectionError(f"HTTPConnectionPool(host='192.168.2.5', port=8080): {url}")
+        self.assertFalse(decisions.check_openhab(self.RAW, self.at(0), get=dead))
+        self.assertFalse(decisions.check_openhab(self.RAW, self.at(5), get=dead))
+        self.assertFalse(decisions.check_openhab(self.RAW, self.at(10),
+                                                 get=lambda *a, **k: SimpleNamespace(status_code=503)))
+        self.assertTrue(decisions.check_openhab(self.RAW, self.at(15), get=lambda *a, **k: SimpleNamespace(status_code=200)))
+        ev = list(reversed(decisions.health_events()))
+        self.assertEqual([(e["device_id"], e["event"], e["ts"][11:16]) for e in ev],
+                         [("openhab", "offline_ab", "12:00"), ("openhab", "wieder_da", "12:15")])
+        self.assertEqual(ev[0]["detail"], "ConnectionError")
+        self.assertNotIn("192.168", json.dumps(ev))
+
+    def test_no_url_no_check_and_never_raises(self):
+        self.assertIsNone(decisions.check_openhab({}, self.at(0), get=lambda *a, **k: 1 / 0))
+        self.assertIsNone(decisions.check_openhab(None, self.at(0)))
+        self.assertFalse(decisions.check_openhab(self.RAW, self.at(0), get=lambda *a, **k: 1 / 0))
+
+    def test_error_text_from_schedule_runs_is_scrubbed(self):
+        decisions.note_health("openhab", False, self.at(0),
+                              "GET /items: HTTPConnectionPool(host='192.168.2.5', port=8080): Max retries "
+                              "http://192.168.2.5:8080/rest/items aa:bb:cc:dd:ee:ff sk-proj-AbCd1234")
+        detail = decisions.health_events()[0]["detail"]
+        for frag in ("192.168", "8080", "aa:bb", "AbCd"):
+            self.assertNotIn(frag, detail)
+        schedule_log.record(schedule_log.HEATING, 1, "wohnen", "openhab_error", self.at(0),
+                            message="HTTPConnectionPool(host='192.168.2.5', port=8080) http://oh:8080/rest")
+        msg = schedule_log.results()[0]["message"]
+        self.assertNotIn("192.168", msg)
+        self.assertNotIn("http", msg)
+
+
+class WallboxTextTest(TempDb):
+    """Wallbox-Texte in Log und /api/status sind deutsch; die Entscheidung selbst ist dieselbe."""
+
+    def test_reasons_are_german(self):
+        c = Controller(self.config(wallbox={"enabled": True, "url": "http://wb"}))
+        st = WallboxStatus(pv_surplus_active=False, force_state=0, car_state=1)
+        cases = [(st, None), (None, None), (None, "go-e-Status nicht lesbar."),
+                 (WallboxStatus(pv_surplus_active=True, force_state=1, car_state=3), None),
+                 (WallboxStatus(pv_surplus_active=True, force_state=0, car_state=3), None)]
+        actions = []
+        for status, err in cases:
+            _s, d = c._decide_wallbox(status, err)
+            actions.append(d.action)
+            self.assertNotRegex(d.reason, r"(?i)\b(is not|will not|disabled|initialised|could not|unplugged|switching)\b")
+        self.assertEqual(actions, [WallboxAction.SKIPPED, WallboxAction.ERROR, WallboxAction.ERROR,
+                                   WallboxAction.RELEASE, WallboxAction.UNCHANGED])
+        _s, d = c._decide_wallbox(st, None)
+        self.assertIn("nicht im PV-Überschussmodus", d.reason)
+        self.assertEqual((d.target_logic_mode, d.target_amp), (4, c.cfg.wallbox.eco_amps))   # Auto-Rückstellung bleibt
+        c2 = Controller(self.config())
+        self.assertEqual(c2._decide_wallbox(None, None)[1].reason, "Wallbox in der Config deaktiviert.")
 
 
 class HealthEventTest(TempDb):

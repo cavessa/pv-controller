@@ -18,6 +18,8 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 import db
+import reasons
+import redact
 import suntime
 from cascade_plan import BATTERY
 from models import ControllerResult, PhaseAction
@@ -26,6 +28,10 @@ log = logging.getLogger(__name__)
 
 OFFLINE, ONLINE = "offline_ab", "wieder_da"
 PERGOLA_DARK_W = 100          # Haupt-WR unter 100 W: die Pergola darf ohne Sonne aus sein
+OPENHAB_CHECK_MIN = 5         # openHAB-Erreichbarkeit alle 5 min prüfen …
+OPENHAB_CHECK_TIMEOUT_S = 2.0 # … mit kurzem Timeout (der Cron-Lauf darf nicht hängen)
+# Zahlen, die für alle drei Heizstab-Phasen gleich sind: einmal in snap["phases"]
+PHASE_SHARED = ("budget_w", "budget_down_w", "target_phases", "running", "threshold_w", "rest_w")
 _initialized: set[str] = set()
 
 # Geräte-IDs im Ereignislog → Name für Anzeige/Chat (Kaskaden-Shellys: "cascade:<id>" mit eigenem Namen)
@@ -110,6 +116,8 @@ def health_update(states: dict[str, dict[str, Any]], now: Optional[datetime] = N
             else:
                 continue
             name = st.get("name") or DEVICE_NAMES.get(dev, dev)
+            if ev["detail"]:
+                ev["detail"] = redact.scrub_addresses(redact.redact(str(ev["detail"])))[:200]
             conn.execute("INSERT INTO device_health_event (ts, device_id, name, event, expected, detail) "
                          "VALUES (?, ?, ?, ?, ?, ?)", (ts, dev, name, ev["event"], int(ev["expected"]), ev["detail"]))
             out.append({"ts": ts, "device_id": dev, "name": name, **ev})
@@ -262,15 +270,30 @@ def build(config: Any, cascade: Optional[dict], result: Optional[ControllerResul
     seen = set()
     for d in cascade.get("devices") or []:
         seen.add(d["id"])
-        devices.append(_entry(d["id"], d.get("action") or "none", d.get("code") or "", d.get("data"),
+        data = dict(d.get("data") or {})
+        if "budget_w" in data and data.get("rest_w") == data["budget_w"]:
+            data.pop("rest_w")                        # gleich dem Budget: device_data ergänzt es beim Lesen
+        devices.append(_entry(d["id"], d.get("action") or "none", d.get("code") or "", data,
                               name=d.get("name"), type=d.get("type"), on=bool(d.get("is_on"))))
     if BATTERY not in seen:
         devices.insert(0, _entry(BATTERY, "none", "not_in_cascade", name="Batterie", type="zendure"))
     if result is not None:
+        # Budget-Zahlen der Phasen stehen einmal in snap["phases"], nicht in jeder Phase (device_data fügt sie
+        # beim Lesen wieder zusammen); an der Phase bleibt nur, was sie selbst betrifft (z. B. remaining_s).
+        shared: dict[str, Any] = {}
+        for d in result.decisions:
+            for k in PHASE_SHARED:
+                if k in (d.data or {}) and k not in shared:
+                    shared[k] = d.data[k]
+        if shared.get("rest_w") == shared.get("budget_w"):
+            shared.pop("rest_w", None)
+        if critical:
+            shared["unreadable"] = names
+        if shared:
+            snap["phases"] = _clean(shared)
         for i, d in enumerate(result.decisions, start=1):
-            data = dict(d.data or {})
-            if d.code == "failsafe_global":
-                data["unreadable"] = names
+            data = {k: v for k, v in (d.data or {}).items() if k not in PHASE_SHARED or shared.get(k) != v}
+            data.pop("rest_w", None) if data.get("rest_w") == shared.get("budget_w") else None
             devices.append(_entry(f"heizstab_phase{i}", _phase_action(d), d.code, data,
                                   error=d.execution_error, blind=True if d.blind else None))
         wd = result.wallbox_decision
@@ -292,6 +315,53 @@ def build(config: Any, cascade: Optional[dict], result: Optional[ControllerResul
     if r is not None and r.heater_power_source != "meter":
         snap["substitutes"] = {"heater_w": r.heater_power_source}
     return snap
+
+
+def device_data(snap: dict[str, Any], dev: dict[str, Any]) -> dict[str, Any]:
+    """Zahlen eines Geräte-Eintrags; bei Heizstab-Phasen ergänzt um die gemeinsamen aus ``snap["phases"]``."""
+    data = dict(dev.get("data") or {})
+    if str(dev.get("id", "")).startswith("heizstab_phase"):
+        data = {**(snap.get("phases") or {}), **data}
+    if "rest_w" not in data and "budget_w" in data:
+        data["rest_w"] = data["budget_w"]
+    return data
+
+
+def reason_text(snap: dict[str, Any], dev: dict[str, Any]) -> str:
+    """Deutscher Kurztext zum Grund eines Geräte-Eintrags."""
+    return reasons.text(dev.get("reason"), device_data(snap, dev))
+
+
+def check_openhab(raw: Optional[dict], now: Optional[datetime] = None, every_min: int = OPENHAB_CHECK_MIN,
+                  timeout_s: float = OPENHAB_CHECK_TIMEOUT_S, get: Any = None) -> Optional[bool]:
+    """Leichter Erreichbarkeits-Check für openHAB (``GET /rest/``, kurzes Timeout), alle ``every_min`` Minuten.
+
+    Damit landen Ausfälle auch ohne fälligen Zeitplan im Ereignislog. Nur lesen. Liefert True/False,
+    None wenn nicht geprüft (falsche Minute, keine URL). Wirft nie.
+    """
+    try:
+        now = now or _now()
+        url = ((raw or {}).get("openhab") or {}).get("url")
+        if not url or now.minute % max(1, int(every_min)) != 0:
+            return None
+        base = str(url).rstrip("/")
+        rest = base if base.endswith("/rest") else base + "/rest"
+        detail = None
+        try:
+            if get is None:
+                import requests
+                get = requests.get
+            r = get(rest + "/", timeout=timeout_s, headers={"Accept": "application/json"})
+            ok = 200 <= r.status_code < 300
+            if not ok:
+                detail = f"HTTP {r.status_code}"
+        except Exception as e:
+            ok, detail = False, type(e).__name__          # nur die Fehlerart – keine URL im Ereignislog
+        note_health("openhab", ok, now, detail)
+        return ok
+    except Exception:
+        log.debug("openHAB-Check fehlgeschlagen", exc_info=True)
+        return None
 
 
 def save(snap: dict[str, Any]) -> int:
@@ -324,6 +394,7 @@ def record_run(config: Any, raw: Optional[dict], cascade: Optional[dict], result
     """Nach einem Cron-Lauf: Geräte-Ereignisse fortschreiben und den Schnappschuss speichern. Wirft nie."""
     try:
         now = now or _now()
+        check_openhab(raw, now)
         if result is not None:
             try:
                 health_update(collect_health(config, result, now, suntime.location(raw or {})), now)

@@ -495,13 +495,13 @@ class Controller:
         if not cfg.enabled:
             return None, None
         if self.goe is None:
-            return None, "Wallbox client not initialised."
+            return None, "Wallbox-Client nicht eingerichtet."
 
         try:
             raw = self.goe.get_status()
         except GoeError as e:
-            log.error("go-e read failed: %s", e)
-            return None, "Could not read go-e status."
+            log.error("go-e: Lesen fehlgeschlagen: %s", e)
+            return None, "go-e-Status nicht lesbar."
 
         status = self._parse_wallbox_status(raw)
         log.info(
@@ -535,19 +535,19 @@ class Controller:
         cfg = self.cfg.wallbox
 
         if not cfg.enabled:
-            log.info("Wallbox disabled in config. Skipping wallbox control.")
+            log.info("Wallbox in der Config deaktiviert – keine Wallbox-Steuerung.")
             return None, WallboxDecision(
                 action=WallboxAction.SKIPPED,
                 target_force_state=None,
-                reason="Wallbox disabled in config.",
+                reason="Wallbox in der Config deaktiviert.",
             )
 
         if status is None:
-            reason = read_error or "Wallbox client not initialised."
+            reason = read_error or "Wallbox-Client nicht eingerichtet."
             return None, WallboxDecision(
                 action=WallboxAction.ERROR,
                 target_force_state=None,
-                reason=f"{reason} fail_safe=no_change.",
+                reason=f"{reason} Fail-safe: keine Änderung.",
             )
 
         if cfg.only_control_when_pv_surplus_active and not status.pv_surplus_active:
@@ -555,8 +555,8 @@ class Controller:
                 action=WallboxAction.SKIPPED,
                 target_force_state=None,
                 reason=(
-                    "go-e PV surplus mode is not active. "
-                    "Manual/normal charging will not be touched."
+                    "go-e ist nicht im PV-Überschussmodus (Eco). "
+                    "Manuelles/normales Laden wird nicht angefasst."
                 ),
             )
             if status.car_state == 1 and cfg.auto_reset_on_unplug:
@@ -564,7 +564,7 @@ class Controller:
                 decision.target_amp = cfg.eco_amps
                 decision.target_psm = cfg.eco_phases
                 decision.reason += (
-                    " Auto-restore: car unplugged, switching to Eco mode "
+                    " Automatisch zurück: Auto abgesteckt, wechsle in den Eco-Modus "
                     f"({cfg.eco_phases}-phasig, {cfg.eco_amps}A)."
                 )
             return status, decision
@@ -589,111 +589,111 @@ class Controller:
             target = decision.target_force_state
             if target not in (0, 1):
                 decision.execution_error = (
-                    f"refusing to set forceState={target} (only 0 or 1 allowed)"
+                    f"forceState={target} wird nicht gesetzt (nur 0 oder 1 erlaubt)"
                 )
                 log.error(decision.execution_error)
             elif self._read_only:
                 log.info(
-                    "READ-ONLY: would set go-e forceState to %d (no switching).",
+                    "READ-ONLY: würde go-e forceState auf %d setzen (kein Schalten).",
                     target,
                 )
                 decision.executed = False
             elif not self.cfg.runtime.enabled:
                 log.info(
-                    "Controller disabled (runtime.enabled=false): not setting go-e "
-                    "forceState to %d.",
+                    "Steuerung aus (runtime.enabled=false): go-e forceState wird nicht "
+                    "auf %d gesetzt.",
                     target,
                 )
                 decision.executed = False
             elif self.cfg.runtime.dry_run:
-                log.info("DRY-RUN: would set go-e forceState to %d.", target)
+                log.info("DRY-RUN: würde go-e forceState auf %d setzen.", target)
                 decision.executed = False
             elif self.goe is None:
-                decision.execution_error = "wallbox client not initialised"
+                decision.execution_error = "Wallbox-Client nicht eingerichtet"
                 log.error(decision.execution_error)
             else:
                 try:
                     self.goe.set_force_state(target)
                     decision.executed = True
-                    log.info("go-e forceState set to %d.", target)
+                    log.info("go-e forceState auf %d gesetzt.", target)
                 except (GoeError, ValueError) as e:
                     decision.execution_error = str(e)
-                    log.error("go-e set frc=%d failed: %s", target, e)
+                    log.error("go-e: frc=%d setzen fehlgeschlagen: %s", target, e)
 
     def _execute_amp(self, decision: WallboxDecision) -> None:
         target = decision.target_amp
         if target is None:
             return
         if self._read_only:
-            log.info("READ-ONLY: would set go-e amp to %d.", target)
+            log.info("READ-ONLY: würde go-e amp auf %d setzen.", target)
             return
         if not self.cfg.runtime.enabled:
-            log.info("Controller disabled: not setting go-e amp to %d.", target)
+            log.info("Steuerung aus: go-e amp wird nicht auf %d gesetzt.", target)
             return
         if self.cfg.runtime.dry_run:
-            log.info("DRY-RUN: would set go-e amp to %d.", target)
+            log.info("DRY-RUN: würde go-e amp auf %d setzen.", target)
             return
         if self.goe is None:
-            decision.amp_execution_error = "wallbox client not initialised"
+            decision.amp_execution_error = "Wallbox-Client nicht eingerichtet"
             log.error(decision.amp_execution_error)
             return
         try:
             self.goe.set_amp(target)
             decision.amp_executed = True
-            log.info("go-e amp set to %d.", target)
+            log.info("go-e amp auf %d gesetzt.", target)
         except GoeError as e:
             decision.amp_execution_error = str(e)
-            log.error("go-e set amp=%d failed: %s", target, e)
+            log.error("go-e: amp=%d setzen fehlgeschlagen: %s", target, e)
 
     def _execute_psm(self, decision: WallboxDecision) -> None:
         target = decision.target_psm
         if target is None:
             return
         if self._read_only:
-            log.info("READ-ONLY: would set go-e psm to %d.", target)
+            log.info("READ-ONLY: würde go-e psm auf %d setzen.", target)
             return
         if not self.cfg.runtime.enabled:
-            log.info("Controller disabled: not setting go-e psm to %d.", target)
+            log.info("Steuerung aus: go-e psm wird nicht auf %d gesetzt.", target)
             return
         if self.cfg.runtime.dry_run:
-            log.info("DRY-RUN: would set go-e psm to %d.", target)
+            log.info("DRY-RUN: würde go-e psm auf %d setzen.", target)
             return
         if self.goe is None:
-            decision.psm_execution_error = "wallbox client not initialised"
+            decision.psm_execution_error = "Wallbox-Client nicht eingerichtet"
             log.error(decision.psm_execution_error)
             return
         try:
             self.goe.set_psm(target)
             decision.psm_executed = True
-            log.info("go-e psm set to %d.", target)
+            log.info("go-e psm auf %d gesetzt.", target)
         except (GoeError, ValueError) as e:
             decision.psm_execution_error = str(e)
-            log.error("go-e set psm=%d failed: %s", target, e)
+            log.error("go-e: psm=%d setzen fehlgeschlagen: %s", target, e)
 
     def _execute_lmo(self, decision: WallboxDecision) -> None:
         target = decision.target_logic_mode
         if target is None:
             return
         if self._read_only:
-            log.info("READ-ONLY: would set go-e lmo to %d.", target)
+            log.info("READ-ONLY: würde go-e lmo auf %d setzen.", target)
             return
         if not self.cfg.runtime.enabled:
-            log.info("Controller disabled: not setting go-e lmo to %d.", target)
+            log.info("Steuerung aus: go-e lmo wird nicht auf %d gesetzt.", target)
             return
         if self.cfg.runtime.dry_run:
-            log.info("DRY-RUN: would set go-e lmo to %d.", target)
+            log.info("DRY-RUN: würde go-e lmo auf %d setzen.", target)
             return
         if self.goe is None:
-            decision.logic_mode_execution_error = "wallbox client not initialised"
+            decision.logic_mode_execution_error = "Wallbox-Client nicht eingerichtet"
             log.error(decision.logic_mode_execution_error)
             return
         try:
             self.goe.set_logic_mode(target)
             decision.logic_mode_executed = True
-            log.info("go-e lmo set to %d.", target)
+            log.info("go-e lmo auf %d gesetzt.", target)
         except GoeError as e:
             decision.logic_mode_execution_error = str(e)
-            log.error("go-e set lmo=%d failed: %s", target, e)
+            log.error("go-e: lmo=%d setzen fehlgeschlagen: %s", target, e)
 
     # ---- Hauptlauf -----------------------------------------------------
 
@@ -914,14 +914,14 @@ class Controller:
         self._execute_amp(decision)
         self._execute_psm(decision)
         log.info(
-            "Wallbox Decision: action=%s target_force_state=%s target_lmo=%s",
+            "Wallbox-Entscheidung: action=%s target_force_state=%s target_lmo=%s",
             decision.action.value,
             decision.target_force_state,
             decision.target_logic_mode,
         )
-        err = "" if not decision.execution_error else f" [ERR: {decision.execution_error}]"
-        lmo_err = "" if not decision.logic_mode_execution_error else f" [LMO-ERR: {decision.logic_mode_execution_error}]"
-        log.info("Reason: %s%s%s", decision.reason, err, lmo_err)
+        err = "" if not decision.execution_error else f" [FEHLER: {decision.execution_error}]"
+        lmo_err = "" if not decision.logic_mode_execution_error else f" [LMO-FEHLER: {decision.logic_mode_execution_error}]"
+        log.info("Grund: %s%s%s", decision.reason, err, lmo_err)
         return status, decision
 
     # ---- Logging-Helfer ------------------------------------------------
