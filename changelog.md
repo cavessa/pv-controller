@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-13 – Zeitplan-Formular: Meldung „Uhrzeit“ geprüft, Hinweis bei leerer Uhrzeit, Ablauf-Test
+
+**Meldung:** In Prod ließen sich Rollladen-Zeitpläne mit Zeittyp „Uhrzeit“ nicht anlegen. **In Dev nicht nachstellbar** (Chromium, 390–2000 px, Hintereingang/Wohnen links = openHAB, Schlafzimmer = PV Controller, Heizung Wohnen): Radio „Uhrzeit“ blendet das Uhrzeit-Feld ein und ±Minuten/Grenzen aus, Wechsel Sonnenuntergang → Uhrzeit → Sonnenuntergang lässt keine alten Werte im Request (`{"kind":"time","time":"06:45",…}`), Server antwortet 200, keine JS-Fehler. Im Prod-Log steht für den Zeitraum kein abgelehnter und kein „Uhrzeit“-Request – der Fehler entsteht also im Browser vor dem Absenden.
+- Einzige gefundene Schwäche: Bei leerem oder halb getipptem Uhrzeit-Feld ging der Request mit `time: ""` raus und der Server antwortete 400 „Uhrzeit muss HH:MM sein“. Jetzt prüft das Formular vorher (`_whenError` in `web/heating.js`, für Heizung und Rollläden) und zeigt „Bitte eine Uhrzeit eintragen (Stunde und Minute).“ ohne Request.
+- **Test** `tests/test_schedule_form_flow.py` (3): führt den echten Formular-Code aus `heating.js` in node aus (Zustand wie nach den Klicks: Sonnenuntergang mit Offset/Grenzen → Uhrzeit → zurück → Sonnenaufgang → Uhrzeit, Bearbeiten Sonne → Uhrzeit), prüft sichtbare Felder und Request-Body und schickt jeden Body durch die Server-Validierung (Rollladen mit PV Controller und mit openHAB-Regel, POST und PUT). Suite: 446.
+
 ## 2026-10-13 – System (außerhalb des Repos): Home, `~/backup`, `~/.ssh` und `backup.sh` abgesichert
 
 Kein Code geändert. Vorab gelesen: Samba gibt nur openHAB-Verzeichnisse frei (nichts unter `/home/openhabian`), kein Docker, einzige systemd-Unit mit Home-Pfad ist `pvcontroller-web` (`User=openhabian`), alle Cron-Jobs laufen aus der Crontab von `openhabian`. Einziger fremder Zugriff: openHAB (Benutzer `openhab`) führt `/home/openhabian/opendoor.sh` und `gds3710-feha/tuerskript.sh` aus (Türöffner) – braucht nur Lesen/Durchgehen, deshalb `755` statt `750`.

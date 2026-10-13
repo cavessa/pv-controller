@@ -393,6 +393,11 @@ function _whenBody(f) {
   return b;
 }
 
+// Vor dem Absenden: bei „Uhrzeit“ muss das Feld vollständig sein (leer/halb getippt liefert der Browser als "")
+function _whenError(f) {
+  return f.kind === "time" && !/^\d\d:\d\d$/.test(f.time || "") ? "Bitte eine Uhrzeit eintragen (Stunde und Minute)." : "";
+}
+
 // Eintrag → Formularwerte (Bearbeiten)
 function _whenFromEntry(e) {
   return { kind: e.kind || "time", time: e.time || "", offset: e.offset_min || 0, not_before: e.not_before || "",
@@ -448,6 +453,8 @@ function _schedPanel(r, s) {
 async function _schedAdd(roomId) {
   const f = HEAT.form[roomId];
   const msg = document.getElementById("heat-sched-msg-" + roomId);
+  const err = _whenError(f);
+  if (err) { if (msg) { msg.textContent = err; msg.className = "form-msg error"; } return; }
   const body = { room_id: roomId, setpoint: Number(f.setpoint), ..._whenBody(f) };
   if (f.date) body.date = f.date; else body.days = f.days;
   try {

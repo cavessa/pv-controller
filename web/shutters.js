@@ -260,6 +260,8 @@ const _SHUT_RESULT = { sent: "gefahren", unchanged: "stand schon dort", dry_run:
 async function _shutSchedAdd(id) {
   const f = SHUT.form[id];
   const msg = document.getElementById("shut-sched-msg-" + id);
+  const err = _whenError(f);
+  if (err) { if (msg) { msg.textContent = err; msg.className = "form-msg error"; } return; }
   const body = { shutter_id: id, action: f.action, ..._whenBody(f) };
   if (f.action === "position") body.position = Number(f.position);
   if (f.date) body.date = f.date; else body.days = f.days;
