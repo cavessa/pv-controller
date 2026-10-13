@@ -1636,3 +1636,33 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 .heat-settings > label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-dim); }
 .heat-settings > label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
 .heat-settings > label input[type="number"] { background: rgba(255,255,255,0.04); border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 8px 10px; font-family: inherit; font-size: 13px; }
+
+/* Heizung: Zeitpläne */
+.heat-toggles { display: flex; gap: 18px; flex-wrap: wrap; }
+.heat-next { color: var(--text-dim); }
+.heat-off { color: var(--warn); }
+.heat-alert { margin-top: 8px; font-size: 12px; color: var(--warn); }
+.heat-sched { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 8px; display: grid; gap: 6px; }
+.heat-sched-row { display: grid; grid-template-columns: 42px 56px 1fr auto auto; align-items: center; gap: 6px; font-size: 13px; }
+.heat-sched-row.off { opacity: 0.45; }
+.heat-sched-row .heat-last { grid-column: 1 / -1; color: var(--text-muted); font-size: 11px; margin-top: -2px; }
+.heat-sched-time { font-variant-numeric: tabular-nums; }
+.heat-chips { display: flex; flex-wrap: wrap; gap: 2px; }
+.heat-chip { font-size: 9px; padding: 1px 3px; border-radius: 6px; border: 1px solid var(--line); color: var(--text-muted); background: none; line-height: 1.3; }
+.heat-chip.on { color: var(--text); border-color: var(--accent); background: rgba(255,255,255,0.06); }
+.heat-chip.once { color: var(--text-dim); }
+.heat-chips.pick .heat-chip { font-size: 12px; padding: 5px 8px; cursor: pointer; }
+.heat-chips.pick .heat-chip.quick { color: var(--text-dim); border-style: dashed; }
+.heat-del { background: none; border: none; color: var(--text-muted); font-size: 14px; padding: 2px 6px; cursor: pointer; }
+.heat-del:hover { color: var(--error); }
+.heat-switch { position: relative; width: 30px; height: 17px; display: inline-block; }
+.heat-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+.heat-switch span { position: absolute; inset: 0; border-radius: 9px; background: rgba(255,255,255,0.12); transition: background .15s; cursor: pointer; }
+.heat-switch span::after { content: ""; position: absolute; width: 13px; height: 13px; left: 2px; top: 2px; border-radius: 50%; background: var(--text-dim); transition: transform .15s; }
+.heat-switch input:checked + span { background: var(--accent); }
+.heat-switch input:checked + span::after { transform: translateX(13px); background: #fff; }
+.heat-sched-form { display: grid; gap: 8px; margin-top: 6px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.heat-form-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.heat-form-row label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-muted); }
+.heat-form-row input { background: rgba(255,255,255,0.04); border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 6px 8px; font-family: inherit; font-size: 13px; color-scheme: dark; }
+.heat-form-row input[type="number"] { width: 80px; }

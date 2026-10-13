@@ -661,6 +661,7 @@ RETENTION_DAYS = {
     "pv_hourly_log": 90,
     "minute_tables": 35,       # main_meter_min, zendure_min (Tagesverlauf-Ansicht reicht so weit zurück)
     "heater_budget_log": 14,
+    "heating_schedule_once": 7,   # einmalige Heizungs-Zeitpläne: 7 Tage nach ihrem Datum
 }
 PRUNE_BATCH = 5000
 PRUNE_AFTER_HOUR = 3
@@ -686,6 +687,8 @@ def _prune_rules(now: datetime) -> list[tuple[str, str, str, tuple]]:
         ("main_meter_min", "main_meter_min", "ts < ?", (cut(R["minute_tables"], "%Y-%m-%d %H:%M", now),)),
         ("zendure_min", "zendure_min", "ts < ?", (cut(R["minute_tables"], "%Y-%m-%d %H:%M", now),)),
         ("heater_budget_log", "heater_budget_log", "ts < ?", (cut(R["heater_budget_log"], "%Y-%m-%d %H:%M", now),)),
+        ("heating_schedule (einmalig)", "heating_schedule", "date IS NOT NULL AND date < ?",
+         (cut(R["heating_schedule_once"], "%Y-%m-%d", now),)),
     ]
 
 

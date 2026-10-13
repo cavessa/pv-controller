@@ -105,6 +105,7 @@
   },
   "heating": {
     "enabled": false,
+    "schedules_enabled": false,
     "setpoint_min": 5,
     "setpoint_max": 26,
     "rooms": [

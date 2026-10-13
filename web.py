@@ -31,6 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import heating as _heating
+import heating_schedule as _hsched
 from clients.goe_client import GoeClient, GoeError
 from config import Config, load_config
 from controller import ControllerMode, run_controller
@@ -1837,10 +1838,26 @@ def heating_status(response: Response) -> dict[str, Any]:
         "setpoint_step": _heating.SETPOINT_STEP,
         "dry_run": _heating_dry_run(raw),
         "openhab_configured": client is not None,
+        "schedules_enabled": hcfg.schedules_enabled,
     }
     if not hcfg.enabled or client is None:
         return {**base, "ok": True, "error": None, "rooms": []}
-    return {**base, **_heating.read_status(hcfg, client)}
+    st = {**base, **_heating.read_status(hcfg, client)}
+    try:
+        nxt = _hsched.next_changes(_hsched.list_schedules(), datetime.now(_hsched.TZ))
+        alerts = _hsched.alerts()
+    except Exception as e:  # Zeitplan-DB darf die Anzeige nicht blockieren
+        log.warning("heating: Zeitpläne nicht lesbar: %s", e)
+        nxt, alerts = {}, {}
+    for r in st["rooms"]:
+        r["next"] = nxt.get(r["id"])
+        a = alerts.get(r["id"])
+        if a and a["status"] == "mismatch" and r.get("setpoint") is not None \
+                and abs(r["setpoint"] - a["setpoint"]) < 0.01:
+            _hsched.clear_verify(r["id"])        # Gerät meldet inzwischen den gesendeten Wert
+            a = None
+        r["alert"] = a["message"] if a else None
+    return st
 
 
 class _HeatingSetpoint(BaseModel):
@@ -1858,6 +1875,10 @@ def _heating_send(raw, hcfg, client, room, value: float, source: str) -> dict[st
         _app_log(f"FEHLER: {room.name} Soll → {value:g} °C ({source}): {e}", logging.WARNING)
         return {"room_id": room.id, "ok": False, "error": str(e)}
     _app_log(f"{room.name} Soll → {value:g} °C ({source})")
+    try:
+        _hsched.clear_verify(room.id)          # neuer Sollwert ersetzt eine alte Abweichungsmeldung
+    except Exception as e:
+        log.warning("heating: Rückprüfung nicht zurückgesetzt: %s", e)
     return {"room_id": room.id, "ok": True, "dry_run": False, "setpoint": value}
 
 
@@ -1939,14 +1960,17 @@ class _HeatingConfigUpdate(BaseModel):
     setpoint_min: float
     setpoint_max: float
     rooms: list[dict[str, Any]]
+    schedules_enabled: Optional[bool] = None    # None = unverändert lassen
 
 
 @app.put("/api/heating/config")
 def heating_config_put(body: _HeatingConfigUpdate) -> dict[str, Any]:
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         current = json.load(f)
+    old_se = bool((current.get("heating") or {}).get("schedules_enabled", False))
     block = {
         "enabled": body.enabled,
+        "schedules_enabled": old_se if body.schedules_enabled is None else body.schedules_enabled,
         "setpoint_min": body.setpoint_min,
         "setpoint_max": body.setpoint_max,
         "rooms": [
@@ -1963,4 +1987,72 @@ def heating_config_put(body: _HeatingConfigUpdate) -> dict[str, Any]:
     if block["enabled"] and not (new_cfg.get("openhab") or {}).get("url"):
         raise HTTPException(400, "openhab.url fehlt in config.json")
     backup = _write_config(new_cfg)
+    if block["schedules_enabled"] != old_se:
+        _app_log(f"Zeitpläne {'aktiviert' if block['schedules_enabled'] else 'deaktiviert'} (Settings)")
     return {"ok": True, "backup": backup, "heating": block}
+
+
+# ── Heizung: Zeitpläne ──────────────────────────────────────────────────────
+
+
+class _HeatingScheduleCreate(BaseModel):
+    room_id: str
+    time: str
+    setpoint: float
+    days: Optional[list[str]] = None
+    date: Optional[str] = None
+    note: Optional[str] = None
+
+
+class _HeatingSchedulePatch(BaseModel):
+    enabled: bool
+
+
+@app.get("/api/heating/schedules")
+def heating_schedules(response: Response) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    raw, hcfg, _client = _heating_ctx()
+    now = datetime.now(_hsched.TZ)
+    items = _hsched.list_schedules()
+    return {
+        "schedules_enabled": hcfg.schedules_enabled,
+        "heating_enabled": hcfg.enabled,
+        "dry_run": _heating_dry_run(raw),
+        "now": now.isoformat(timespec="minutes"),
+        "items": items,
+        "next": _hsched.next_changes(items, now),
+    }
+
+
+@app.post("/api/heating/schedules")
+def heating_schedule_create(body: _HeatingScheduleCreate) -> dict[str, Any]:
+    _raw, hcfg, _client = _heating_ctx()
+    try:
+        fields = _hsched.validate_entry(hcfg, body.room_id, body.setpoint, body.time,
+                                        days=body.days, date=body.date or None)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    entry = _hsched.create_schedule(fields, source="ui", note=(body.note or "").strip()[:200])
+    room = hcfg.room(body.room_id)
+    when = entry["date"] or ",".join(entry["days"])
+    _app_log(f"Zeitplan angelegt: {room.name} {entry['time']} → {entry['setpoint']:g} °C ({when})")
+    return entry
+
+
+@app.patch("/api/heating/schedules/{sid}")
+def heating_schedule_patch(sid: int, body: _HeatingSchedulePatch) -> dict[str, Any]:
+    entry = _hsched.set_enabled(sid, body.enabled)
+    if entry is None:
+        raise HTTPException(404, f"Zeitplan {sid} unbekannt")
+    return entry
+
+
+@app.delete("/api/heating/schedules/{sid}")
+def heating_schedule_delete(sid: int) -> dict[str, Any]:
+    entry = _hsched.get_schedule(sid)
+    if entry is None or not _hsched.delete_schedule(sid):
+        raise HTTPException(404, f"Zeitplan {sid} unbekannt")
+    _raw, hcfg, _client = _heating_ctx()
+    room = hcfg.room(entry["room_id"])
+    _app_log(f"Zeitplan gelöscht: {room.name if room else entry['room_id']} {entry['time']} → {entry['setpoint']:g} °C")
+    return {"ok": True, "id": sid}

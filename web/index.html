@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=66">
+  <link rel="stylesheet" href="/static/styles.css?v=68">
 </head>
 <body>
   <div class="app-shell">
@@ -647,6 +647,7 @@
     <section id="tab-heizung" class="tab-panel">
       <div id="heat-banner" class="banner hidden"></div>
       <p class="heat-dry hidden" id="heat-dry">Dry-Run: Änderungen werden nur geloggt, nicht an openHAB gesendet.</p>
+      <p class="heat-dry hidden" id="heat-sched-off">Zeitpläne sind nicht aktiv: Pläne werden gespeichert, aber nicht ausgeführt. Einschalten unter Settings → Heizung → „Zeitpläne aktiv“.</p>
       <div id="heat-rooms"><div class="chart-empty">Lade…</div></div>
       <p class="note" id="heat-updated"></p>
     </section>
@@ -853,6 +854,7 @@
           <legend>Heizung (openHAB-Thermostate)</legend>
           <p class="note" id="hs-openhab"></p>
           <label class="check"><input type="checkbox" id="hs-enabled"> Heizung-Tab aktiv</label>
+          <label class="check"><input type="checkbox" id="hs-sched"> Zeitpläne aktiv (der Minuten-Cron führt fällige Pläne aus)</label>
           <label>Sollwert min (°C)<input type="number" step="0.5" min="4.5" max="30.5" id="hs-min"></label>
           <label>Sollwert max (°C)<input type="number" step="0.5" min="4.5" max="30.5" id="hs-max"></label>
           <datalist id="hs-items"></datalist>
@@ -968,6 +970,6 @@
   </div>
 
   <script src="/static/app.js?v=20261013c" defer></script>
-  <script src="/static/heating.js?v=20261013c" defer></script>
+  <script src="/static/heating.js?v=20261013d" defer></script>
 </body>
 </html>

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import logging.handlers
 import sys
+import threading
+import time
 from pathlib import Path
 
 from cascade_service import CascadeService
@@ -37,6 +40,39 @@ def setup_logging(log_file: str) -> None:
     root.addHandler(stream)
 
 
+HEATING_BUDGET_S = 5.0     # Heizungs-Zeitpläne: maximale Gesamtzeit nach der PV-Steuerung
+
+
+def run_heating_schedules(config_path: str, dry_run: bool, budget_s: float | None = None) -> None:
+    """Heizungs-Zeitpläne nach der PV-Steuerung, isoliert: eigener Thread mit hartem Zeitlimit.
+
+    Fehler und hängende openHAB-Requests werden geloggt und nie weitergereicht. Läuft der Thread
+    über das Limit, endet der Cron-Lauf trotzdem (Daemon-Thread); offene Einträge bleiben fällig.
+    """
+    log = logging.getLogger("pv-controller.heating")
+    budget_s = HEATING_BUDGET_S if budget_s is None else budget_s
+    t0 = time.monotonic()
+
+    def work() -> None:
+        try:
+            import heating_schedule
+            with open(config_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            res = heating_schedule.run(raw, dry_run=dry_run, budget_s=budget_s)
+            if res.requests or res.skipped or res.timed_out:
+                log.info("Zeitpläne: %d fällig, %d gesendet, %d übersprungen, %d openHAB-Requests, %.2f s",
+                         res.due, res.sent, res.skipped, res.requests, res.duration_s)
+        except Exception:
+            log.exception("Heizungs-Zeitpläne: Fehler (PV-Steuerung nicht betroffen)")
+
+    th = threading.Thread(target=work, name="heating-schedules", daemon=True)
+    th.start()
+    th.join(budget_s + 0.5)
+    if th.is_alive():
+        log.warning("Heizungs-Zeitpläne: nach %.1f s abgebrochen (openHAB hängt?) – nächste Minute erneut",
+                    time.monotonic() - t0)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="PV-Überschuss Heizstab-Controller")
     parser.add_argument(
@@ -64,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         log.exception("Unerwarteter Fehler im Kaskaden-Durchlauf")
 
+    rc = 0
     try:
         result = Controller(config).run()
         from pv_logger import maybe_log
@@ -76,10 +113,13 @@ def main(argv: list[str] | None = None) -> int:
             )
         except Exception:
             log.warning("append_temp_history fehlgeschlagen", exc_info=True)
-        return 0
     except Exception:
         log.exception("Unerwarteter Fehler im Controller-Lauf")
-        return 1
+        rc = 1
+
+    # Erst nach PV/Heizstab/Wallbox: Heizungs-Zeitpläne (eigenes Zeitlimit, Fehler isoliert)
+    run_heating_schedules(args.config, config.runtime.dry_run)
+    return rc
 
 
 if __name__ == "__main__":

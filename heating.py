@@ -2,7 +2,7 @@
 
 Config (config.json):
   "openhab": {"url": "http://…:8080", "token": "oh.…", "timeout_s": 3},
-  "heating": {"enabled": true, "setpoint_min": 5, "setpoint_max": 26,
+  "heating": {"enabled": true, "schedules_enabled": false, "setpoint_min": 5, "setpoint_max": 26,
               "rooms": [{"id", "name", "setpoint_item", "temp_item",
                          "valve_item", "battery_item", "humidity_item", "mode_item"}]}
 
@@ -48,6 +48,7 @@ class Room:
 @dataclass
 class HeatingConfig:
     enabled: bool = False
+    schedules_enabled: bool = False      # Schalter „Zeitpläne aktiv“ (Default aus)
     setpoint_min: float = 5.0
     setpoint_max: float = 26.0
     rooms: list[Room] = field(default_factory=list)
@@ -91,7 +92,10 @@ def parse_heating(raw: dict) -> HeatingConfig:
         if not kw["temp_item"]:
             raise ValueError(f"heating.rooms[{i}].temp_item is required")
         rooms.append(Room(id=rid, name=name.strip(), **kw))
-    return HeatingConfig(enabled=bool(h.get("enabled", False)), setpoint_min=float(smin),
+    se = h.get("schedules_enabled", False)
+    if not isinstance(se, bool):
+        raise ValueError("heating.schedules_enabled must be true/false")
+    return HeatingConfig(enabled=bool(h.get("enabled", False)), schedules_enabled=se, setpoint_min=float(smin),
                          setpoint_max=float(smax), rooms=rooms)
 
 
