@@ -47,6 +47,7 @@ _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 # Ergebnis der letzten Ausführung (Spalte last_result)
 SENT, UNCHANGED, DRY_RUN, SKIPPED, SUPERSEDED, FAILED = (
     "sent", "unchanged", "dry_run", "skipped", "superseded", "failed")
+RETRY = "retry"     # Senden fehlgeschlagen, ohne last_run: nächste Minute noch einmal fällig
 
 
 # ── DB ──────────────────────────────────────────────────────────────────────
@@ -431,25 +432,47 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
             emit(f"{label}: Zeitbudget erschöpft, nächste Minute erneut", logging.WARNING)
             continue                    # bleibt fällig (Nachhol-Fenster)
         except OpenHabError as e2:
-            emit(f"FEHLER: {label}: {e2}", logging.WARNING)
-            _mark([e["id"]], FAILED, now, disable_once=True)
+            # Ob der Befehl angekommen ist, ist offen (z. B. Lese-Timeout): einmal nächste Minute erneut –
+            # dann wird vorher gelesen, ein schon übernommener Sollwert wird nicht doppelt gesendet.
+            if e.get("last_result") != RETRY:
+                emit(f"FEHLER: {label}: {e2} – nächste Minute einmal erneut", logging.WARNING)
+                _set_result(e["id"], RETRY)
+            else:
+                emit(f"FEHLER: {label}: {e2} – aufgegeben", logging.WARNING)
+                _mark([e["id"]], FAILED, now, disable_once=True)
             continue
         emit(label)
-        _mark([e["id"]], SENT, now, disable_once=True)
-        _verify_start(rid, target, now)
+        _mark_sent(e["id"], rid, target, now)
         res.sent += 1
 
     res.duration_s = clock() - t0
     return res
 
 
-def _verify_start(room_id: str, setpoint: float, now: datetime) -> None:
+def _set_result(sid: int, result: str) -> None:
     with _conn() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO heating_verify (room_id, setpoint, sent_at, attempts, status) "
-            "VALUES (?, ?, ?, 1, 'pending')",
-            (room_id, setpoint, now.isoformat(timespec="seconds")),
-        )
+        conn.execute("UPDATE heating_schedule SET last_result = ? WHERE id = ?", (result, sid))
+
+
+def _mark_sent(sid: int, room_id: str, setpoint: float, now: datetime) -> None:
+    """Gesendet: last_run und Rückprüfung in **einer** Transaktion (bricht der Lauf hier ab, gilt beides
+    oder keins; ohne Eintrag ist er nächste Minute fällig und liest vorher den Sollwert)."""
+    with _conn() as conn:
+        conn.execute("UPDATE heating_schedule SET last_run = ?, last_result = ? WHERE id = ?",
+                     (now.isoformat(timespec="seconds"), SENT, sid))
+        conn.execute("UPDATE heating_schedule SET enabled = 0 WHERE id = ? AND date IS NOT NULL", (sid,))
+        _verify_start(room_id, setpoint, now, conn)
+
+
+def _verify_start(room_id: str, setpoint: float, now: datetime, conn: Optional[sqlite3.Connection] = None) -> None:
+    sql = ("INSERT OR REPLACE INTO heating_verify (room_id, setpoint, sent_at, attempts, status) "
+           "VALUES (?, ?, ?, 1, 'pending')")
+    args = (room_id, setpoint, now.isoformat(timespec="seconds"))
+    if conn is not None:
+        conn.execute(sql, args)
+        return
+    with _conn() as c:
+        c.execute(sql, args)
 
 
 def _verify_update(room_id: str, status: str, reported: Optional[float], message: str,

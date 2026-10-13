@@ -548,6 +548,16 @@ class CascadeService:
             if not ip:
                 log.warning("Kaskade: Shelly %s hat keine IP-Adresse", device["name"])
                 return
+            if self.cfg.runtime.dry_run:
+                # Entscheidung steht (DB/Log wie sonst), nur der Schaltbefehl entfällt
+                log.info(
+                    "DRY-RUN: Kaskade würde Shelly %s %s (%s, Kanal %s) – nicht geschaltet",
+                    device["name"],
+                    "einschalten" if action == "turn_on" else "ausschalten",
+                    ip,
+                    device["shelly_channel"],
+                )
+                return
             try:
                 if action == "turn_on":
                     self.shelly.turn_on(ip, t, device["shelly_channel"])

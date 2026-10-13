@@ -259,13 +259,71 @@ class OpenHabDownTest(DbCase):
         self.run_at(at(TUE, "07:30"), c)
         self.assertEqual(c.calls, [])
 
-    def test_send_error_is_logged_not_retried(self):
+    def test_send_error_retried_once_then_given_up(self):
         e = self.add(days=["di"])
         c = SchedClient()
         c.send_command = mock.Mock(side_effect=OpenHabError("400 Bad Request"))
         self.run_at(at(TUE, "07:00"), c)
+        self.assertEqual(hs.get_schedule(e["id"])["last_result"], hs.RETRY)
+        self.assertIsNone(hs.get_schedule(e["id"])["last_run"])         # nächste Minute fällig
+        self.run_at(at(TUE, "07:01"), c)
         self.assertEqual(hs.get_schedule(e["id"])["last_result"], hs.FAILED)
-        self.assertTrue(any("FEHLER" in m for _, m in self.logs))
+        self.run_at(at(TUE, "07:02"), c)
+        self.assertEqual(c.send_command.call_count, 2)                  # 1 Versuch + 1 Retry, keine Schleife
+        self.assertTrue(any("aufgegeben" in m for _, m in self.logs))
+
+    def test_send_timeout_but_applied_is_not_sent_twice(self):
+        """Lese-Timeout beim Senden, openHAB hat den Befehl aber übernommen."""
+        e = self.add(days=["di"])
+        c = SchedClient()
+
+        def applied_then_timeout(name, value):
+            c.calls.append(("send", name, value))
+            c.sp[name] = float(value)
+            raise OpenHabError("read timeout")
+        c.send_command = applied_then_timeout
+        self.run_at(at(TUE, "07:00"), c)
+        self.run_at(at(TUE, "07:01"), c)
+        self.assertEqual(c.sends, [("W_Set", "21")])
+        self.assertEqual(hs.get_schedule(e["id"])["last_result"], hs.UNCHANGED)
+
+
+class AbortTest(DbCase):
+    """Lauf bricht ab (5-s-Limit, Prozessende): nächste Minute erneut fällig, nie doppelt gesendet."""
+
+    def test_cut_off_after_send_before_db_write(self):
+        e = self.add(days=["di"])
+        c = SchedClient()
+        with mock.patch.object(hs, "_mark_sent", lambda *a: None):        # Thread endet nach dem POST
+            self.run_at(at(TUE, "07:00"), c)
+        self.assertIsNone(hs.get_schedule(e["id"])["last_run"])
+        self.run_at(at(TUE, "07:01"), c)                                # fällig, liest, sendet nicht noch mal
+        self.assertEqual(c.sends, [("W_Set", "21")])
+        self.assertEqual(hs.get_schedule(e["id"])["last_result"], hs.UNCHANGED)
+
+    def test_cut_off_before_send_runs_next_minute(self):
+        e = self.add(days=["di"])
+        now = [0.0]
+        c = SchedClient()
+        orig = c.get_items
+
+        def slow(names):
+            now[0] += 4.8
+            return orig(names)
+        c.get_items = slow
+        self.run_at(at(TUE, "07:00"), c, clock=lambda: now[0])
+        self.assertEqual(c.sends, [])
+        c.get_items = orig
+        self.run_at(at(TUE, "07:01"), c)
+        self.assertEqual(c.sends, [("W_Set", "21")])
+        self.assertEqual(hs.get_schedule(e["id"])["last_result"], hs.SENT)
+
+    def test_mark_and_verify_are_one_transaction(self):
+        e = self.add(days=["di"])
+        with mock.patch.object(hs, "_verify_start", side_effect=sqlite3.OperationalError("abgebrochen")):
+            with self.assertRaises(sqlite3.OperationalError):
+                hs._mark_sent(e["id"], "wohnen", 21.0, at(TUE, "07:00"))
+        self.assertIsNone(hs.get_schedule(e["id"])["last_run"])         # nichts halb geschrieben
 
 
 class NoRequestWithoutDueTest(DbCase):

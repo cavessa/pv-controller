@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-13 – Kaskade respektiert dry_run beim Schalten; Zeitpläne: Abbruch sicher (Dev)
+
+**Kaskade:** `cascade_service._dispatch` schaltete Shelly-Geräte auch bei `runtime.dry_run`. Jetzt nur Log „DRY-RUN: Kaskade würde Shelly X einschalten (IP, Kanal n) – nicht geschaltet“; gilt auch für manuelle Übersteuerungen. Entscheidung, DB-Zustand (`is_on`) und `cascade_log` unverändert, Status-Lesen bleibt. Test `tests/test_cascade_dry_run.py` (3; zwei schlagen mit dem alten Code fehl).
+**Zeitpläne, Abbruch mitten im Lauf:** `last_run` und Rückprüfung werden nach erfolgreichem Senden in **einer** Transaktion geschrieben (`_mark_sent`) – bricht der Daemon-Thread dazwischen ab, gilt beides oder keins. Ein Sendefehler (z. B. Lese-Timeout, Befehl evtl. doch angekommen) wird nicht mehr sofort `failed`, sondern ist in der nächsten Minute **einmal** erneut fällig (`last_result = retry`), danach `failed`. Doppeltes Senden verhindert das Lesen vor dem Senden (schon eingestellt → `unchanged`). Tests: Abbruch nach dem POST vor dem DB-Eintrag, Abbruch vor dem Senden, Transaktion, Retry/aufgegeben, Timeout-aber-übernommen; gesamt 210.
+
 ## 2026-10-13 – Heizung Phase 2: Zeitpläne im Minuten-Cron (Dev)
 
 **Tabelle `heating_schedule`** (wie im Prompt, zusätzlich `last_result`: sent/unchanged/dry_run/skipped/superseded/failed) und `heating_verify` (Rückprüfung je Raum), angelegt beim ersten Zugriff. Wiederkehrend = `days` („mo,di,…“), einmalig = `date`; Uhrzeiten Europe/Berlin.
