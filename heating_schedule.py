@@ -40,6 +40,9 @@ DAYS = ("mo", "di", "mi", "do", "fr", "sa", "so")       # Index = datetime.weekd
 CATCH_UP_MIN = 15                                       # Nachholen nur bis 15 min Verspätung
 BUDGET_S = 5.0                                          # Gesamtzeit Heizungsteil im Cron
 MIN_REQUEST_S = 0.5                                     # weniger Restzeit → keinen Request mehr starten
+VERIFY_STEP_MIN = 5                                     # Rückprüfung 5, 10, 15 min nach dem Senden …
+VERIFY_WATCH_MIN = 15                                   # … (openHAB-autoupdate setzt das Item sofort auf den
+                                                        # gesendeten Wert; erst die Meldung des Geräts zählt)
 VERIFY_GIVE_UP_MIN = 30                                 # Rückprüfung unmöglich (openHAB weg) → aufgeben
 MAX_ATTEMPTS = 2                                        # erstes Senden + höchstens 1 Retry
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -86,7 +89,8 @@ def init_tables() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_heating_schedule_enabled ON heating_schedule(enabled)")
-        # Rückprüfung je Raum: pending = im nächsten Lauf lesen; mismatch = Gerät meldet anderen Wert
+        # Rückprüfung je Raum: pending = wird 5/10/15 min nach sent_at gelesen; mismatch = Gerät meldet
+        # anderen Wert (Meldung auf der Card). previous = Sollwert vor dem Senden (Zurückspringen erkennen).
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS heating_verify (
@@ -96,10 +100,17 @@ def init_tables() -> None:
                 attempts  INTEGER NOT NULL DEFAULT 1,
                 status    TEXT NOT NULL DEFAULT 'pending',
                 reported  REAL,
-                message   TEXT
+                message   TEXT,
+                previous  REAL,
+                checks    INTEGER NOT NULL DEFAULT 0
             )
             """
         )
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(heating_verify)")}
+        if "previous" not in cols:                      # Tabelle aus 8225dcd/7c53710
+            conn.execute("ALTER TABLE heating_verify ADD COLUMN previous REAL")
+        if "checks" not in cols:
+            conn.execute("ALTER TABLE heating_verify ADD COLUMN checks INTEGER NOT NULL DEFAULT 0")
 
 
 def _row(r: sqlite3.Row) -> dict[str, Any]:
@@ -193,6 +204,19 @@ def clear_verify(room_id: str) -> None:
 def _pending_verifies() -> list[dict[str, Any]]:
     with _conn() as conn:
         return [dict(r) for r in conn.execute("SELECT * FROM heating_verify WHERE status = 'pending'")]
+
+
+def _verify_due(p: dict[str, Any], now: datetime) -> bool:
+    """Nächste Prüfung fällig? (5, 10, 15 min nach dem Senden; dazwischen kein openHAB-Request)"""
+    try:
+        sent = datetime.fromisoformat(p["sent_at"]).astimezone(TZ)
+    except ValueError:
+        return True
+    return now >= sent + timedelta(minutes=VERIFY_STEP_MIN * (int(p.get("checks") or 0) + 1))
+
+
+def _c(v: float) -> str:
+    return f"{v:g}".replace(".", ",") + " °C"
 
 
 # ── Zeit ────────────────────────────────────────────────────────────────────
@@ -329,7 +353,7 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
     # 2. nur DB
     entries = [e for e in list_schedules() if cfg.room(e["room_id"]) and cfg.room(e["room_id"]).controllable]
     due = due_entries(entries, now)
-    pending = [p for p in _pending_verifies() if cfg.room(p["room_id"])]
+    pending = [p for p in _pending_verifies() if cfg.room(p["room_id"]) and _verify_due(p, now)]
     res.due = len(due)
     if not due and not pending:
         res.duration_s = clock() - t0
@@ -389,28 +413,39 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
     def send(room: heating.Room, value: float) -> None:
         request(lambda: client.send_command(room.setpoint_item, f"{value:g}"))
 
-    # 4. Rückprüfung der letzten Sendungen
+    # 4. Rückprüfung: 5, 10 und 15 min nach dem Senden. Gesendeter Wert → weiter beobachten bzw. fertig;
+    #    alter Wert (zurückgesprungen) → Warnung + einmal erneut senden; anderer Wert → nur Warnung.
     for p in pending:
         if p["room_id"] in latest:
             continue                    # neuer Eintrag für den Raum geht vor
         room = rooms[p["room_id"]]
         got = current.get(p["room_id"])
-        if got is not None and abs(got - p["setpoint"]) < 0.01:
-            clear_verify(room.id)
+        if got is None:
+            _give_up_stale_verifies([p], cfg, now, emit)   # Item ohne Wert: nach 30 min aufgeben
             continue
-        shown = f"{got:g} °C" if got is not None else "keinen Wert"
-        msg = f"{room.name}: {p['setpoint']:g} °C gesendet, Gerät meldet {shown}"
-        if p["attempts"] < MAX_ATTEMPTS and not dry_run:
+        checks = int(p.get("checks") or 0) + 1
+        if abs(got - p["setpoint"]) < 0.01:
+            if checks * VERIFY_STEP_MIN >= VERIFY_WATCH_MIN:
+                clear_verify(room.id)   # 15 min stabil: fertig
+            else:
+                _verify_update(room.id, status="pending", reported=got, message=None, checks=checks)
+            continue
+        prev = p.get("previous")
+        jumped = prev is not None and abs(got - prev) < 0.01
+        msg = f"{room.name}: {_c(p['setpoint'])} gesendet, Gerät meldet {'wieder ' if jumped else ''}{_c(got)}"
+        if jumped and p["attempts"] < MAX_ATTEMPTS and not dry_run:
             try:
                 send(room, p["setpoint"])
-                emit(f"{msg} – sende einmal erneut", logging.WARNING)
-                _verify_update(room.id, attempts=p["attempts"] + 1, sent_at=now, reported=got,
-                               message=msg + " (erneut gesendet)", status="mismatch_retry")
+                emit(f"{msg} (zurückgesprungen) – sende einmal erneut", logging.WARNING)
+                _verify_update(room.id, status="pending", reported=got, message=msg + " (erneut gesendet)",
+                               attempts=p["attempts"] + 1, sent_at=now, checks=0)
             except (OpenHabError, TimeoutError) as e:
                 emit(f"{msg} – erneutes Senden fehlgeschlagen: {e}", logging.WARNING)
                 _verify_update(room.id, status="mismatch", reported=got, message=msg)
         else:
-            emit(msg, logging.WARNING)
+            if not jumped:
+                msg += " (am Gerät, Fenster-offen oder Wochenprofil geändert?)"
+            emit(msg + " – kein erneutes Senden", logging.WARNING)
             _verify_update(room.id, status="mismatch", reported=got, message=msg)
 
     # 5. fällige Einträge ausführen
@@ -442,7 +477,7 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
                 _mark([e["id"]], FAILED, now, disable_once=True)
             continue
         emit(label)
-        _mark_sent(e["id"], rid, target, now)
+        _mark_sent(e["id"], rid, target, now, previous=current.get(rid))
         res.sent += 1
 
     res.duration_s = clock() - t0
@@ -454,20 +489,21 @@ def _set_result(sid: int, result: str) -> None:
         conn.execute("UPDATE heating_schedule SET last_result = ? WHERE id = ?", (result, sid))
 
 
-def _mark_sent(sid: int, room_id: str, setpoint: float, now: datetime) -> None:
+def _mark_sent(sid: int, room_id: str, setpoint: float, now: datetime, previous: Optional[float] = None) -> None:
     """Gesendet: last_run und Rückprüfung in **einer** Transaktion (bricht der Lauf hier ab, gilt beides
     oder keins; ohne Eintrag ist er nächste Minute fällig und liest vorher den Sollwert)."""
     with _conn() as conn:
         conn.execute("UPDATE heating_schedule SET last_run = ?, last_result = ? WHERE id = ?",
                      (now.isoformat(timespec="seconds"), SENT, sid))
         conn.execute("UPDATE heating_schedule SET enabled = 0 WHERE id = ? AND date IS NOT NULL", (sid,))
-        _verify_start(room_id, setpoint, now, conn)
+        _verify_start(room_id, setpoint, now, conn, previous=previous)
 
 
-def _verify_start(room_id: str, setpoint: float, now: datetime, conn: Optional[sqlite3.Connection] = None) -> None:
-    sql = ("INSERT OR REPLACE INTO heating_verify (room_id, setpoint, sent_at, attempts, status) "
-           "VALUES (?, ?, ?, 1, 'pending')")
-    args = (room_id, setpoint, now.isoformat(timespec="seconds"))
+def _verify_start(room_id: str, setpoint: float, now: datetime, conn: Optional[sqlite3.Connection] = None,
+                  previous: Optional[float] = None) -> None:
+    sql = ("INSERT OR REPLACE INTO heating_verify (room_id, setpoint, sent_at, attempts, status, previous, checks) "
+           "VALUES (?, ?, ?, 1, 'pending', ?, 0)")
+    args = (room_id, setpoint, now.isoformat(timespec="seconds"), previous)
     if conn is not None:
         conn.execute(sql, args)
         return
@@ -475,16 +511,16 @@ def _verify_start(room_id: str, setpoint: float, now: datetime, conn: Optional[s
         c.execute(sql, args)
 
 
-def _verify_update(room_id: str, status: str, reported: Optional[float], message: str,
-                   attempts: Optional[int] = None, sent_at: Optional[datetime] = None) -> None:
-    # Nach dem Retry noch einmal prüfen (pending), die Meldung bleibt bis dahin auf der Card sichtbar.
-    db_status = "pending" if status == "mismatch_retry" else status
+def _verify_update(room_id: str, status: str, reported: Optional[float], message: Optional[str],
+                   attempts: Optional[int] = None, sent_at: Optional[datetime] = None,
+                   checks: Optional[int] = None) -> None:
     with _conn() as conn:
         conn.execute(
             "UPDATE heating_verify SET status = ?, reported = ?, message = ?, "
-            "attempts = COALESCE(?, attempts), sent_at = COALESCE(?, sent_at) WHERE room_id = ?",
-            (db_status, reported, message, attempts,
-             sent_at.isoformat(timespec="seconds") if sent_at else None, room_id),
+            "attempts = COALESCE(?, attempts), sent_at = COALESCE(?, sent_at), checks = COALESCE(?, checks) "
+            "WHERE room_id = ?",
+            (status, reported, message, attempts,
+             sent_at.isoformat(timespec="seconds") if sent_at else None, checks, room_id),
         )
 
 
@@ -497,7 +533,7 @@ def _give_up_stale_verifies(pending: list[dict], cfg: heating.HeatingConfig, now
             continue
         if age > timedelta(minutes=VERIFY_GIVE_UP_MIN):
             room = cfg.room(p["room_id"])
-            msg = f"{room.name}: {p['setpoint']:g} °C gesendet, Rückmeldung nicht prüfbar (openHAB nicht erreichbar)"
+            msg = f"{room.name}: {_c(p['setpoint'])} gesendet, Rückmeldung nicht prüfbar (openHAB/Gerät ohne Wert)"
             emit(msg, logging.WARNING)
             _verify_update(p["room_id"], status="mismatch", reported=None, message=msg)
 

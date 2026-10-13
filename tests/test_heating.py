@@ -203,6 +203,14 @@ class ClientTest(unittest.TestCase):
             from datetime import datetime
             self.assertEqual(c.get_history("x", datetime(2026, 10, 12)), [(1, 17.1), (3, 18.0)])
 
+    def test_history_sends_zoned_times(self):
+        """Ohne Offset ignoriert openHAB starttime (liefert immer ~1 Tag)."""
+        from datetime import datetime, timedelta, timezone
+        c = OpenHabClient("http://oh:8080")
+        with mock.patch.object(c, "_get", return_value={"data": []}) as g:
+            c.get_history("x", datetime(2026, 10, 13, 7, 0, tzinfo=timezone(timedelta(hours=2))))
+        self.assertEqual(g.call_args[0][1]["starttime"], "2026-10-13T07:00:00+02:00")
+
     def test_downsample(self):
         pts = [(0, 1.0), (60_000, 3.0), (600_000, 5.0)]
         self.assertEqual(heating.downsample(pts, 600_000), [[0, 2.0], [600_000, 5.0]])

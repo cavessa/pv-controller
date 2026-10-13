@@ -95,9 +95,10 @@ class OpenHabClient:
     def get_history(self, name: str, start: datetime, end: Optional[datetime] = None,
                     service_id: Optional[str] = None) -> list[tuple[int, float]]:
         """Persistierte Werte als [(epoch_ms, wert)]; nicht-numerische Werte werden übersprungen."""
-        params = {"starttime": start.strftime("%Y-%m-%dT%H:%M:%S")}
+        # Mit Zeitzone senden: ohne Offset ignoriert openHAB starttime und liefert den Default (1 Tag).
+        params = {"starttime": start.astimezone().isoformat(timespec="seconds")}
         if end is not None:
-            params["endtime"] = end.strftime("%Y-%m-%dT%H:%M:%S")
+            params["endtime"] = end.astimezone().isoformat(timespec="seconds")
         if service_id:
             params["serviceId"] = service_id
         data = self._get(f"/persistence/items/{name}", params)

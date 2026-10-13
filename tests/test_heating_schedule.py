@@ -294,7 +294,7 @@ class AbortTest(DbCase):
     def test_cut_off_after_send_before_db_write(self):
         e = self.add(days=["di"])
         c = SchedClient()
-        with mock.patch.object(hs, "_mark_sent", lambda *a: None):        # Thread endet nach dem POST
+        with mock.patch.object(hs, "_mark_sent", lambda *a, **kw: None):        # Thread endet nach dem POST
             self.run_at(at(TUE, "07:00"), c)
         self.assertIsNone(hs.get_schedule(e["id"])["last_run"])
         self.run_at(at(TUE, "07:01"), c)                                # fällig, liest, sendet nicht noch mal
@@ -365,46 +365,96 @@ class DryRunTest(DbCase):
 
 
 class VerifyTest(DbCase):
-    def test_mismatch_warns_retries_once_then_stops(self):
+    """Rückprüfung 5/10/15 min nach dem Senden (openHAB-autoupdate setzt das Item sofort auf den
+    gesendeten Wert – erst die spätere Meldung des Geräts zählt)."""
+
+    def calls_at(self, c, hhmm):
+        c.calls.clear()
+        self.run_at(at(TUE, hhmm), c)
+        return list(c.calls)
+
+    def test_no_request_between_checks_and_done_after_15_min(self):
         self.add(days=["di"])
-        c = SchedClient()
-        c.echo = False                                                  # Gerät bleibt bei 15
-        c.sp["W_Set"] = 15.0
+        c = SchedClient()                                               # autoupdate: Item = gesendeter Wert
         self.run_at(at(TUE, "07:00"), c)
-        self.assertEqual(c.sends, [("W_Set", "21")])
-        self.run_at(at(TUE, "07:01"), c)                                # Rückprüfung → 1 Retry
+        requests = {f"07:{m:02d}": len(self.calls_at(c, f"07:{m:02d}")) for m in range(1, 16)}
+        self.assertEqual([k for k, n in requests.items() if n], ["07:05", "07:10", "07:15"])   # nur dann
+        self.assertEqual(hs._pending_verifies(), [])                    # nach 15 min stabil: fertig
+        self.assertEqual(self.calls_at(c, "07:20"), [])
+        self.assertEqual(hs.alerts(), {})
+
+    def test_jump_back_warns_and_resends_once(self):
+        self.add(days=["di"])
+        c = SchedClient()                                               # vorher 17,5
+        self.run_at(at(TUE, "07:00"), c)
+        self.run_at(at(TUE, "07:05"), c)                                # passt (autoupdate)
+        c.sp["W_Set"] = 17.5                                            # Gerät meldet den alten Wert
+        self.run_at(at(TUE, "07:10"), c)
         self.assertEqual(c.sends, [("W_Set", "21")] * 2)
         warn = [m for lvl, m in self.logs if lvl == logging.WARNING]
-        self.assertIn("Wohnen: 21 °C gesendet, Gerät meldet 15 °C – sende einmal erneut", warn)
+        self.assertIn("Wohnen: 21 °C gesendet, Gerät meldet wieder 17,5 °C (zurückgesprungen) – sende einmal erneut",
+                      warn)
         self.assertIn("erneut gesendet", hs.alerts()["wohnen"]["message"])
-        self.run_at(at(TUE, "07:02"), c)                                # weiter falsch → nur Meldung
+        # nach dem Retry neues 15-min-Fenster ab 07:10; springt es erneut zurück: nur Meldung
+        c.sp["W_Set"] = 17.5
+        self.run_at(at(TUE, "07:15"), c)
         self.assertEqual(len(c.sends), 2)
-        self.assertEqual(hs.alerts()["wohnen"]["message"], "Wohnen: 21 °C gesendet, Gerät meldet 15 °C")
+        self.assertEqual(hs.alerts()["wohnen"]["message"], "Wohnen: 21 °C gesendet, Gerät meldet wieder 17,5 °C")
         c.calls.clear()
-        for m in range(3, 10):
+        for m in range(16, 60):
             self.run_at(at(TUE, f"07:{m:02d}"), c)
-        self.assertEqual(c.calls, [])                                   # keine Schleife, keine Requests
+        self.assertEqual(c.calls, [])                                   # keine Schleife
 
-    def test_match_clears_silently(self):
+    def test_retry_holds_then_cleared(self):
         self.add(days=["di"])
         c = SchedClient()
         self.run_at(at(TUE, "07:00"), c)
-        self.run_at(at(TUE, "07:01"), c)
-        self.assertEqual(hs.alerts(), {})
+        c.sp["W_Set"] = 17.5
+        self.run_at(at(TUE, "07:05"), c)                                # zurückgesprungen → Retry (echo: 21)
+        for m in ("07:10", "07:15", "07:20"):
+            self.run_at(at(TUE, m), c)
+        self.assertEqual(hs.alerts(), {})                               # Meldung weg, sobald es passt
+        self.assertEqual(hs._pending_verifies(), [])
+        self.assertEqual(len(c.sends), 2)
+
+    def test_other_value_warns_without_resend(self):
+        """z. B. Fenster-offen (4,5 °C) oder am Gerät verstellt: melden, nicht dagegen anschalten."""
+        self.add(days=["di"])
+        c = SchedClient()
+        self.run_at(at(TUE, "07:00"), c)
+        c.sp["W_Set"] = 4.5
+        self.run_at(at(TUE, "07:05"), c)
+        self.assertEqual(len(c.sends), 1)
+        self.assertEqual(hs.alerts()["wohnen"]["message"],
+                         "Wohnen: 21 °C gesendet, Gerät meldet 4,5 °C (am Gerät, Fenster-offen oder Wochenprofil geändert?)")
         c.calls.clear()
-        self.run_at(at(TUE, "07:02"), c)
+        self.run_at(at(TUE, "07:10"), c)
         self.assertEqual(c.calls, [])
 
-    def test_retry_fixes_it(self):
+    def test_null_item_gives_up_after_30_min(self):
         self.add(days=["di"])
         c = SchedClient()
-        c.echo = False
         self.run_at(at(TUE, "07:00"), c)
-        c.echo = True
-        self.run_at(at(TUE, "07:01"), c)                                # Retry übernimmt
-        self.run_at(at(TUE, "07:02"), c)
-        self.assertEqual(hs.alerts(), {})
-        self.assertEqual(len(c.sends), 2)
+        del c.sp["W_Set"]                                               # Item liefert keinen Wert
+        for m in range(5, 32):
+            self.run_at(at(TUE, f"07:{m:02d}"), c)
+        self.assertIn("nicht prüfbar", hs.alerts()["wohnen"]["message"])
+        c.calls.clear()
+        self.run_at(at(TUE, "07:40"), c)
+        self.assertEqual(c.calls, [])
+
+    def test_old_verify_table_is_migrated(self):
+        with sqlite3.connect(db.DB_PATH) as conn:
+            conn.execute("DROP TABLE heating_verify")
+            conn.execute("CREATE TABLE heating_verify (room_id TEXT PRIMARY KEY, setpoint REAL NOT NULL, "
+                         "sent_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 1, "
+                         "status TEXT NOT NULL DEFAULT 'pending', reported REAL, message TEXT)")
+            conn.execute("INSERT INTO heating_verify (room_id, setpoint, sent_at) VALUES ('wohnen', 21, ?)",
+                         (at(TUE, "06:58").isoformat(),))
+        hs.init_tables()
+        c = SchedClient({"W_Set": 21.0})
+        self.run_at(at(TUE, "07:03"), c)                                # alte Zeile: checks 0 → fällig ab 07:03
+        self.assertEqual(hs._pending_verifies()[0]["checks"], 1)
 
 
 class BudgetTest(DbCase):
