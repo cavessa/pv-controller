@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-13 – Tab „Heizung“ direkt nach „Dashboard“
+
+Reihenfolge der Haupt-Tabs: Dashboard, Heizung, Verlauf, Prioritäten, Settings, Logs (nur `web/index.html`).
+
 ## 2026-10-13 – .gitignore: alle config*.json außer config.example.json
 
 `config*.json` + `!config.example.json` statt einzelner Muster (`config.json`, `config.backup-*.json`): auch Arbeitskopien wie `config.edit.json` können nicht mehr versehentlich committet werden. `config.json.bak-*` bleibt. Geprüft mit `git check-ignore`: config.json, config.edit.json, config.backup-*.json ignoriert; config.example.json nicht ignoriert und weiter versioniert.
