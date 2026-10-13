@@ -6,7 +6,6 @@ import shutil
 import sqlite3
 import tempfile
 import threading
-import time
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -594,6 +593,9 @@ class MainIsolationTest(unittest.TestCase):
                             "days": ",".join(hs.DAYS), "date": None}, now=now - timedelta(hours=1))
         self.events = []
         self.release = threading.Event()
+        self.hanging = None                            # Thread, der im hängenden openHAB-Request steckt
+        self.clock = 1000.0                            # simulierte Uhr (s) statt time.monotonic in main.py
+        self.threads = []
         self._root = logging.getLogger().handlers[:]
 
         test = self
@@ -603,17 +605,34 @@ class MainIsolationTest(unittest.TestCase):
                 pass
 
             def run(self):
-                test.events.append(("pv_start", time.monotonic()))
-                time.sleep(0.05)                       # „normale“ Laufzeit der PV-Steuerung (Attrappe)
-                test.events.append(("pv_end", time.monotonic()))
+                test.events.append(("pv_start", test.clock))
+                test.clock += 0.05                     # „normale“ Laufzeit der PV-Steuerung (simuliert)
+                test.events.append(("pv_end", test.clock))
                 return SimpleNamespace(wallbox_status=None,
                                        readings=SimpleNamespace(storage_temp_c=50.0, heater_meter_power_w=0.0))
 
         class HangingClient(SchedClient):
             def get_items(self, names):
-                test.events.append(("openhab_start", time.monotonic()))
-                test.release.wait(10)                  # openHAB hängt 10 s
+                test.events.append(("openhab_start", test.clock))
+                test.hanging = threading.current_thread()
+                test.release.wait(60)                  # openHAB hängt, bis der Test endet
+                test.events.append(("openhab_end", test.clock))
                 return super().get_items(names)
+
+        class SimThread(threading.Thread):
+            """join(timeout) ohne Echtzeit-Grenze: wartet, bis der Thread fertig ist **oder** im hängenden
+            openHAB-Request steckt, und stellt dann die simulierte Uhr um ``timeout`` vor. Unter Last dauert
+            das nur länger, das Ergebnis bleibt gleich."""
+
+            def start(self):
+                test.threads.append(self)
+                super().start()
+
+            def join(self, timeout=None):
+                while self.is_alive() and test.hanging is not self:
+                    super().join(0.01)
+                if self.is_alive() and timeout is not None:
+                    test.clock += timeout              # Zeitlimit „abgelaufen“
 
         self.patches = [
             mock.patch.object(main_mod, "Controller", FakeController),
@@ -621,6 +640,8 @@ class MainIsolationTest(unittest.TestCase):
             mock.patch("pv_logger.maybe_log"),
             mock.patch.object(db, "append_temp_history"),
             mock.patch.object(heating, "make_client", lambda r: HangingClient()),
+            mock.patch.object(main_mod, "time", SimpleNamespace(monotonic=lambda: test.clock)),
+            mock.patch.object(main_mod.threading, "Thread", SimThread),
         ]
         for p in self.patches:
             p.start()
@@ -629,6 +650,8 @@ class MainIsolationTest(unittest.TestCase):
         self.release.set()
         for p in self.patches:
             p.stop()
+        for th_ in self.threads:                       # hängende Attrappe sauber beenden (echtes join)
+            threading.Thread.join(th_, 5)
         root = logging.getLogger()
         for h in root.handlers:
             h.close()
@@ -636,18 +659,20 @@ class MainIsolationTest(unittest.TestCase):
         db.DB_PATH = self._old_db
         self.tmp.cleanup()
 
-    def test_openhab_hangs_10s_pv_control_unaffected(self):
-        t0 = time.monotonic()
+    def test_openhab_hangs_pv_control_unaffected(self):
+        """openHAB hängt unbegrenzt: PV-Steuerung läuft vorher komplett und in normaler Zeit, der Cron-Lauf
+        endet nach dem Zeitlimit (simulierte Uhr), nicht erst wenn openHAB antwortet."""
+        t0 = self.clock
         rc = main_mod.main(["--config", str(self.cfg_path)])
-        took = time.monotonic() - t0
-        names = [e[0] for e in self.events]
+        took = self.clock - t0
+        ev = dict(self.events)
         self.assertEqual(rc, 0)
-        self.assertEqual(names[:3], ["pv_start", "pv_end", "openhab_start"])   # PV zuerst, komplett
-        pv_time = self.events[1][1] - self.events[0][1]
-        self.assertLess(pv_time, 0.5)                                          # PV in normaler Zeit
-        self.assertLess(took, main_mod.HEATING_BUDGET_S + 1.5)                 # nicht 10 s
+        self.assertEqual([e[0] for e in self.events], ["pv_start", "pv_end", "openhab_start"])  # PV zuerst, komplett
+        self.assertAlmostEqual(ev["pv_end"] - ev["pv_start"], 0.05)            # PV in normaler Zeit
+        self.assertTrue(self.hanging.is_alive())                               # openHAB hängt noch – main ist zurück
+        self.assertAlmostEqual(took, 0.05 + main_mod.HEATING_BUDGET_S + 0.5)   # Zeitlimit, nicht die Hängedauer
         log_text = (Path(self.tmp.name) / "app.log").read_text(encoding="utf-8")
-        self.assertIn("Heizungs-Zeitpläne: nach", log_text)
+        self.assertIn(f"Heizungs-Zeitpläne: nach {main_mod.HEATING_BUDGET_S + 0.5:.1f} s abgebrochen", log_text)
 
     def test_heating_exception_does_not_change_rc(self):
         with mock.patch.object(hs, "run", side_effect=RuntimeError("kaputt")):

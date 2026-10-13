@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-13 – Tests: Heizungs-Cron-Test ohne Echtzeit-Grenzen (simulierte Uhr)
+
+**Warum:** `MainIsolationTest.test_openhab_hangs_10s_pv_control_unaffected` prüfte echte Laufzeiten (PV < 0,5 s, Cron-Lauf < 6,5 s). Unter Last (ein Lauf während einer Browser-Installation) kann das kippen – im Deploy-Vorabtest würde `deploy.sh` dann grundlos abbrechen.
+**Jetzt (`tests/test_heating_schedule.py`, nur der Test; `main.py` unverändert):** simulierte Uhr statt `time.monotonic` in `main.py`; der `join` des Cron-Threads wartet, bis der Thread fertig ist oder im hängenden openHAB-Request steckt, und stellt dann die Uhr um das Zeitlimit vor. Geprüft wird unverändert: PV zuerst und komplett, PV-Dauer normal (0,05 s simuliert), der Cron-Lauf kehrt nach Budget + 0,5 s zurück, während openHAB noch hängt, Log „Heizungs-Zeitpläne: nach 5.5 s abgebrochen“. Der Test heißt jetzt `test_openhab_hangs_pv_control_unaffected` und braucht ~0,4 s statt 5,5 s. Unter 8 CPU-Last-Prozessen auf 4 Kernen 5× grün, gesamte Suite (412) grün.
+**Nicht geändert, nur gemeldet:** `test_controller_phases.test_dead_device_does_not_slow_down_the_run` misst ebenfalls Echtzeit (3 × 1 s parallel, Grenze 2 s).
+
 ## 2026-10-13 – Rollläden Phase 3: ein Chat für Heizung und Rollläden
 
 **Neu:** Der Heizungs-Chat versteht Rollläden – ein Chat-Feld (die Karte wandert mit in den aktiven Tab Heizung bzw. Rollläden, Verlauf bleibt), ein Tool `propose_schedule` mit zusätzlich `shutter_entries`, `shutter_immediate`, `shutter_delete_ids` (strict, gleiches Schema für Claude und ChatGPT). Wie bei der Heizung: nur Vorschläge, der Server prüft alles, gespeichert/gefahren wird erst nach „Übernehmen“.
