@@ -11,6 +11,7 @@ import threading
 import time
 from pathlib import Path
 
+import redact
 from cascade_service import CascadeService
 from config import load_config
 from controller import Controller
@@ -38,6 +39,7 @@ def setup_logging(log_file: str) -> None:
     stream = logging.StreamHandler(sys.stdout)
     stream.setFormatter(fmt)
     root.addHandler(stream)
+    redact.install(file_handler, stream)        # API-Keys (sk-…) nie ins Log
 
 
 HEATING_BUDGET_S = 5.0     # Heizungs-Zeitpläne: maximale Gesamtzeit nach der PV-Steuerung

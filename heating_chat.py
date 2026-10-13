@@ -37,6 +37,7 @@ from typing import Any, Callable, Optional
 import db
 import heating
 import heating_schedule as hs
+import redact
 
 log = logging.getLogger("pv-controller.heating")
 
@@ -393,7 +394,9 @@ TOOL["description"] = ("Schlägt neue Heizungs- und Rollladen-Zeitpläne, sofort
 
 
 def _scrub(text: str, key: str) -> str:
-    return text.replace(key, "***") if key else text
+    """Konfigurierten Key entfernen – und alles, was wie ein sk-…-Key aussieht (die APIs zitieren ihn in
+    Fehlermeldungen auch gekürzt, z. B. „sk-proj-abcd****wxyz“)."""
+    return redact.redact(text.replace(key, "***") if key else text)
 
 
 def _default_client(acfg: AssistantConfig) -> Any:

@@ -170,11 +170,43 @@ class ControllerPhaseTest(unittest.TestCase):
         self.assertEqual(self.sets(c), [[], [], []])
 
     def test_dead_device_does_not_slow_down_the_run(self):
-        # Alle drei Phasen antworten erst nach 1,0 s: parallel ≈ 1 s, sequenziell ≈ 3 s
-        c = self.make(delays=(1.0, 1.0, 1.0))
-        t0 = time.monotonic()
+        """Alle drei Phasen antworten erst nach 1,0 s: parallel = 1 s, sequenziell = 3 s.
+
+        Ohne Echtzeit (kippt sonst unter Last): simulierte Uhr. Jeder Aufruf merkt sich seine Startzeit, wartet an
+        einer Barriere, bis alle drei gleichzeitig im Aufruf stecken, und stellt die Uhr auf „Start + 1,0 s“.
+        Liest der Controller sequenziell, läuft die Barriere ab und die simulierte Dauer wird 3 s.
+        """
+        import threading
+        sim = {"now": 0.0}
+        lock = threading.Lock()
+        gate = threading.Barrier(3)
+        inside = {"cur": 0, "max": 0}
+
+        class SlowPlug(FakePlug):
+            first = True
+
+            def get_status(self):
+                if not self.first:                         # spätere Aufrufe (nicht Teil der Messung)
+                    return super().get_status()
+                self.first = False
+                with lock:
+                    start = sim["now"]
+                    inside["cur"] += 1
+                    inside["max"] = max(inside["max"], inside["cur"])
+                try:
+                    gate.wait(timeout=1.0)                 # nur im Fehlerfall (sequenziell) wird gewartet
+                except threading.BrokenBarrierError:
+                    gate.reset()
+                with lock:
+                    sim["now"] = max(sim["now"], start + 1.0)
+                    inside["cur"] -= 1
+                return (self.state, None if self.state is None else self.power)
+
+        c = self.make()
+        c.ph1, c.ph2, c.ph3 = SlowPlug(False), SlowPlug(False), SlowPlug(False)
         c.run(mode=ControllerMode.READ_ONLY)
-        self.assertLess(time.monotonic() - t0, 2.0)
+        self.assertEqual(inside["max"], 3)                 # alle drei Geräte gleichzeitig gelesen
+        self.assertEqual(sim["now"], 1.0)                  # Lauf ≈ langsamstes Gerät, nicht die Summe (3,0)
 
     def test_min_on_blocks_switch_off_but_not_max_temp(self):
         db.log_phase_change(1, "on")                                  # gerade eben eingeschaltet

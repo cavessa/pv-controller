@@ -20,6 +20,10 @@ Cron-Lauf) → `pip install` falls `requirements.txt` geändert → Neustart `pv
 (`/api/health` + ein vollständiger Cron-Lauf ohne „Unerwarteter Fehler"/Importfehler). Fehlschlag ⇒ automatisch
 zurück auf den vorherigen Stand. Protokoll: `deploy.log`, Verlauf: `.deploy_history`.
 
+Secrets: `config.json` und ihre Backups enthalten Tokens/API-Keys und sind nur für den Besitzer lesbar (`600`);
+`deploy.sh` stellt das bei jedem Lauf sicher, die Weboberfläche und `make-dev.sh` legen Backups direkt so an.
+Cron und `pvcontroller-web` müssen als Besitzer der Dateien laufen.
+
 Voraussetzung: `/etc/sudoers.d/pvcontroller` (siehe `sudoers.pvcontroller`) – erlaubt nur
 `systemctl restart pvcontroller-web`.
 

@@ -38,6 +38,14 @@ wait_health() {   # bis zu 30 s auf /api/health warten
 
 [ -x "$PY" ] || die ".venv fehlt ($PY)"
 [ -f "$PROD/config.json" ] || die "config.json fehlt"
+# config.json und ihre Backups enthalten Secrets (Tokens, API-Keys): nur für den Besitzer lesbar.
+# Bei jedem Deploy sicherstellen (auch für von Hand angelegte Kopien); Cron und Web-Dienst laufen als Besitzer.
+secure_configs() {
+  find "$PROD" -maxdepth 1 -type f \( -name 'config*.json' -o -name 'config.json.*' -o -name '.config.*' \) \
+    ! -name 'config.example.json' ! -perm 600 -exec chmod 600 {} + 2>/dev/null || true
+}
+secure_configs
+[ -r "$PROD/config.json" ] || die "config.json nicht lesbar für $(id -un) – Besitzer prüfen"
 git diff --quiet || die "Produktionsverzeichnis hat lokale Änderungen (git status) – nichts überschrieben"
 
 OLD="$(git rev-parse HEAD)"

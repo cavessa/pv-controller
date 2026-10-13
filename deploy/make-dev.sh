@@ -9,7 +9,8 @@ set -euo pipefail
 DEV="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 cd "$DEV"
 case "$DEV" in *-prod|*/pvcontroller-prod) echo "Das ist das Produktionsverzeichnis – Abbruch"; exit 1;; esac
-[ -f config.json ] && cp config.json "config.backup-$(date +%Y%m%d-%H%M%S).json"
+umask 077   # config.json und Backups enthalten Secrets: neue Dateien nur für den Besitzer (600)
+[ -f config.json ] && install -m 600 config.json "config.backup-$(date +%Y%m%d-%H%M%S).json"
 python3 - <<PY
 import json
 p="config.json"; c=json.load(open(p,encoding="utf-8"))
@@ -18,6 +19,7 @@ c["runtime"]["log_file"]="$DEV/dev.log"
 if "zendure" in c:
     c["zendure"]["enabled"]=False; c["zendure"]["control_enabled"]=False
 json.dump(c,open(p,"w",encoding="utf-8"),indent=2,ensure_ascii=False); open(p,"a").write("\n")
+import os; os.chmod(p, 0o600)
 print("config.json: dry_run=true, Zendure aus, Log → dev.log")
 PY
 if [ -f pvcontroller.db ]; then

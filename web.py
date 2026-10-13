@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import os
 import sqlite3
 import json
 import logging
@@ -34,6 +35,7 @@ from pydantic import BaseModel
 import heating as _heating
 import heating_schedule as _hsched
 import heating_chat as _hchat
+import redact as _redact
 import shutters as _shutters
 import shutter_schedule as _ssched
 import shutter_chat as _schat
@@ -77,6 +79,10 @@ if not logging.getLogger().handlers:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 log = logging.getLogger("pv-controller.web")
+# API-Keys (sk-…, auch gekürzt) in keiner Log-Zeile: Root-Handler und die eigenen Handler von uvicorn
+_redact.install()
+for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    _redact.install(*logging.getLogger(_name).handlers)
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
@@ -1018,12 +1024,19 @@ def api_config_put(patch: ConfigUpdate) -> dict[str, Any]:
 
 def _write_config(new_cfg: dict[str, Any]) -> str:
     """Backup der aktuellen config.json, dann atomar ersetzen. Gibt den Backup-Namen zurück."""
+    # Config und Backups enthalten Secrets (Tokens, API-Keys): nur für den Besitzer lesbar (0600),
+    # unabhängig von umask und den Rechten der bisherigen Datei.
     backup_name = f"config.backup-{datetime.now():%Y%m%d-%H%M%S}.json"
     backup_path = CONFIG_PATH.with_name(backup_name)
-    shutil.copy2(CONFIG_PATH, backup_path)
+    fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as dst, open(CONFIG_PATH, "rb") as src:
+        os.fchmod(dst.fileno(), 0o600)
+        shutil.copyfileobj(src, dst)
 
     tmp_path = CONFIG_PATH.with_suffix(".json.tmp")
-    with open(tmp_path, "w", encoding="utf-8") as f:
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        os.fchmod(f.fileno(), 0o600)                # falls eine alte .tmp mit 644 liegen geblieben ist
         json.dump(new_cfg, f, indent=2, ensure_ascii=False)
         f.write("\n")
     tmp_path.replace(CONFIG_PATH)
@@ -1823,6 +1836,7 @@ def _heating_dry_run(raw: dict[str, Any]) -> bool:
 
 def _app_log(msg: str, level: int = logging.INFO, area: str = "heating") -> None:
     """Zeile ins Controller-Log (runtime.log_file), damit sie im Log-Tab erscheint."""
+    msg = _redact.redact(msg)
     log.log(level, msg)
     try:
         path = Path(_load_cfg().runtime.log_file)
