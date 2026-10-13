@@ -3,8 +3,9 @@
 Config (config.json):
   "shutters": {"enabled": true, "command_spacing_s": 2,
                "duty_cycle_item": "", "duty_cycle_max": 80,
+               "schedules_enabled": false, "frost_temp_c": 0, "frost_temp_item": "", "manual_hold_min": 60,
                "rooms": [{"id", "name", "item", "contact_item", "is_door", "group",
-                          "automation", "device", "can_position"}]}
+                          "automation", "device", "can_position", "retry_when_closed", "auto_close_max"}]}
 
 - ``item``: Rollershutter-Item (0 = offen, 100 = zu), nimmt UP/DOWN/STOP/0..100.
 - ``automation``: "openhab" = eine openHAB-Regel fährt den Rollladen (der PV Controller plant dann
@@ -13,6 +14,13 @@ Config (config.json):
   nur im 5-min-Raster, Shelly sofort).
 - Tür (``is_door``) mit offenem / unbekanntem Kontakt oder ganz ohne Kontakt-Item: Schließen nur mit
   ausdrücklicher Bestätigung; Gruppenbefehle überspringen solche Türen.
+- Ist-Position (``position_source``): "item" (Default, Steuer-Item – nach Befehlen durch openHAB-autoupdate
+  verfälscht), "shelly" (``shelly_url``, Gen1 ``/roller/0`` direkt, auch während der Fahrt) oder
+  "item:<Name>" (eigenes Lese-Item, z. B. HmIP-Kanal 3 LEVEL ohne autoupdate). Befehle gehen immer an ``item``.
+  Ohne verlässliche Quelle gilt die Position nach STOP / bei ausstehender Rückmeldung als unbekannt.
+- Zeitpläne (``shutter_schedule``): ``retry_when_closed`` = bei offener Tür übersprungenes Schließen nachholen,
+  sobald die Tür zu ist; ``auto_close_max`` = automatisches Schließen höchstens bis hier (Default 80 % bei
+  einer Tür ohne Kontakt-Item, sonst 100).
 
 Rückprüfung: jeder echte Befehl landet in ``shutter_command``. Nach ``verify_after_s`` wird die gemeldete
 Position mit dem Ziel verglichen (beim Statusabruf, kein eigener Thread). openHAB-autoupdate setzt das
@@ -32,6 +40,8 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Optional
 from zoneinfo import ZoneInfo
 
+import requests
+
 import db
 from clients.openhab_client import OpenHabClient, OpenHabError
 from heating import _num
@@ -47,6 +57,8 @@ VERIFY_AFTER_S = {"homematic": 360, "shelly": 60, "other": 120}
 VERIFY_TOLERANCE = 5            # HmIP meldet nach „zu“ gern 98/99 %
 VERIFY_GIVE_UP_MIN = 30         # openHAB so lange weg → Rückprüfung aufgeben (Hinweis)
 COMMANDS = ("up", "down", "stop", "position")
+SHELLY_TIMEOUT_S = 2.0
+_URL_RE = re.compile(r"^https?://[^\s/]+(/[^\s]*)?$")
 
 
 @dataclass
@@ -60,13 +72,28 @@ class Shutter:
     automation: str = "openhab"
     device: str = "other"
     can_position: bool = True
+    retry_when_closed: bool = False
+    auto_close_max: int = 100
+    position_source: str = "item"        # "item" | "shelly" | "item:<Name>" (wie in der Config)
+    shelly_url: str = ""
 
     @property
     def verify_after_s(self) -> int:
         return VERIFY_AFTER_S[self.device]
 
+    @property
+    def position_item(self) -> str:
+        """Eigenes Lese-Item der Ist-Position ("item:<Name>"), sonst ""."""
+        return self.position_source[5:] if self.position_source.startswith("item:") else ""
+
+    @property
+    def history_item(self) -> str:
+        """Item, dessen Persistence-Verlauf „von Hand bewegt“ zeigt: Lese-Item, sonst Steuer-Item
+        (der Shelly-Binding meldet Taster-Fahrten dort; autoupdate-Sprünge liegen im Fenster eigener Befehle)."""
+        return self.position_item or self.item
+
     def items(self) -> list[str]:
-        return [n for n in (self.item, self.contact_item) if n]
+        return [n for n in (self.item, self.position_item, self.contact_item) if n]
 
 
 @dataclass
@@ -75,6 +102,10 @@ class ShutterConfig:
     command_spacing_s: float = 2.0
     duty_cycle_item: str = ""
     duty_cycle_max: float = 80.0
+    schedules_enabled: bool = False      # Schalter „Rollladen-Zeitpläne aktiv“ (Default aus)
+    frost_temp_c: float = 0.0
+    frost_temp_item: str = ""
+    manual_hold_min: int = 60
     rooms: list[Shutter] = field(default_factory=list)
 
     def shutter(self, sid: str) -> Optional[Shutter]:
@@ -142,14 +173,41 @@ def parse_shutters(raw: dict) -> ShutterConfig:
         device = r.get("device") or "other"
         if device not in DEVICES:
             raise ValueError(f"{w}.device must be one of {', '.join(DEVICES)}")
+        contact_item = _str(r.get("contact_item"), f"{w}.contact_item")
+        is_door = _bool(r.get("is_door"), f"{w}.is_door", False)
+        acm = r.get("auto_close_max")
+        if acm is None:
+            acm = 80 if is_door and not contact_item else 100
+        if not isinstance(acm, int) or isinstance(acm, bool) or not 0 <= acm <= 100:
+            raise ValueError(f"{w}.auto_close_max must be an integer 0–100")
+        psrc = _str(r.get("position_source"), f"{w}.position_source") or "item"
+        shelly_url = _str(r.get("shelly_url"), f"{w}.shelly_url").rstrip("/")
+        if psrc == "shelly":
+            if not _URL_RE.match(shelly_url):
+                raise ValueError(f"{w}.shelly_url must be http(s)://… when position_source is 'shelly'")
+        elif psrc != "item" and not (psrc.startswith("item:") and psrc[5:].strip()):
+            raise ValueError(f"{w}.position_source must be 'item', 'shelly' or 'item:<Name>'")
+        psrc = psrc if not psrc.startswith("item:") else "item:" + psrc[5:].strip()
         rooms.append(Shutter(
-            id=rid, name=name, item=item, contact_item=_str(r.get("contact_item"), f"{w}.contact_item"),
-            is_door=_bool(r.get("is_door"), f"{w}.is_door", False), group=group,
+            id=rid, name=name, item=item, contact_item=contact_item, is_door=is_door, group=group,
             automation=automation, device=device,
-            can_position=_bool(r.get("can_position"), f"{w}.can_position", True)))
+            can_position=_bool(r.get("can_position"), f"{w}.can_position", True),
+            retry_when_closed=_bool(r.get("retry_when_closed"), f"{w}.retry_when_closed", False),
+            auto_close_max=acm, position_source=psrc, shelly_url=shelly_url))
+    se = s.get("schedules_enabled", False)
+    if not isinstance(se, bool):
+        raise ValueError("shutters.schedules_enabled must be true/false")
+    frost = s.get("frost_temp_c", 0)
+    if not isinstance(frost, (int, float)) or isinstance(frost, bool) or not -20 <= frost <= 10:
+        raise ValueError("shutters.frost_temp_c must be a number between -20 and 10")
+    hold = s.get("manual_hold_min", 60)
+    if not isinstance(hold, int) or isinstance(hold, bool) or not 0 <= hold <= 600:
+        raise ValueError("shutters.manual_hold_min must be an integer 0–600")
     return ShutterConfig(enabled=bool(s.get("enabled", False)), command_spacing_s=float(spacing),
                          duty_cycle_item=_str(s.get("duty_cycle_item"), "shutters.duty_cycle_item"),
-                         duty_cycle_max=float(dmax), rooms=rooms)
+                         duty_cycle_max=float(dmax), schedules_enabled=se, frost_temp_c=float(frost),
+                         frost_temp_item=_str(s.get("frost_temp_item"), "shutters.frost_temp_item"),
+                         manual_hold_min=hold, rooms=rooms)
 
 
 # ── Zustände normalisieren ──────────────────────────────────────────────────
@@ -278,8 +336,93 @@ def _update(cid: int, status: str, reported: Optional[int], message: Optional[st
                      (status, reported, message, cid))
 
 
+STOP_UNCERTAIN_MIN = 60        # nach STOP über openHAB bleibt beim Shelly die autoupdate-Vorhersage stehen
+
+
+def position_reliable(cmd: Optional[dict[str, Any]], now: datetime) -> bool:
+    """Ist die gemeldete Position verlässlich? Nein, solange ein eigener Befehl auf Rückmeldung wartet
+    (autoupdate setzt sofort das Ziel) und bis 60 min nach einem STOP (openHAB sagt dann z. B. 100,
+    der Rollladen steht aber irgendwo dazwischen – am Shelly 2.5 am 13.10.2026 beobachtet)."""
+    if not cmd:
+        return True
+    if cmd["status"] == "pending":
+        return False
+    if cmd["command"] == "stop":
+        return now - datetime.fromisoformat(cmd["sent_at"]) > timedelta(minutes=STOP_UNCERTAIN_MIN)
+    return True
+
+
 def _hm(iso: str) -> str:
     return iso[11:16]
+
+
+# ── Ist-Position ────────────────────────────────────────────────────────────
+
+
+class ShellyError(Exception):
+    pass
+
+
+def read_shelly(url: str, timeout: float = SHELLY_TIMEOUT_S) -> dict[str, Any]:
+    """Shelly Gen1 (2.5) ``GET <url>/roller/0`` → state ("stop"|"open"|"close"), current_pos (% **offen**), …"""
+    try:
+        r = requests.get(url.rstrip("/") + "/roller/0", timeout=timeout)
+        r.raise_for_status()
+        d = r.json()
+    except (requests.RequestException, ValueError) as e:
+        raise ShellyError(f"Shelly {url}: {e}") from e
+    if not isinstance(d, dict) or "state" not in d:
+        raise ShellyError(f"Shelly {url}: unerwartete Antwort")
+    return d
+
+
+@dataclass
+class Position:
+    value: Optional[int]               # 0 = offen, 100 = zu
+    reliable: bool                     # für Entscheidungen verwendbar
+    origin: str                        # "shelly" | "item:<Name>" | "item"
+    moving: Optional[str] = None       # "down" | "up" während der Fahrt (nur Shelly)
+    note: Optional[str] = None         # Hinweis für die Card (Fallback, Stop)
+
+
+def _from_shelly(d: dict[str, Any]) -> tuple[Optional[int], Optional[str]]:
+    """Shelly-Status → (Position 0 = offen … 100 = zu, Fahrtrichtung). Ohne Kalibrierung keine Position."""
+    moving = {"close": "down", "open": "up"}.get(str(d.get("state")))
+    cp = d.get("current_pos")
+    if not d.get("positioning", True) or d.get("calibrating") or d.get("is_valid") is False \
+            or not isinstance(cp, (int, float)) or isinstance(cp, bool) or not 0 <= cp <= 100:
+        return None, moving
+    return int(round(100 - cp)), moving
+
+
+def resolve_position(sh: Shutter, items: dict[str, dict], cmd: Optional[dict[str, Any]], now: datetime,
+                     shelly: Any = None) -> Position:
+    """Ist-Position aus der konfigurierten Quelle; ohne verlässliche Quelle Fallback auf das Steuer-Item
+    mit der „unbekannt“-Logik (``position_reliable``). ``shelly``: Antwort von ``read_shelly`` oder Exception."""
+    fallback_note = None
+    if sh.position_source == "shelly":
+        if isinstance(shelly, dict):
+            v, moving = _from_shelly(shelly)
+            if v is not None:
+                return Position(v, True, "shelly", moving)
+            fallback_note = "Shelly meldet keine Position (nicht kalibriert?) – Position aus openHAB"
+        else:
+            fallback_note = "Shelly nicht erreichbar – Position aus openHAB"
+    elif sh.position_item:
+        v = norm_position(items.get(sh.position_item))
+        if v is not None:
+            # Lese-Kanal (HmIP: 5-min-Raster) hinkt nach einem Befehl → bis zur Rückprüfung nicht verwenden
+            pending = bool(cmd and cmd["status"] == "pending")
+            return Position(v, not pending, "item:" + sh.position_item)
+        fallback_note = f"{sh.position_item} ohne Wert – Position aus dem Steuer-Item"
+    v = norm_position(items.get(sh.item))
+    reliable = position_reliable(cmd, now)
+    note = fallback_note
+    if not reliable and cmd and cmd["command"] == "stop":
+        note = (note + " · " if note else "") + \
+            f"■ Stop {_hm(cmd['sent_at'])} – angezeigte Position evtl. ungenau (openHAB-autoupdate)"
+    # Eigene Quelle ausgefallen → das Steuer-Item ist für dieses Gerät bekanntermaßen unzuverlässig
+    return Position(v, reliable and fallback_note is None, "item", None, note)
 
 
 def verify(cmd: dict[str, Any], position: Optional[int], reachable: bool, now: datetime) -> dict[str, Any]:
@@ -305,6 +448,14 @@ def verify(cmd: dict[str, Any], position: Optional[int], reachable: bool, now: d
     return {**cmd, "status": "mismatch", "reported": position, "message": msg}
 
 
+def verify_with(cmd: dict[str, Any], pos: Position, reachable: bool, now: datetime) -> dict[str, Any]:
+    """Rückprüfung mit der Ist-Position: während der Fahrt (Shelly) noch nicht; Steuer-Item zählt nur,
+    wenn es keine eigene Quelle gibt (bzw. diese ausfällt)."""
+    if pos.moving:
+        return cmd
+    return verify(cmd, pos.value, reachable, now)
+
+
 # ── Status ──────────────────────────────────────────────────────────────────
 
 
@@ -326,12 +477,13 @@ def _read_items(cfg: ShutterConfig, client: OpenHabClient) -> tuple[dict[str, di
 
 
 def shutter_status(sh: Shutter, items: dict[str, dict], cmd: Optional[dict], now: datetime,
-                   error: Optional[str] = None) -> dict[str, Any]:
-    pos = norm_position(items.get(sh.item))
+                   error: Optional[str] = None, pos: Optional[Position] = None) -> dict[str, Any]:
+    pos = pos or resolve_position(sh, items, cmd, now)
     contact = norm_contact(items.get(sh.contact_item)) if sh.contact_item else None
     missing = [n for n in sh.items() if n not in items]
     pending = None
     alert = None
+    uncertain = pos.note
     if cmd:
         if cmd["status"] == "pending":
             pending = {"command": cmd["command"], "target": cmd["target"], "sent_at": cmd["sent_at"],
@@ -349,8 +501,12 @@ def shutter_status(sh: Shutter, items: dict[str, dict], cmd: Optional[dict], now
         "automation": sh.automation,
         "device": sh.device,
         "can_position": sh.can_position,
-        "position": pos,
+        "position": pos.value,
+        "position_reliable": pos.reliable,
+        "position_origin": pos.origin,
+        "moving": pos.moving,
         "pending": pending,
+        "uncertain": uncertain,
         "alert": alert,
         "error": error or (f"Items fehlen in openHAB: {', '.join(missing)}" if missing else None),
     }
@@ -369,16 +525,24 @@ def read_status(cfg: ShutterConfig, client: Optional[OpenHabClient], now: Option
     rooms = []
     for sh in cfg.rooms:
         cmd = cmds.get(sh.id)
-        pos = norm_position(items.get(sh.item))
+        shelly = None
+        if sh.position_source == "shelly":
+            try:
+                shelly = read_shelly(sh.shelly_url)
+            except ShellyError as e:
+                log.warning("shutters: %s", e)
+                shelly = e
+        pos = resolve_position(sh, items, cmd, now, shelly)
         if cmd:
             try:
-                cmd = verify(cmd, pos, ok, now)
+                cmd = verify_with(cmd, pos, ok, now)
             except sqlite3.Error as e:
                 log.warning("shutters: Rückprüfung nicht gespeichert: %s", e)
+        pos = resolve_position(sh, items, cmd, now, shelly)      # Rückprüfung kann „pending“ beendet haben
         err = None
         if sh.item in errors:
             err = f"openHAB nicht erreichbar: {errors[sh.item]}"
-        rooms.append(shutter_status(sh, items, cmd, now, err))
+        rooms.append(shutter_status(sh, items, cmd, now, err, pos))
     dc = None
     if cfg.duty_cycle_item:
         v = norm_duty_cycle(items.get(cfg.duty_cycle_item))

@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=72">
+  <link rel="stylesheet" href="/static/styles.css?v=74">
 </head>
 <body>
   <div class="app-shell">
@@ -667,6 +667,7 @@
     <section id="tab-rolllaeden" class="tab-panel">
       <div id="shut-banner" class="banner hidden"></div>
       <p class="heat-dry hidden" id="shut-dry">Dry-Run: Befehle werden nur geloggt, kein Rollladen fährt.</p>
+      <p class="heat-dry hidden" id="shut-sched-off">Rollladen-Zeitpläne sind nicht aktiv: Pläne werden gespeichert, aber nicht ausgeführt. Einschalten unter Settings → Rollläden → „Rollladen-Zeitpläne aktiv“.</p>
       <p class="shut-toast hidden" id="shut-toast" role="status"></p>
       <div id="shut-groups"></div>
       <div id="shut-rooms"><div class="chart-empty">Lade…</div></div>
@@ -899,6 +900,10 @@
           <label>Abstand zwischen Gruppenbefehlen (s)<input type="number" step="0.5" min="0.5" max="30" id="ss-spacing"></label>
           <label>Duty-Cycle-Item der CCU (optional)<input type="text" list="hs-items" id="ss-dc-item" autocomplete="off" placeholder="Item auf DUTY_CYCLE_RATIO"></label>
           <label>Duty Cycle: Gruppenbefehle pausieren über (%)<input type="number" step="1" min="10" max="100" id="ss-dc-max"></label>
+          <label class="check"><input type="checkbox" id="ss-sched"> Rollladen-Zeitpläne aktiv (der Minuten-Cron fährt fällige Pläne; nur Rollläden mit „Automatik: PV Controller“)</label>
+          <label>Frost: automatisches Öffnen aussetzen unter (°C)<input type="number" step="0.5" min="-20" max="10" id="ss-frost"></label>
+          <label>Außentemperatur-Item (optional, sonst Tages-Minimum der Prognose)<input type="text" list="hs-items" id="ss-frost-item" autocomplete="off" placeholder="z. B. Aussentemperatur_Temperature"></label>
+          <label>Von Hand bewegt: Zeitpläne so lange aussetzen (min)<input type="number" step="5" min="0" max="600" id="ss-hold"></label>
           <div id="ss-rooms"></div>
           <button type="button" class="btn" id="ss-add">+ Rollladen</button>
           <small class="field-hint">Pflicht: ID, Name, Rollladen-Item (0 = offen, 100 = zu). „Automatik: openHAB-Regel“ heißt: eine openHAB-Regel fährt diesen Rollladen, der PV Controller plant dafür nichts. Tür ohne Kontakt-Item oder mit offenem Kontakt: Schließen nur mit Bestätigung, Gruppenbefehle überspringen sie.</small>
@@ -1012,6 +1017,6 @@
 
   <script src="/static/app.js?v=20261013i" defer></script>
   <script src="/static/heating.js?v=20261013j" defer></script>
-  <script src="/static/shutters.js?v=20261013a" defer></script>
+  <script src="/static/shutters.js?v=20261013c" defer></script>
 </body>
 </html>

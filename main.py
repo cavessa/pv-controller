@@ -41,36 +41,49 @@ def setup_logging(log_file: str) -> None:
 
 
 HEATING_BUDGET_S = 5.0     # Heizungs-Zeitpläne: maximale Gesamtzeit nach der PV-Steuerung
+SHUTTER_BUDGET_S = 20.0    # Rollladen-Zeitpläne (gestaffeltes Senden braucht Zeit)
 
 
-def run_heating_schedules(config_path: str, dry_run: bool, budget_s: float | None = None) -> None:
-    """Heizungs-Zeitpläne nach der PV-Steuerung, isoliert: eigener Thread mit hartem Zeitlimit.
+def _run_isolated(module: str, budget_s: float, config_path: str, dry_run: bool, logger: str,
+                  summary: str, name: str, thread: str) -> None:
+    """``<module>.run`` nach der PV-Steuerung, isoliert: eigener Thread mit hartem Zeitlimit.
 
     Fehler und hängende openHAB-Requests werden geloggt und nie weitergereicht. Läuft der Thread
     über das Limit, endet der Cron-Lauf trotzdem (Daemon-Thread); offene Einträge bleiben fällig.
     """
-    log = logging.getLogger("pv-controller.heating")
-    budget_s = HEATING_BUDGET_S if budget_s is None else budget_s
+    log = logging.getLogger(logger)
     t0 = time.monotonic()
 
     def work() -> None:
         try:
-            import heating_schedule
+            mod = __import__(module)
             with open(config_path, "r", encoding="utf-8") as f:
                 raw = json.load(f)
-            res = heating_schedule.run(raw, dry_run=dry_run, budget_s=budget_s)
+            res = mod.run(raw, dry_run=dry_run, budget_s=budget_s)
             if res.requests or res.skipped or res.timed_out:
-                log.info("Zeitpläne: %d fällig, %d gesendet, %d übersprungen, %d openHAB-Requests, %.2f s",
-                         res.due, res.sent, res.skipped, res.requests, res.duration_s)
+                log.info("%s: %d fällig, %d gesendet, %d übersprungen, %d openHAB-Requests, %.2f s",
+                         summary, res.due, res.sent, res.skipped, res.requests, res.duration_s)
         except Exception:
-            log.exception("Heizungs-Zeitpläne: Fehler (PV-Steuerung nicht betroffen)")
+            log.exception("%s: Fehler (PV-Steuerung nicht betroffen)", name)
 
-    th = threading.Thread(target=work, name="heating-schedules", daemon=True)
+    th = threading.Thread(target=work, name=thread, daemon=True)
     th.start()
     th.join(budget_s + 0.5)
     if th.is_alive():
-        log.warning("Heizungs-Zeitpläne: nach %.1f s abgebrochen (openHAB hängt?) – nächste Minute erneut",
-                    time.monotonic() - t0)
+        log.warning("%s: nach %.1f s abgebrochen (openHAB hängt?) – nächste Minute erneut",
+                    name, time.monotonic() - t0)
+
+
+def run_heating_schedules(config_path: str, dry_run: bool, budget_s: float | None = None) -> None:
+    """Heizungs-Zeitpläne nach der PV-Steuerung (eigenes Zeitlimit, Fehler isoliert)."""
+    _run_isolated("heating_schedule", HEATING_BUDGET_S if budget_s is None else budget_s, config_path, dry_run,
+                  "pv-controller.heating", "Zeitpläne", "Heizungs-Zeitpläne", "heating-schedules")
+
+
+def run_shutter_schedules(config_path: str, dry_run: bool, budget_s: float | None = None) -> None:
+    """Rollladen-Zeitpläne nach der Heizung (eigenes Zeitlimit, Fehler isoliert)."""
+    _run_isolated("shutter_schedule", SHUTTER_BUDGET_S if budget_s is None else budget_s, config_path, dry_run,
+                  "pv-controller.shutters", "Rollladen-Zeitpläne", "Rollladen-Zeitpläne", "shutter-schedules")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -117,8 +130,9 @@ def main(argv: list[str] | None = None) -> int:
         log.exception("Unerwarteter Fehler im Controller-Lauf")
         rc = 1
 
-    # Erst nach PV/Heizstab/Wallbox: Heizungs-Zeitpläne (eigenes Zeitlimit, Fehler isoliert)
+    # Erst nach PV/Heizstab/Wallbox: Heizungs-, dann Rollladen-Zeitpläne (je eigenes Zeitlimit, Fehler isoliert)
     run_heating_schedules(args.config, config.runtime.dry_run)
+    run_shutter_schedules(args.config, config.runtime.dry_run)
     return rc
 
 

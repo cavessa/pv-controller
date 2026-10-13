@@ -35,6 +35,7 @@ import heating as _heating
 import heating_schedule as _hsched
 import heating_chat as _hchat
 import shutters as _shutters
+import shutter_schedule as _ssched
 from clients.goe_client import GoeClient, GoeError
 from config import Config, load_config
 from controller import ControllerMode, run_controller
@@ -2248,9 +2249,22 @@ def shutters_status(response: Response) -> dict[str, Any]:
         "groups": scfg.groups(),
         "command_spacing_s": scfg.command_spacing_s,
     }
+    base["schedules_enabled"] = scfg.schedules_enabled
     if not scfg.enabled or client is None:
         return {**base, "ok": True, "error": None, "rooms": [], "duty_cycle": None}
-    return {**base, **_shutters.read_status(scfg, client)}
+    st = {**base, **_shutters.read_status(scfg, client)}
+    now = datetime.now(_ssched.TZ)
+    try:
+        nxt = _ssched.next_rides(_ssched.list_schedules(), now, _ssched.location(raw))
+        hints = _ssched.hints(now)
+    except Exception as e:  # Zeitplan-DB darf die Anzeige nicht blockieren
+        log.warning("shutters: Zeitpläne nicht lesbar: %s", e)
+        nxt, hints = {}, {}
+    for r in st["rooms"]:
+        auto = r["automation"] == "pvcontroller"
+        r["next"] = nxt.get(r["id"]) if auto else None
+        r["hint"] = hints.get(r["id"]) if auto else None
+    return st
 
 
 class _ShutterCommand(BaseModel):
@@ -2274,13 +2288,17 @@ def shutters_command(body: _ShutterCommand) -> dict[str, Any]:
         raise HTTPException(400, str(e))
     if sh.is_door and body.command in ("down", "position"):
         st = next((r for r in _shutters.read_status(scfg, client)["rooms"] if r["id"] == sh.id), None)
-        current = st["position"] if st else None
+        current = st["position"] if st and st["position_reliable"] else None     # unsicher → unbekannt
         why = st["door_guard"] if st else _shutters.door_guard(sh, None)
         if why and _shutters.is_closing(body.command, target, current) and not body.confirm:
             raise HTTPException(409, why + " – Schließen nur mit Bestätigung.")
     res = _shutter_send(raw, client, sh, body.command, target, "manuell")
     if not res["ok"]:
         raise HTTPException(502, res["error"])
+    try:
+        _ssched.clear_wait(sh.id)                # Bedienung von Hand beendet ein Warten auf die Tür
+    except sqlite3.Error as e:
+        log.warning("shutters: Warten nicht beendet: %s", e)
     return res
 
 
@@ -2335,17 +2353,27 @@ class _ShuttersConfigUpdate(BaseModel):
     duty_cycle_item: str = ""
     duty_cycle_max: float = 80
     rooms: list[dict[str, Any]]
+    schedules_enabled: Optional[bool] = None     # None = unverändert lassen
+    frost_temp_c: Optional[float] = None
+    frost_temp_item: Optional[str] = None
+    manual_hold_min: Optional[int] = None
 
 
 _SHUTTER_ROOM_KEYS = ("id", "name", "item", "contact_item", "is_door", "group", "automation", "device",
-                      "can_position")
+                      "can_position", "retry_when_closed", "auto_close_max", "position_source", "shelly_url")
 
 
 @app.put("/api/shutters/config")
 def shutters_config_put(body: _ShuttersConfigUpdate) -> dict[str, Any]:
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         current = json.load(f)
-    block = dict(current.get("shutters") or {})          # unbekannte Felder (z. B. aus Phase 2) bleiben
+    block = dict(current.get("shutters") or {})          # unbekannte Felder bleiben
+    old_se = bool(block.get("schedules_enabled", False))
+    for k in ("schedules_enabled", "frost_temp_c", "manual_hold_min"):
+        if getattr(body, k) is not None:
+            block[k] = getattr(body, k)
+    if body.frost_temp_item is not None:
+        block["frost_temp_item"] = body.frost_temp_item.strip()
     block.update({
         "enabled": body.enabled,
         "command_spacing_s": body.command_spacing_s,
@@ -2363,4 +2391,87 @@ def shutters_config_put(body: _ShuttersConfigUpdate) -> dict[str, Any]:
     if block["enabled"] and not (new_cfg.get("openhab") or {}).get("url"):
         raise HTTPException(400, "openhab.url fehlt in config.json")
     backup = _write_config(new_cfg)
+    if bool(block.get("schedules_enabled", False)) != old_se:
+        _app_log(f"Rollladen-Zeitpläne {'aktiviert' if block['schedules_enabled'] else 'deaktiviert'} (Settings)",
+                 area="shutters")
     return {"ok": True, "backup": backup, "shutters": block}
+
+
+# ── Rollläden: Zeitpläne ────────────────────────────────────────────────────
+
+
+class _ShutterScheduleCreate(BaseModel):
+    shutter_id: str
+    action: str                          # up | down | position
+    kind: str                            # time | sunrise | sunset
+    position: Optional[float] = None
+    time: Optional[str] = None
+    offset_min: int = 0
+    not_before: Optional[str] = None
+    not_after: Optional[str] = None
+    days: Optional[list[str]] = None
+    date: Optional[str] = None
+    note: Optional[str] = None
+
+
+class _ShutterSchedulePatch(BaseModel):
+    enabled: bool
+
+
+def _sched_text(sh_name: str, e: dict[str, Any]) -> str:
+    return (f"{sh_name} {_ssched.describe(e)} → {_ssched.target_label(e['action'], e['position'])} "
+            f"({e['date'] or ','.join(e['days']) if isinstance(e['days'], list) else e['days']})")
+
+
+@app.get("/api/shutters/schedules")
+def shutters_schedules(response: Response) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    raw, scfg, _client = _shutters_ctx()
+    now = datetime.now(_ssched.TZ)
+    loc = _ssched.location(raw)
+    items = _ssched.list_schedules()
+    today = {}
+    if loc:
+        rise, sset = _ssched.sun_times(now.date(), *loc)
+        today = {"sunrise": rise.strftime("%H:%M") if rise else None, "sunset": sset.strftime("%H:%M") if sset else None}
+    return {"schedules_enabled": scfg.schedules_enabled, "dry_run": _heating_dry_run(raw),
+            "now": now.isoformat(timespec="minutes"), "items": items, "sun_today": today,
+            "next": _ssched.next_rides(items, now, loc)}
+
+
+@app.post("/api/shutters/schedules")
+def shutters_schedule_create(body: _ShutterScheduleCreate) -> dict[str, Any]:
+    raw, scfg, _client = _shutters_ctx()
+    pos = body.position
+    if isinstance(pos, float) and pos.is_integer():
+        pos = int(pos)
+    try:
+        fields = _ssched.validate_entry(scfg, body.shutter_id, body.action, body.kind, position=pos,
+                                        time=body.time, offset_min=body.offset_min, not_before=body.not_before,
+                                        not_after=body.not_after, days=body.days, date=body.date or None,
+                                        loc=_ssched.location(raw))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    entry = _ssched.create_schedule(fields, source="ui", note=(body.note or "").strip()[:200])
+    _app_log("Rollladen-Zeitplan angelegt: " + _sched_text(scfg.shutter(body.shutter_id).name, entry), area="shutters")
+    return entry
+
+
+@app.patch("/api/shutters/schedules/{sid}")
+def shutters_schedule_patch(sid: int, body: _ShutterSchedulePatch) -> dict[str, Any]:
+    entry = _ssched.set_enabled(sid, body.enabled)
+    if entry is None:
+        raise HTTPException(404, f"Zeitplan {sid} unbekannt")
+    return entry
+
+
+@app.delete("/api/shutters/schedules/{sid}")
+def shutters_schedule_delete(sid: int) -> dict[str, Any]:
+    entry = _ssched.get_schedule(sid)
+    if entry is None or not _ssched.delete_schedule(sid):
+        raise HTTPException(404, f"Zeitplan {sid} unbekannt")
+    _raw, scfg, _client = _shutters_ctx()
+    sh = scfg.shutter(entry["shutter_id"])
+    _app_log("Rollladen-Zeitplan gelöscht: " + _sched_text(sh.name if sh else entry["shutter_id"], entry),
+             area="shutters")
+    return {"ok": True, "id": sid}

@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-10-13 – Rollläden Phase 2: Zeitpläne (Uhrzeit / Sonnenauf- und -untergang) mit Sicherheitsregeln
+
+**Neu:** Zeitpläne je Rollladen, ausgeführt im Minuten-Cron nach PV-Steuerung und Heizungs-Zeitplänen (eigener Thread, Zeitbudget 20 s, Fehler isoliert). Eigener Schalter „Rollladen-Zeitpläne aktiv“ (Default aus). **Nur Rollläden mit „Automatik: PV Controller“** (aktuell Schlafzimmer); für „openHAB-Regel“ lehnt der Server Zeitpläne ab und der Cron fährt sie nie.
+- Zeitarten: feste Uhrzeit; Sonnenaufgang/-untergang ± Offset (−180…+180 min) mit optional „nicht vor“ / „nicht nach“. Ziel: auf / zu / Position %. Wochentage oder einmalig.
+- Sonnenzeiten lokal aus `latitude`/`longitude` (NOAA-Formel, keine Abhängigkeit, keine externe API). Abgleich mit Open-Meteo für 13.10./24.10./21.06./21.12.: ±1 min. **Zeitumstellung 25.10.2026:** lokal korrekt 06:55 MEZ; Open-Meteo liefert für den 25.10. 07:55 (rechnet über die Umstellung mit dem alten Offset, betrifft nur die Anzeige in `weather_log`).
+- Card: „Nächste Fahrt: heute Sonnenuntergang +15 min (18:52) ▼ zu“, aufklappbare Zeitplan-Liste mit „+ Zeitplan“ (wie Heizung), Hinweise zu übersprungenen Fahrten (12 h).
+**Sicherheitsregeln (mit Tests):**
+1. Aussperrschutz: Tür mit offenem/unbekanntem Kontakt → automatisches Schließen übersprungen (Log + Hinweis), kein Nachholen. Pro Rollladen `retry_when_closed`: nachholen, sobald der Kontakt „zu“ meldet (höchstens 12 h, ein neuer Eintrag ersetzt das Warten, Bedienung von Hand beendet es).
+2. Tür ohne Kontakt-Item → automatisch höchstens bis `auto_close_max` (Default 80 %, pro Rollladen änderbar).
+3. Frost: Außentemperatur unter `frost_temp_c` (Default 0 °C) oder unbekannt → automatisches Öffnen übersprungen; Schließen erlaubt. Quelle: `frost_temp_item` (optional), sonst Tages-Minimum der Prognose (`weather_log`).
+4. Gestaffelt (`command_spacing_s`), Duty Cycle über der Grenze → nichts senden, Einträge bleiben fällig.
+5. Nachholen nur bis 15 min; mehrere fällige je Rollladen → nur der späteste.
+6. Manueller Vorrang: Positionsänderung (≥ 5 %) in der openHAB-Persistence ohne eigenen Befehl in den letzten `manual_hold_min` (Default 60) → übersprungen. Eigene Befehle (Tab, Gruppe, Zeitplan) gelten bis `verify_after` + 3 min. Verlauf nicht lesbar → übersprungen.
+- `dry_run` → nur loggen. Senden scheitert → nächste Minute einmal erneut, dann „Fehler“. openHAB nicht erreichbar → bleibt fällig.
+**Ist-Position aus eigener Quelle (Phase-1-Fix):** Prod-Test 13:38 (Schlafzimmer ▼ Ab + ■ Stop): openHAB zeigt danach dauerhaft 100 (autoupdate-Vorhersage, das Shelly-Binding korrigiert nicht), real stand der Rollladen bei 53 % zu (Shelly `current_pos` 47 = % offen).
+- Neu je Rollladen `position_source`: `"item"` (Default, Steuer-Item), `"shelly"` + `shelly_url` (Gen1 `GET /roller/0`, `100 − current_pos`, ohne Kalibrierung keine Position), `"item:<Name>"` (eigenes Lese-Item, z. B. HmIP-Kanal 3 `LEVEL` ohne autoupdate). Befehle gehen weiter an das Steuer-Item über openHAB.
+- Anzeige, Rückprüfung, Tür-Check bei manuellen Befehlen, „von Hand bewegt“ (Verlauf des Lese-Items, sonst Steuer-Item) und alle Zeitplan-Regeln nutzen diese Ist-Position.
+- Fallback ohne verlässliche Quelle: Position gilt als **unbekannt** (Steuer-Item nach STOP 60 min, während einer ausstehenden Rückmeldung, Lese-Item bis zur Rückprüfung, Shelly nicht erreichbar) → kein „steht schon dort“, Aussperrschutz und Frost greifen in beide Richtungen; die Card zeigt den Grund.
+- Während der Fahrt (Shelly `state` open/close): Card „fährt ▼ 53 %“, Tab lädt alle 3 s nach, bis er steht; Rückprüfung wartet; ein fälliger Zeitplan wartet eine Minute (bleibt im Nachhol-Fenster).
+- Settings: „Ist-Position aus“ (Steuer-Item / eigenes Lese-Item / Shelly direkt) mit Lese-Item bzw. Shelly-Adresse.
+- Dev-Config: Schlafzimmer `shelly` (http://192.168.2.51), Wohnen links `item:Rollladen_Wohnen_Level`, `frost_temp_item` = `Aussentemperatur_Temperature` (Prognose-Minimum bleibt Fallback). Für Wohnen rechts, Esszimmer, Hintereingang existiert Kanal 3 `LEVEL`, ist aber mit keinem Item verlinkt.
+**Code:** `shutter_schedule.py` (neu), Config-Felder in `shutters.py` (`schedules_enabled`, `frost_temp_c`, `frost_temp_item`, `manual_hold_min`; je Rollladen `retry_when_closed`, `auto_close_max`), Endpunkte `/api/shutters/schedules`, `main.py`: gemeinsame Hilfsfunktion `_run_isolated` für Heizungs- und Rollladen-Zeitpläne (Heizung: gleiche Log-Texte, gleiches Verhalten). Tests: `tests/test_shutter_schedule.py` (64: Sonnenzeiten inkl. 25.10. und 29.03., Lauf durch die Nacht 24./25.10., Offsets/Grenzen, Aussperrschutz, Frost, Staffelung/Budget, Duty Cycle, manueller Vorrang, openHAB weg, unsichere Position, Shelly-/Lese-Item-Quelle), `tests/test_shutters.py` +10 (Positionsquellen). Alle 383 Tests grün (Heizung nur um die DST-Tests aus dem separaten Fix ergänzt).
+**Zeitumstellung:** Vergleiche und Abstände zweier Zeitpunkte mit derselben `ZoneInfo` rechnet Python als Wanduhrzeit (`fold` ignoriert, in der doppelten Stunde 1 h daneben) – Fälligkeit, Verspätung, nächste Fahrt, 12-h-Warten und „von Hand bewegt“ rechnen über UTC (wie im separaten Heizungs-Fix).
+
 ## 2026-10-13 – Fix Heizungs-Zeitpläne: Zeitumstellung im Oktober (doppelte Stunde)
 
 **Ursache:** Python vergleicht und subtrahiert aware datetimes mit derselben `tzinfo` als Wanduhrzeit, `fold` wird ignoriert. In der doppelten Stunde (So 25.10.2026, 02:00–03:00) war ein Zeitpunkt aus der ersten Stunde (CEST) daher „später“ als einer aus der zweiten (CET).

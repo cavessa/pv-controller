@@ -254,6 +254,96 @@ class VerifyTest(DbCase):
         self.assertEqual(r["pending"]["command"], "up")
 
 
+SHELLY_STOP = {"state": "stop", "source": "http", "current_pos": 47, "positioning": True, "is_valid": True,
+               "calibrating": False}
+
+
+class PositionSourceTest(DbCase):
+    """Ist-Position: Shelly direkt / Lese-Item statt Steuer-Item (autoupdate)."""
+
+    def setUp(self):
+        super().setUp()
+        rooms = [dict(ROOMS[0], position_source="item:W_Read"),
+                 dict(ROOMS[1], position_source="shelly", shelly_url="http://192.168.2.51/")]
+        self.c = shutters.parse_shutters(raw_cfg(rooms=rooms))
+        self.items = {**ITEMS, "W_Read": {"name": "W_Read", "type": "Rollershutter", "state": "40"}}
+        self.now = datetime(2026, 10, 13, 14, 0, tzinfo=TZ)
+
+    def test_parse(self):
+        w, t = self.c.shutter("wohnen"), self.c.shutter("terrasse")
+        self.assertEqual((w.position_item, w.history_item), ("W_Read", "W_Read"))
+        self.assertIn("W_Read", w.items())
+        self.assertEqual((t.position_source, t.shelly_url, t.history_item), ("shelly", "http://192.168.2.51", "T_Roll"))
+        for bad in ({"position_source": "shelly"}, {"position_source": "shelly", "shelly_url": "192.168.2.51"},
+                    {"position_source": "item:"}, {"position_source": "mqtt"}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                shutters.parse_shutters(raw_cfg(rooms=[dict(ROOMS[0], **bad)]))
+
+    def test_shelly_mapping(self):
+        self.assertEqual(shutters._from_shelly(SHELLY_STOP), (53, None))            # 47 % offen = 53 % zu
+        self.assertEqual(shutters._from_shelly({**SHELLY_STOP, "state": "close", "current_pos": 80}), (20, "down"))
+        self.assertEqual(shutters._from_shelly({**SHELLY_STOP, "state": "open"})[1], "up")
+        self.assertEqual(shutters._from_shelly({**SHELLY_STOP, "positioning": False}), (None, None))
+        self.assertEqual(shutters._from_shelly({**SHELLY_STOP, "calibrating": True})[0], None)
+
+    def test_shelly_beats_stale_item_after_stop(self):
+        """13.10.2026: ▼ Ab + ■ Stop → openHAB 100 (autoupdate), Shelly 47 % offen."""
+        sh = self.c.shutter("terrasse")
+        shutters.record_command(sh, "stop", None, "manuell", self.now - timedelta(minutes=2))
+        items = {**self.items, "T_Roll": {"name": "T_Roll", "state": "100"}}
+        p = shutters.resolve_position(sh, items, shutters.last_commands()["terrasse"], self.now, SHELLY_STOP)
+        self.assertEqual((p.value, p.reliable, p.origin, p.note), (53, True, "shelly", None))
+
+    def test_shelly_unreachable_falls_back_unreliable(self):
+        sh = self.c.shutter("terrasse")
+        p = shutters.resolve_position(sh, self.items, None, self.now, shutters.ShellyError("timeout"))
+        self.assertEqual((p.value, p.reliable, p.origin), (65, False, "item"))
+        self.assertIn("Shelly nicht erreichbar", p.note)
+
+    def test_read_item(self):
+        sh = self.c.shutter("wohnen")
+        p = shutters.resolve_position(sh, self.items, None, self.now)
+        self.assertEqual((p.value, p.reliable, p.origin), (40, True, "item:W_Read"))
+        shutters.record_command(sh, "down", 100, "manuell", self.now - timedelta(minutes=1))
+        p = shutters.resolve_position(sh, self.items, shutters.last_commands()["wohnen"], self.now)
+        self.assertEqual((p.value, p.reliable), (40, False))        # HmIP-Kanal 3 hinkt bis zur Rückprüfung
+        items = {k: v for k, v in self.items.items() if k != "W_Read"}
+        p = shutters.resolve_position(sh, items, None, self.now)
+        self.assertEqual((p.value, p.reliable), (0, False))
+        self.assertIn("W_Read ohne Wert", p.note)
+
+    def test_read_shelly_http(self):
+        with mock.patch.object(shutters.requests, "get") as get:
+            get.return_value.json.return_value = SHELLY_STOP
+            get.return_value.raise_for_status.return_value = None
+            self.assertEqual(shutters.read_shelly("http://192.168.2.51/")["current_pos"], 47)
+        self.assertEqual(get.call_args[0][0], "http://192.168.2.51/roller/0")
+        import requests
+        with mock.patch.object(shutters.requests, "get", side_effect=requests.ConnectTimeout("x")):
+            with self.assertRaises(shutters.ShellyError):
+                shutters.read_shelly("http://192.168.2.51")
+
+    def test_status_uses_shelly_and_moving(self):
+        with mock.patch.object(shutters, "read_shelly", return_value={**SHELLY_STOP, "state": "close"}):
+            st = shutters.read_status(self.c, FakeClient(items=self.items), now=self.now)
+        t = next(r for r in st["rooms"] if r["id"] == "terrasse")
+        self.assertEqual((t["position"], t["moving"], t["position_origin"]), (53, "down", "shelly"))
+        w = next(r for r in st["rooms"] if r["id"] == "wohnen")
+        self.assertEqual((w["position"], w["position_origin"]), (40, "item:W_Read"))
+
+    def test_verify_waits_while_moving_then_uses_shelly(self):
+        sh = self.c.shutter("terrasse")
+        shutters.record_command(sh, "down", 100, "manuell", self.now - timedelta(minutes=2))   # fällig (60 s)
+        with mock.patch.object(shutters, "read_shelly", return_value={**SHELLY_STOP, "state": "close", "current_pos": 30}):
+            st = shutters.read_status(self.c, FakeClient(items=self.items), now=self.now)
+        self.assertIsNone(next(r for r in st["rooms"] if r["id"] == "terrasse")["alert"])     # fährt noch
+        with mock.patch.object(shutters, "read_shelly", return_value={**SHELLY_STOP, "current_pos": 0}):
+            st = shutters.read_status(self.c, FakeClient(items=self.items), now=self.now)
+        t = next(r for r in st["rooms"] if r["id"] == "terrasse")
+        self.assertIsNone(t["alert"])
+        self.assertIsNone(t["pending"])                                                        # 100 % = Ziel
+
+
 class GroupTest(unittest.TestCase):
     def setUp(self):
         self.c = shutters.parse_shutters(raw_cfg())
@@ -393,6 +483,21 @@ class WebTest(DbCase):
         self.assertEqual(cm.exception.status_code, 409)
         self.cmd(shutter_id="hinten", command="down", confirm=True)
         self.assertEqual(self.fake.sent, [("H_Roll", "DOWN")])
+
+    def test_door_check_uses_reliable_position(self):
+        """Position offen laut Shelly, Item sagt veraltet 100 → „Position 90“ ist Schließen → Bestätigung."""
+        c = json.loads(self.cfg_path.read_text())
+        for r in c["shutters"]["rooms"]:
+            if r["id"] == "terrasse":
+                r.update(position_source="shelly", shelly_url="http://shelly")
+        self.cfg_path.write_text(json.dumps(c))
+        self.fake.items["T_Roll"]["state"] = "100"
+        self.fake.items["T_Door"]["state"] = "OPEN"
+        with mock.patch.object(shutters, "read_shelly", return_value={**SHELLY_STOP, "current_pos": 100}):
+            with self.assertRaises(web.HTTPException) as cm:
+                self.cmd(shutter_id="terrasse", command="position", position=90)
+        self.assertEqual(cm.exception.status_code, 409)
+        self.assertEqual(self.fake.sent, [])
 
     def test_window_open_does_not_block(self):
         self.cmd(shutter_id="bad", command="down")            # Fenster (kein is_door): offen ist egal

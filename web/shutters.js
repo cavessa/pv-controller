@@ -8,8 +8,14 @@ const SHUT = {
   loadSeq: 0,
   drag: {},             // shutter_id → Slider wird gerade bedient (Poll überschreibt ihn nicht)
   busy: false,          // Gruppenbefehl läuft
+  movingTimer: null,    // schnelles Nachladen während einer Fahrt
+  sched: [],            // alle Zeitpläne (GET /api/shutters/schedules)
+  sun: {},              // heute: {sunrise, sunset}
+  schedOpen: {},        // shutter_id → Zeitpläne aufgeklappt
+  form: {},             // shutter_id → Eingaben „+ Zeitplan“
 };
 const SHUT_POLL_MS = 30_000;
+const SHUT_MOVING_POLL_MS = 3_000;      // solange ein Shelly fährt: Position alle 3 s
 const SHUT_CMD = { up: "▲ Auf", down: "▼ Ab", stop: "■ Stop" };
 
 const _shutVisible = () => !document.hidden && $(".tab.active")?.dataset.tab === "rolllaeden";
@@ -33,15 +39,20 @@ async function loadShutters() {
   const banner = $("#shut-banner");
   const seq = ++SHUT.loadSeq;
   try {
-    const s = await api("/api/shutters/status");
+    const [s, sch] = await Promise.all([
+      api("/api/shutters/status"),
+      api("/api/shutters/schedules").catch(() => null),
+    ]);
     if (seq !== SHUT.loadSeq) return;
     SHUT.status = s;
+    if (sch) { SHUT.sched = sch.items; SHUT.sun = sch.sun_today || {}; }
     banner.classList.add("hidden");
     if (!s.enabled || !s.openhab_configured) {
       const why = !s.openhab_configured
         ? "openHAB ist nicht konfiguriert: in config.json fehlt der Block „openhab“ (url, token)."
         : "Rollläden sind nicht aktiv. In den Settings unter „Rollläden“ eintragen und aktivieren.";
       $("#shut-dry").classList.add("hidden");
+      $("#shut-sched-off").classList.add("hidden");
       $("#shut-groups").innerHTML = "";
       $("#shut-updated").textContent = "";
       $("#shut-rooms").innerHTML = `<div class="card"><p class="note">${why}</p></div>`;
@@ -50,12 +61,16 @@ async function loadShutters() {
     }
     if (!s.ok) { banner.textContent = s.error || "openHAB nicht erreichbar"; banner.classList.remove("hidden"); }
     $("#shut-dry").classList.toggle("hidden", !s.dry_run);
+    $("#shut-sched-off").classList.toggle("hidden", !!s.schedules_enabled || !s.rooms.some(r => r.automation === "pvcontroller"));
     _renderShutGroups(s);
     renderShutRooms(s);
     const stand = new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     $("#shut-updated").textContent = "Stand " + stand;
     pillTimes.shutters = stand;
     updatePillTime();
+    // fährt ein Rollladen (Shelly meldet open/close) → in 3 s erneut, bis er steht
+    clearTimeout(SHUT.movingTimer);
+    if (s.rooms.some(r => r.moving)) SHUT.movingTimer = setTimeout(() => { if (_shutVisible()) loadShutters(); }, SHUT_MOVING_POLL_MS);
   } catch (e) {
     banner.textContent = "Rollläden: " + e.message;
     banner.classList.remove("hidden");
@@ -81,7 +96,7 @@ function _renderShutGroups(s) {
 
 function renderShutRooms(s) {
   const wrap = $("#shut-rooms");
-  const sig = s.rooms.map(r => `${r.id}|${r.name}|${r.can_position}`).join(";");
+  const sig = s.rooms.map(r => `${r.id}|${r.name}|${r.can_position}|${r.automation}`).join(";");
   if (sig !== SHUT.roomsSig || !wrap.querySelector(".shut-room")) {
     wrap.innerHTML = s.rooms.map(_shutSkeleton).join("");
     SHUT.roomsSig = sig;
@@ -108,7 +123,9 @@ function _shutSkeleton(r) {
           ${slider}
         </div>
         <div data-slot="pending"></div><div data-slot="auto"></div>
-        <div data-slot="alert"></div><div data-slot="err"></div>
+        <div data-slot="hint"></div><div data-slot="alert"></div><div data-slot="err"></div>
+        <div class="heat-toggles" data-slot="toggles"></div>
+        <div data-slot="sched"></div>
       </div>`;
 }
 
@@ -120,7 +137,7 @@ function _errText(e) {
 
 const _hhmm = iso => iso ? iso.slice(11, 16) : "";
 
-function updateShutRoom(id) {
+function updateShutRoom(id, force = false) {
   const r = SHUT.status?.rooms.find(x => x.id === id);
   const card = document.querySelector(`.shut-room[data-shut="${CSS.escape(id)}"]`);
   if (!r || !card) return;
@@ -130,10 +147,16 @@ function updateShutRoom(id) {
   const fill = slot("fill");
   const w = pos == null ? "0%" : pos + "%";
   if (fill.style.width !== w) fill.style.width = w;
-  fill.classList.toggle("stale", !!r.pending);
-  const val = pos == null ? "–" : pos === 0 ? "offen" : pos >= 100 ? "zu" : `${pos} % zu`;
+  const stale = !r.moving && (!r.position_reliable || !!r.pending);
+  fill.classList.toggle("stale", stale);
+  const val = pos == null ? "–"
+    : r.moving ? `fährt ${r.moving === "down" ? "▼" : "▲"} ${pos} %`
+    : pos === 0 ? "offen" : pos >= 100 ? "zu" : `${pos} % zu`;
   if (slot("val").textContent !== val) slot("val").textContent = val;
-  slot("val").classList.toggle("stale", !!r.pending);
+  slot("val").classList.toggle("stale", stale);
+  slot("val").classList.toggle("moving", !!r.moving);
+  slot("val").title = r.position_origin === "shelly" ? "Ist-Position direkt vom Shelly"
+    : r.position_origin.startsWith("item:") ? `Ist-Position aus ${r.position_origin.slice(5)}` : "Ist-Position aus dem Steuer-Item";
   const kind = r.is_door ? "🚪 Tür" : "🪟 Fenster";
   _setSlot(slot("contact"), r.has_contact
     ? `<span class="shut-contact${r.contact === "open" ? " open" : ""}">${kind} · ${r.contact === "open" ? "offen" : r.contact === "closed" ? "zu" : "?"}</span>`
@@ -143,16 +166,133 @@ function updateShutRoom(id) {
   down.title = r.door_guard ? r.door_guard + " – Schließen nur mit Bestätigung" : "";
   const sl = card.querySelector("[data-pos]");
   if (sl && !SHUT.drag[id]) {
-    const v = String(r.pending?.target ?? pos ?? 0);
+    const v = String(r.moving ? pos ?? 0 : r.pending?.target ?? pos ?? 0);
     if (sl.value !== v) sl.value = v;
     _setSlot(slot("posval"), `${sl.value} %`);
   }
-  _setSlot(slot("pending"), r.pending
-    ? `<div class="heat-meta shut-pending">${r.pending.command === "position" ? `→ ${r.pending.target} %` : SHUT_CMD[r.pending.command]} gesendet ${_hhmm(r.pending.sent_at)} · Rückmeldung ab ${_hhmm(r.pending.verify_at)}</div>` : "");
-  _setSlot(slot("auto"), `<div class="heat-meta heat-next">${r.automation === "openhab"
-    ? "Automatik: openHAB-Regel" : "Automatik: PV Controller (Zeitpläne folgen in Phase 2)"}</div>`);
+  _setSlot(slot("pending"), r.pending && !r.moving
+    ? `<div class="heat-meta shut-pending">${r.pending.command === "position" ? `→ ${r.pending.target} %` : SHUT_CMD[r.pending.command]} gesendet ${_hhmm(r.pending.sent_at)} · Rückmeldung ab ${_hhmm(r.pending.verify_at)}</div>`
+    : r.uncertain ? `<div class="heat-meta shut-pending">${escapeHtml(r.uncertain)}</div>` : "");
+  const auto = r.automation === "pvcontroller";
+  _setSlot(slot("auto"), `<div class="heat-meta heat-next">${!auto ? "Automatik: openHAB-Regel"
+    : r.next ? `Nächste Fahrt: ${_fmtWhenShut(r.next)}${SHUT.status.schedules_enabled ? "" : ` <span class="heat-off">(Zeitpläne aus)</span>`}`
+    : "Automatik: PV Controller · keine Fahrt geplant"}</div>`);
+  _setSlot(slot("hint"), r.hint ? `<div class="heat-alert">ℹ️ ${escapeHtml(r.hint)}</div>` : "");
   _setSlot(slot("alert"), r.alert ? `<div class="heat-alert">⚠️ ${escapeHtml(r.alert)}</div>` : "");
   _setSlot(slot("err"), r.error ? `<div class="heat-err">${escapeHtml(r.error)}</div>` : "");
+  _setSlot(slot("toggles"), auto
+    ? `<button type="button" class="heat-hist-toggle" data-ssched="${_hq(r.id)}">${SHUT.schedOpen[r.id] ? "▾" : "▸"} Zeitpläne (${SHUT.sched.filter(e => e.shutter_id === r.id).length})</button>` : "");
+  const sch = slot("sched");
+  if (force || !_typingIn(sch)) _setSlot(sch, auto && SHUT.schedOpen[r.id] ? _shutSchedPanel(r) : "");
+}
+
+// ── Zeitpläne ──────────────────────────────────────────────────────────────
+
+const _SHUT_TARGET = { up: "▲ auf", down: "▼ zu" };
+const _shutTarget = (a, p) => _SHUT_TARGET[a] || `→ ${p} %`;
+
+// "heute Sonnenuntergang +15 min (18:47) → zu" / "morgen 07:00 → auf"
+function _fmtWhenShut(n) {
+  const at = _fmtWhen(n.at);                      // aus heating.js: "heute 18:47"
+  const [day, hm] = [at.slice(0, at.lastIndexOf(" ")), at.slice(at.lastIndexOf(" ") + 1)];
+  const what = /^\d\d:\d\d$/.test(n.when) ? hm : `${n.when} (${hm})`;
+  return `${escapeHtml(day)} ${escapeHtml(what)} ${_shutTarget(n.action, n.position)}`;
+}
+
+function _shutForm(id) {
+  return SHUT.form[id] ||= { kind: "sunset", time: "", offset: 0, not_before: "", not_after: "", action: "down",
+                             position: 50, days: [], date: "" };
+}
+
+function _shutSchedPanel(r) {
+  const list = SHUT.sched.filter(e => e.shutter_id === r.id)
+    .sort((a, b) => (a.date || "").localeCompare(b.date || "") || (a.time || a.kind).localeCompare(b.time || b.kind));
+  const f = _shutForm(r.id);
+  const rows = list.map(e => {
+    const when = e.date ? `<span class="heat-chip once">${_fmtDate(e.date)}</span>`
+      : HEAT_DAYS.map(([k, l]) => `<span class="heat-chip${e.days.includes(k) ? " on" : ""}">${l}</span>`).join("");
+    const last = e.last_run ? `<small class="heat-last" title="${_hq(e.last_message || e.last_run)}">zuletzt ${_hq(e.last_run.slice(5, 16).replace("T", " "))} · ${_SHUT_RESULT[e.last_result] || _hq(e.last_result || "")}</small>` : "";
+    return `<div class="heat-sched-row shut-sched-row${e.enabled ? "" : " off"}">
+        <span class="shut-sched-when">${escapeHtml(e.when)}</span>
+        <span class="heat-sched-sp">${_shutTarget(e.action, e.position)}</span>
+        <label class="heat-switch" title="${e.enabled ? "aktiv" : "inaktiv"}"><input type="checkbox" data-ssched-toggle="${e.id}" ${e.enabled ? "checked" : ""}><span></span></label>
+        <button type="button" class="heat-del" data-ssched-del="${e.id}" aria-label="Zeitplan löschen">✕</button>
+        <span class="heat-chips">${when}</span>
+        ${last}
+      </div>`;
+  }).join("") || `<p class="note">Noch keine Zeitpläne.</p>`;
+  const sun = f.kind !== "time";
+  const sunNote = SHUT.sun.sunrise ? `Heute: Sonnenaufgang ${SHUT.sun.sunrise}, Sonnenuntergang ${SHUT.sun.sunset}` : "";
+  return `<div class="heat-sched" data-room="${_hq(r.id)}">
+      ${rows}
+      <div class="heat-sched-form" data-shut="${_hq(r.id)}">
+        <div class="heat-form-row">
+          <label>Wann<select data-sf="kind">
+            ${[["time", "Uhrzeit"], ["sunrise", "Sonnenaufgang"], ["sunset", "Sonnenuntergang"]].map(([v, l]) => `<option value="${v}"${f.kind === v ? " selected" : ""}>${l}</option>`).join("")}
+          </select></label>
+          ${sun ? `<label>Offset (min)<input type="number" data-sf="offset" step="5" min="-180" max="180" value="${_hq(f.offset)}"></label>`
+                : `<label>Uhrzeit<input type="time" data-sf="time" value="${_hq(f.time)}"></label>`}
+          <label>Ziel<select data-sf="action">
+            ${[["up", "▲ auf"], ["down", "▼ zu"], ...(r.can_position ? [["position", "Position"]] : [])].map(([v, l]) => `<option value="${v}"${f.action === v ? " selected" : ""}>${l}</option>`).join("")}
+          </select></label>
+          ${f.action === "position" ? `<label>% zu<input type="number" data-sf="position" step="5" min="0" max="100" value="${_hq(f.position)}"></label>` : ""}
+        </div>
+        ${sun ? `<div class="heat-form-row">
+          <label>nicht vor<input type="time" data-sf="not_before" value="${_hq(f.not_before)}"></label>
+          <label>nicht nach<input type="time" data-sf="not_after" value="${_hq(f.not_after)}"></label>
+          <small class="note">${_hq(sunNote)}</small>
+        </div>` : ""}
+        <div class="heat-chips pick">${HEAT_DAYS.map(([k, l]) => `<button type="button" class="heat-chip${f.days.includes(k) ? " on" : ""}" data-sday="${k}" aria-pressed="${f.days.includes(k)}">${l}</button>`).join("")}
+          <button type="button" class="heat-chip quick" data-sdays="mo,di,mi,do,fr">Werktags</button>
+          <button type="button" class="heat-chip quick" data-sdays="mo,di,mi,do,fr,sa,so">Täglich</button></div>
+        <div class="heat-form-row">
+          <label>oder einmalig am<input type="date" data-sf="date" value="${_hq(f.date)}"></label>
+          <button type="button" class="btn primary" data-ssched-add="${_hq(r.id)}">+ Zeitplan</button>
+        </div>
+        <span class="form-msg" id="shut-sched-msg-${_hq(r.id)}"></span>
+      </div>
+    </div>`;
+}
+
+const _SHUT_RESULT = { sent: "gefahren", unchanged: "stand schon dort", dry_run: "Dry-Run", skipped: "verpasst",
+  superseded: "durch späteren ersetzt", failed: "Fehler", door_open: "Tür offen – übersprungen",
+  waiting_door: "wartet auf Tür", frost: "Frost – übersprungen", manual_hold: "von Hand bewegt – übersprungen",
+  no_sun: "Sonnenzeit unbekannt" };
+
+async function _shutSchedAdd(id) {
+  const f = SHUT.form[id];
+  const msg = document.getElementById("shut-sched-msg-" + id);
+  const body = { shutter_id: id, kind: f.kind, action: f.action };
+  if (f.kind === "time") body.time = f.time;
+  else {
+    body.offset_min = Math.round(Number(f.offset) || 0);
+    if (f.not_before) body.not_before = f.not_before;
+    if (f.not_after) body.not_after = f.not_after;
+  }
+  if (f.action === "position") body.position = Number(f.position);
+  if (f.date) body.date = f.date; else body.days = f.days;
+  try {
+    await api("/api/shutters/schedules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    SHUT.form[id] = { ...f, time: "", date: "" };
+    document.activeElement?.blur();
+    await loadShutters();
+  } catch (e) {
+    if (msg) { msg.textContent = _errText(e); msg.className = "form-msg error"; }
+  }
+}
+
+async function _shutSchedToggle(id, enabled) {
+  try {
+    await api(`/api/shutters/schedules/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }) });
+  } catch (e) { alert("Zeitplan: " + _errText(e)); }
+  loadShutters();
+}
+
+async function _shutSchedDelete(id) {
+  const e = SHUT.sched.find(x => x.id === id);
+  if (!confirm(`Zeitplan ${e ? e.when + " " + _shutTarget(e.action, e.position) : id} löschen?`)) return;
+  try { await api(`/api/shutters/schedules/${id}`, { method: "DELETE" }); } catch (err) { alert("Zeitplan: " + _errText(err)); }
+  loadShutters();
 }
 
 function _closing(r, cmd, target) {
@@ -237,6 +377,10 @@ async function loadShutterSettings() {
     $("#ss-spacing").value = s.command_spacing_s ?? 2;
     $("#ss-dc-item").value = s.duty_cycle_item || "";
     $("#ss-dc-max").value = s.duty_cycle_max ?? 80;
+    $("#ss-sched").checked = !!s.schedules_enabled;
+    $("#ss-frost").value = s.frost_temp_c ?? 0;
+    $("#ss-frost-item").value = s.frost_temp_item || "";
+    $("#ss-hold").value = s.manual_hold_min ?? 60;
     SS_ROOMS = (s.rooms || []).map(r => ({ ...r }));
     renderSsRooms();
   } catch (e) {
@@ -244,6 +388,7 @@ async function loadShutterSettings() {
   }
 }
 
+const _psrcKind = v => !v || v === "item" ? "item" : v === "shelly" ? "shelly" : "item:";
 const _ssSel = (k, val, opts) => `<select data-k="${k}">${opts.map(([v, l]) => `<option value="${v}"${(val || opts[0][0]) === v ? " selected" : ""}>${l}</option>`).join("")}</select>`;
 
 function renderSsRooms() {
@@ -255,10 +400,15 @@ function renderSsRooms() {
       <label>Rollladen-Item *<input type="text" list="hs-items" data-k="item" value="${_hq(r.item)}" autocomplete="off" placeholder="Rollershutter-Item"></label>
       <label>Kontakt-Item (Fenster/Tür)<input type="text" list="hs-items" data-k="contact_item" value="${_hq(r.contact_item)}" autocomplete="off" placeholder="optional"></label>
       <label>Gruppe (z. B. eg, og)<input type="text" data-k="group" value="${_hq(r.group)}" placeholder="optional"></label>
+      <label>Ist-Position aus${_ssSel("psrc", _psrcKind(r.position_source), [["item", "Steuer-Item (Standard)"], ["item:", "eigenem Lese-Item (z. B. HmIP-Kanal 3)"], ["shelly", "Shelly direkt (Gen1 /roller/0)"]])}</label>
+      <label>Lese-Item (bei „eigenem Lese-Item“)<input type="text" list="hs-items" data-k="position_item" value="${_hq((r.position_source || "").startsWith("item:") ? r.position_source.slice(5) : "")}" autocomplete="off" placeholder="z. B. Rollladen_Wohnen_Level"></label>
+      <label>Shelly-Adresse (bei „Shelly direkt“)<input type="text" data-k="shelly_url" value="${_hq(r.shelly_url)}" autocomplete="off" placeholder="http://192.168.2.51"></label>
       <label>Gerät (Rückprüfung)${_ssSel("device", r.device, [["other", "anderes (2 min)"], ["homematic", "Homematic (6 min)"], ["shelly", "Shelly (60 s)"]])}</label>
       <label>Automatik${_ssSel("automation", r.automation, [["openhab", "openHAB-Regel (PV Controller plant nichts)"], ["pvcontroller", "PV Controller"]])}</label>
       <label class="check"><input type="checkbox" data-k="is_door" ${r.is_door ? "checked" : ""}> Tür (Aussperrschutz)</label>
       <label class="check"><input type="checkbox" data-k="can_position" ${r.can_position !== false ? "checked" : ""}> kann Position (%)</label>
+      <label class="check"><input type="checkbox" data-k="retry_when_closed" ${r.retry_when_closed ? "checked" : ""}> Tür offen: Schließen nachholen, sobald die Tür zu ist</label>
+      <label>Automatisch höchstens schließen bis (%) – leer = Standard (Tür ohne Kontakt 80, sonst 100)<input type="number" data-k="auto_close_max" min="0" max="100" step="5" value="${_hq(r.auto_close_max ?? "")}"></label>
       <div class="hs-room-actions">
         <button type="button" class="btn" data-move="-1">↑</button>
         <button type="button" class="btn" data-move="1">↓</button>
@@ -272,7 +422,8 @@ function _ssCollect() {
     const r = SS_ROOMS[+el.dataset.i];
     r._open = el.open;
     el.querySelectorAll("[data-k]").forEach(inp => {
-      r[inp.dataset.k] = inp.type === "checkbox" ? inp.checked : inp.value.trim();
+      r[inp.dataset.k] = inp.type === "checkbox" ? inp.checked
+        : inp.type === "number" ? (inp.value.trim() === "" ? null : Math.round(Number(inp.value))) : inp.value.trim();
     });
   });
 }
@@ -286,7 +437,15 @@ async function saveShutterSettings() {
     command_spacing_s: Number($("#ss-spacing").value),
     duty_cycle_item: $("#ss-dc-item").value.trim(),
     duty_cycle_max: Number($("#ss-dc-max").value),
-    rooms: SS_ROOMS.map(({ _open, ...r }) => ({ ...r, group: (r.group || "").toLowerCase() })),
+    schedules_enabled: $("#ss-sched").checked,
+    frost_temp_c: Number($("#ss-frost").value),
+    frost_temp_item: $("#ss-frost-item").value.trim(),
+    manual_hold_min: Math.round(Number($("#ss-hold").value)),
+    rooms: SS_ROOMS.map(({ _open, psrc, position_item, ...r }) => ({
+      ...r, group: (r.group || "").toLowerCase(),
+      position_source: psrc === "item:" ? "item:" + (position_item || "") : psrc || r.position_source || "item",
+      shelly_url: psrc === "shelly" ? r.shelly_url : "",
+    })),
   };
   try {
     const res = await api("/api/shutters/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -299,9 +458,35 @@ async function saveShutterSettings() {
 function bootShutters() {
   $("#shut-rooms")?.addEventListener("click", e => {
     const b = e.target.closest("[data-shut-cmd]");
-    if (b) shutSend(b.dataset.id, b.dataset.shutCmd);
+    if (b) { shutSend(b.dataset.id, b.dataset.shutCmd); return; }
+    const t = e.target.closest("[data-ssched]");
+    if (t) { SHUT.schedOpen[t.dataset.ssched] = !SHUT.schedOpen[t.dataset.ssched]; updateShutRoom(t.dataset.ssched, true); return; }
+    const day = e.target.closest("[data-sday]"), quick = e.target.closest("[data-sdays]");
+    if (day || quick) {
+      const id = e.target.closest(".heat-sched-form").dataset.shut;
+      const f = _shutForm(id);
+      if (quick) f.days = quick.dataset.sdays.split(",");
+      else f.days = f.days.includes(day.dataset.sday) ? f.days.filter(d => d !== day.dataset.sday) : [...f.days, day.dataset.sday];
+      f.date = "";
+      updateShutRoom(id, true);
+      return;
+    }
+    const add = e.target.closest("[data-ssched-add]");
+    if (add) { _shutSchedAdd(add.dataset.sschedAdd); return; }
+    const del = e.target.closest("[data-ssched-del]");
+    if (del) _shutSchedDelete(Number(del.dataset.sschedDel));
   });
   $("#shut-rooms")?.addEventListener("input", e => {
+    const inp = e.target.closest(".heat-sched-form input[data-sf]");
+    if (inp) {
+      const f = _shutForm(inp.closest(".heat-sched-form").dataset.shut);
+      f[inp.dataset.sf] = inp.value;
+      if (inp.dataset.sf === "date" && inp.value) {
+        f.days = [];
+        inp.closest(".heat-sched-form").querySelectorAll("[data-sday]").forEach(b => { b.classList.remove("on"); b.setAttribute("aria-pressed", "false"); });
+      }
+      return;
+    }
     const sl = e.target.closest("[data-pos]");
     if (!sl) return;
     SHUT.drag[sl.dataset.pos] = true;
@@ -309,6 +494,16 @@ function bootShutters() {
     _setSlot(card.querySelector('[data-slot="posval"]'), `${sl.value} %`);
   });
   $("#shut-rooms")?.addEventListener("change", e => {
+    const tg = e.target.closest("[data-ssched-toggle]");
+    if (tg) { _shutSchedToggle(Number(tg.dataset.sschedToggle), tg.checked); return; }
+    const sel = e.target.closest(".heat-sched-form select[data-sf]");
+    if (sel) {                                         // Zeitart/Ziel ändern die Felder → neu zeichnen
+      const id = sel.closest(".heat-sched-form").dataset.shut;
+      _shutForm(id)[sel.dataset.sf] = sel.value;
+      document.activeElement?.blur();
+      updateShutRoom(id, true);
+      return;
+    }
     const sl = e.target.closest("[data-pos]");
     if (!sl) return;
     const id = sl.dataset.pos;
