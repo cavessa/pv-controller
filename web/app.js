@@ -148,7 +148,8 @@ function renderStatus(s) {
     }
   }
 
-  $("#pill-time").textIfChanged = "aktualisiert " + fmtTime(s.timestamp);
+  pillTimes.status = fmtTime(s.timestamp);
+  updatePillTime();
 
   // summary
   $("#summary-state").textIfChanged = s.summary?.state ?? "–";
@@ -3137,6 +3138,18 @@ let lastStatusRefresh = 0;
 const _activeTab = () => document.querySelector(".tab.active")?.dataset.tab;
 const _statusWanted = () => !document.hidden && STATUS_TABS.has(_activeTab());
 
+// „aktualisiert“-Pill in der Kopfzeile: Zeit der Daten, die der aktive Tab zeigt.
+// Heizung → letztes Heizungs-Update, Settings → ausgeblendet (Platz bleibt), sonst → Dashboard-Status.
+const pillTimes = { status: null, heating: null };
+function updatePillTime() {
+  const el = $("#pill-time");
+  if (!el) return;
+  const tab = _activeTab();
+  el.style.visibility = tab === "settings" ? "hidden" : "";
+  const t = tab === "heizung" ? pillTimes.heating : pillTimes.status;
+  el.textIfChanged = t ? "aktualisiert " + t : "aktualisiert …";
+}
+
 function _statusTick() { if (_statusWanted()) refreshStatus(); }
 
 function _refreshIfStale() {
@@ -3519,6 +3532,7 @@ function setupLogAuto() {
 // ---------- tabs ----------
 function activateTab(name) {
   $$(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === name));
+  updatePillTime();
   $$(".tab-panel").forEach(p => p.classList.toggle("active", p.id === "tab-" + name));
   if (name === "verlauf")      loadVerlauf();
   if (name === "settings")     { loadSettings(); loadCascadeSettings(); loadHeatingSettings(); }

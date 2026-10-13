@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-13 – „aktualisiert“-Pill zeigt die Zeit des aktiven Tabs
+
+Seit das Dashboard-Polling auf anderen Tabs pausiert, stand die Pill dort auf der letzten Dashboard-Zeit. Jetzt: Heizung → Zeit des letzten Heizungs-Updates (wie „Stand …“ unten im Tab), Settings → ausgeblendet (`visibility: hidden`, Kopfzeile behält ihr Layout), übrige Tabs → Dashboard-Status wie bisher. Gleiche Klasse, Größe und Position (im Browser geprüft).
+
 ## 2026-10-13 – Dashboard, Prioritäten, Logs: Polling pausiert, nur Geändertes wird ersetzt (Optik unverändert)
 
 **Vorher (gemessen, Headless-Browser je 30 s):** Das Dashboard-Polling (`refreshStatus`, 10 s) lief auf jedem Tab und bei verdeckter Seite: ≈ 78–90 Requests/min, ≈ 420 ersetzte DOM-Knoten je 30 s (Charts, Kaskaden-Mini, Phasen-Timeline per `innerHTML`). Im Heizung-Tab sichtbar: `#pill-time` („aktualisiert …“ in der Kopfzeile) alle 10 s – das gemeldete Neuladen „alle paar Sekunden“. Prioritäten baute die Geräteliste alle 10 s komplett neu (≈ 480 Knoten je 30 s), Logs ersetzte alle 5 s den ganzen Text und sprang ans Ende.

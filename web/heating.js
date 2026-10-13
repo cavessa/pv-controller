@@ -65,7 +65,10 @@ async function loadHeating() {
     $("#heat-dry").classList.toggle("hidden", !s.dry_run);
     $("#heat-sched-off").classList.toggle("hidden", !!s.schedules_enabled);
     renderHeatRooms(s);
-    $("#heat-updated").textContent = "Stand " + new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const stand = new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    $("#heat-updated").textContent = "Stand " + stand;
+    pillTimes.heating = stand;                       // Kopfzeilen-Pill zeigt auf dem Heizung-Tab diese Zeit
+    updatePillTime();
     for (const r of s.rooms) if (HEAT.open[r.id]) loadHeatHistory(r.id);
   } catch (e) {
     banner.textContent = "Heizung: " + e.message;
