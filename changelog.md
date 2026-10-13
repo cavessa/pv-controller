@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-13 – Verlauf: Unternavigation auf dem Handy horizontal scrollbar
+
+Die acht Knöpfe (Tag … Netz) ragten bei 390 px über den Rand (Seite 446 px breit). `web/styles.css`: `.verlauf-subnav` scrollt horizontal wie die Haupt-Tabs (ohne sichtbare Scrollleiste); bis 768 px behalten die Knöpfe ihre Textbreite. Geprüft bei 390 px: Seite 390 px, Leiste scrollt (358 von 558 px), „Netz“ nach Scrollen anklickbar, kein Text abgeschnitten. Desktop unverändert (gleich breite Knöpfe).
+
 ## 2026-10-13 – Chat-Leiste auf allen Tabs; iOS: kein Zoom mehr beim Antippen von Eingabefeldern
 
 **Chat-Leiste überall:** Die Leiste liegt jetzt auf Seitenebene (nicht mehr im Heizung-/Rollladen-Tab) und ist auf Dashboard, Heizung, Rollläden, Verlauf, Prioritäten, Settings und Logs dieselbe – gleicher Verlauf über alle Tabs. Ist der Chat in den Settings aus, wird sie überall ausgeblendet (statt ausgegraut); nach „Speichern“ in Settings → Heizung sofort. Solange sie sichtbar ist, bekommt die Seite unten 64 px + Safe-Area Platz (`html.has-chatbar .app-shell`) und `scroll-padding-bottom`, damit weder Inhalt noch angesprungene/fokussierte Felder unter der Leiste liegen. Neuer Lese-Endpoint `GET /api/heating/chat/status` (an/aus, bereit, Zähler; ohne openHAB-Abfrage) für die Tabs, die keinen Heizungs-/Rollladen-Status laden. Dashboard sonst unverändert.

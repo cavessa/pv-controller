@@ -1931,3 +1931,8 @@ body.sheet-open { overflow: hidden; }
   .sheet .heat-form-row .stepper input { width: 60px; }
   .chatbar .heat-chat-form input { padding: 6px 10px; }
 }
+
+/* Verlauf-Unternavigation: auf schmalen Bildschirmen horizontal scrollbar wie die Haupt-Tabs (statt über den Rand) */
+.verlauf-subnav { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.verlauf-subnav::-webkit-scrollbar { display: none; }
+@media (max-width: 768px) { .verlauf-nav-btn { flex: 1 0 auto; white-space: nowrap; padding: 8px 12px; } }   /* Desktop: gleich breite Knöpfe wie bisher */
