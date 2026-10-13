@@ -555,6 +555,9 @@ main {
 
 /* Verlauf / History / Strings / Wetter charts */
 .chart-svg { width: 100%; height: auto; display: block; overflow: visible; }
+/* Charts in echten Pixeln (fitChart in app.js): Linienstärken wachsen nicht mit der Breite */
+svg.chart-fit * { vector-effect: non-scaling-stroke; }
+svg.chart-fit .temp-line, svg.chart-fit .wb-line { stroke-width: 2; }
 .chart-svg .grid-line { stroke: rgba(255,255,255,0.06); stroke-width: 0.7; }
 .chart-svg text { fill: #a0a3ab; font-size: 9px; font-family: 'DM Mono', monospace; }
 

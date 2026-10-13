@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-13 – Charts in echten Pixeln (alle Charts, zentral)
+
+**Ursache:** Alle Charts sind SVGs mit `viewBox` und `width: 100 %; height: auto` – sie wuchsen proportional mit der Card-Breite. In den breiten Cards (Hauptzähler im Dashboard und Verlauf, Heizungsverlauf 24 h, alle Verlauf-Unterseiten) wurden bei 1440 px aus 9 px Schrift 34 px und aus 150 Einheiten 564 px Höhe, bei 2000 px 48 px Schrift und 798 px Höhe.
+- **Zentral in `web/app.js` (`fitChart` + Beobachter):** bis Faktor 1,5 skaliert ein Chart wie bisher; darüber wird es nur noch in die Breite gestreckt. Höhe dann fest (Hauptzähler 225 px, „Letzte Stunde“ 165 px), Schrift 11,7 px, Punkte r = 4 px, Linienstärke wie im Code angegeben (1,6–2 px; CSS `svg.chart-fit`). Greift automatisch für jedes Chart mit den Klassen `temp-chart`, `chart-svg`, `heat-svg`, `phase-tl-svg` – auch nach Neuzeichnen, Tab-Wechsel und Fenstergröße.
+- **Hauptzähler-Y-Achse (`meterChartSvg`):** Bereich schließt Einspeisung (negativ) und die Min/Max-Punkte ein, plus 6 % Rand oben und unten; Null-Linie bleibt.
+- **Unverändert:** Handy (Faktor < 1,5: pixelgleich wie vorher) und schmale Dashboard-Charts bei 1440 px (Tageshoch, Wallbox). Der Wasserspeicher-Chart im Dashboard lag bei 1440 px über 1,5 (Faktor 1,8) und ist jetzt 285 statt 342 px hoch mit 11,7 statt 16 px Schrift.
+- Geprüft per Screenshot vorher/nachher in 1440 px, 2000 px und iPhone (390 px): 20 Charts je Größe. In Dev ohne Daten und deshalb nicht gesehen: Tagesverlauf (Stundenwerte), String-Charts, Zendure, Phasen-Zeitleiste, Speicher 7 Tage – sie nutzen dieselben Klassen.
+- Card-Breite nicht geändert: Im Verlauf ist die Hauptzähler-Card so breit wie die Cards darüber; im Dashboard liegt sie als eigene Zeile unter den zwei Spalten.
+
 ## 2026-10-13 – Zeitplan-Formular: Meldung „Uhrzeit“ geprüft, Hinweis bei leerer Uhrzeit, Ablauf-Test
 
 **Meldung:** In Prod ließen sich Rollladen-Zeitpläne mit Zeittyp „Uhrzeit“ nicht anlegen. **In Dev nicht nachstellbar** (Chromium, 390–2000 px, Hintereingang/Wohnen links = openHAB, Schlafzimmer = PV Controller, Heizung Wohnen): Radio „Uhrzeit“ blendet das Uhrzeit-Feld ein und ±Minuten/Grenzen aus, Wechsel Sonnenuntergang → Uhrzeit → Sonnenuntergang lässt keine alten Werte im Request (`{"kind":"time","time":"06:45",…}`), Server antwortet 200, keine JS-Fehler. Im Prod-Log steht für den Zeitraum kein abgelehnter und kein „Uhrzeit“-Request – der Fehler entsteht also im Browser vor dem Absenden.

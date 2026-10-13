@@ -103,6 +103,53 @@ Object.defineProperty(Element.prototype, "textIfChanged", {
   set(v) { const t = v == null ? "" : String(v); if (this.childElementCount || this.textContent !== t) this.textContent = t; },
 });
 
+// ---------- Charts in echten Pixeln ----------
+// Alle Charts sind SVGs mit viewBox und wuchsen mit der Card-Breite: in einer 1400 px breiten Card
+// (Hauptzähler, Heizungsverlauf) wurden aus 9 px Schrift 44 px und aus 150 Einheiten 560 px Höhe.
+// Jetzt zentral: bis Faktor CHART_MAX_SCALE wie bisher proportional, darüber wird nur noch in die Breite
+// gestreckt. Höhe, Schrift, Punkte und Linienstärke (CSS: svg.chart-fit) bleiben dann fest.
+// Bis Faktor 1,5 (Handy, schmale Cards) ändert sich nichts.
+const CHART_SEL = "svg.temp-chart, svg.chart-svg, svg.heat-svg, svg.phase-tl-svg";
+const CHART_MAX_SCALE = 1.5;      // Höhe: viewBox-Einheit → max. 1,5 px (150 Einheiten → 225 px)
+const CHART_TEXT_SCALE = 1.3;     // Schrift 9 Einheiten → max. 11,7 px
+const CHART_DOT_SCALE = 1.15;     // Punkte r=3,5 → max. 4 px
+function fitChart(svg) {
+  const vb = svg.viewBox.baseVal;
+  const w = svg.getBoundingClientRect().width;
+  if (!vb || !vb.width || !vb.height || w < 1) return;            // versteckter Tab: später per ResizeObserver
+  const sx = w / vb.width, sy = Math.min(sx, CHART_MAX_SCALE);
+  const key = `${Math.round(w)}|${svg.childElementCount}|${svg.firstElementChild?.tagName}`;
+  if (svg._fit === key) return;
+  svg._fit = key;
+  const stretched = sx > sy + 0.001;
+  svg.classList.toggle("chart-fit", stretched);                   // CSS: Linienstärke dann in echten Pixeln
+  svg.setAttribute("preserveAspectRatio", stretched ? "none" : "xMidYMid meet");
+  svg.style.height = stretched ? Math.round(vb.height * sy) + "px" : "";
+  const around = (el, x, y, k) => {
+    if (el._t0 === undefined) el._t0 = el.getAttribute("transform") || "";
+    const t = stretched ? `${el._t0} translate(${x} ${y}) scale(${(k / sx).toFixed(4)} ${(k / sy).toFixed(4)}) translate(${-x} ${-y})`.trim() : el._t0;
+    if (t) el.setAttribute("transform", t); else el.removeAttribute("transform");
+  };
+  const num = (el, a) => parseFloat(el.getAttribute(a)) || 0;
+  for (const t of svg.querySelectorAll("text")) around(t, num(t, "x"), num(t, "y"), Math.min(sx, CHART_TEXT_SCALE));
+  for (const c of svg.querySelectorAll("circle")) around(c, num(c, "cx"), num(c, "cy"), Math.min(sx, CHART_DOT_SCALE));
+}
+(function watchCharts() {
+  if (typeof ResizeObserver === "undefined" || typeof MutationObserver === "undefined") return;
+  const ro = new ResizeObserver(entries => { for (const e of entries) fitChart(e.target); });
+  const add = node => {
+    if (node.nodeType !== 1) return;
+    const list = node.matches?.(CHART_SEL) ? [node] : node.querySelectorAll?.(CHART_SEL) || [];
+    for (const svg of list) { ro.observe(svg); fitChart(svg); }
+  };
+  const start = () => {
+    add(document.body);
+    new MutationObserver(muts => { for (const m of muts) m.addedNodes.forEach(add); })
+      .observe(document.body, { childList: true, subtree: true });
+  };
+  if (document.body) start(); else document.addEventListener("DOMContentLoaded", start);
+})();
+
 let lastZendure = null;
 let lastPhasesDisabled = {};
 
@@ -2354,8 +2401,12 @@ function meterChartSvg(pts, xMin, xMax, d, o) {
   const cw = VW - pad.l - pad.r, ch = VH - pad.t - pad.b;
   const inWin = pts.filter(p => p[0] >= xMin && p[0] <= xMax);
   if (inWin.length < 2) return '<div class="chart-empty">Noch keine Messwerte.</div>';
-  const hiW = Math.max(1000, ...inWin.map(p => p[2]));
-  const loW = Math.min(0, ...inWin.map(p => p[3]));
+  // Bereich schließt Einspeisung (negativ) und die Spitzen-Punkte ein, mit 6 % Rand oben und unten,
+  // damit Linie und Punkte nie am Rand kleben oder abgeschnitten werden
+  const hi0 = Math.max(1000, d.peak_w || 0, ...inWin.map(p => p[2]));
+  const lo0 = Math.min(0, d.feed_w ? -d.feed_w : 0, ...inWin.map(p => p[3]));
+  const margin = (hi0 - lo0) * 0.06;
+  const hiW = hi0 + margin, loW = lo0 < 0 ? lo0 - margin : 0;
   const yStep = niceStep((hiW - loW) / 1000, 3) * 1000;
   const yTop = Math.ceil(hiW / yStep) * yStep, yBot = Math.floor(loW / yStep) * yStep;
   const sx = m => pad.l + ((m - xMin) / (xMax - xMin)) * cw;
