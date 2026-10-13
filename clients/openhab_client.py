@@ -79,6 +79,10 @@ class OpenHabClient:
             return {}
         return {i["name"]: i for i in self.list_items() if i.get("name") in wanted}
 
+    def get_rules(self) -> list[dict]:
+        """Alle Regeln (nur lesen) – für die Info „Wohnen: 18:40 openHAB-Regel“ im Chat."""
+        return self._get("/rules")
+
     def send_command(self, name: str, value: Any) -> None:
         """POST /rest/items/{name} mit text/plain (wie ein Klick in der UI)."""
         try:

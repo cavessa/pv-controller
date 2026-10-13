@@ -25,7 +25,15 @@ const fmtPct = v => v == null ? "–" : Math.round(v) + " %";
 
 const _heatVisible = () => !document.hidden && $(".tab.active")?.dataset.tab === "heizung";
 
+// Ein Chat für Heizung + Rollläden: die Karte wandert in den aktiven Tab (Verlauf bleibt erhalten)
+function placeChat(tab) {
+  const card = $("#heat-chat");
+  const anchor = tab === "rolllaeden" ? $("#shut-groups") : $("#heat-rooms");
+  if (card && anchor && card.nextElementSibling !== anchor) anchor.before(card);
+}
+
 function heatActivate() {
+  placeChat("heizung");
   loadHeating();
   clearInterval(HEAT.timer);
   // alle 30 s; pausiert, solange ein anderer Tab aktiv oder die Seite verdeckt ist
@@ -197,6 +205,22 @@ function _chatAdd(role, text, cls = "") {
 
 function _fmtSp(v) { return String(v).replace(".", ",") + " °C"; }
 
+function _shutPreview(sp, res) {
+  if (!sp) return "";
+  const warn = w => w ? `<span class="heat-prev-warnmark" title="${_hq(w)}">⚠️ ${escapeHtml(w)}</span>` : "";
+  const groups = sp.groups.map(g => `<div class="heat-prev-group"><div class="heat-prev-label">🪟 Rollläden · ${escapeHtml(g.label)}</div>
+      ${g.rows.map(r => `<div class="heat-prev-row shut-prev-row"><span>${escapeHtml(r.shutter)} ${escapeHtml(r.target)}</span><span class="shut-prev-when">${escapeHtml(r.when)}${r.at ? ` → ${escapeHtml(r.at)}` : ""}</span>${warn(r.warn)}</div>`).join("")}</div>`).join("");
+  const imm = sp.immediate.length ? `<div class="heat-prev-group"><div class="heat-prev-label">🪟 Rollläden · Sofort</div>
+      ${sp.immediate.map(i => `<div class="heat-prev-row"><span>jetzt</span><span>${escapeHtml(i.shutter)} ${escapeHtml(i.target)}${warn(i.warn)}</span></div>`).join("")}</div>` : "";
+  const del = sp.deletes.length ? `<div class="heat-prev-group del"><div class="heat-prev-label">🪟 Rollläden · Löschen</div>
+      ${sp.deletes.map(d => `<div class="heat-prev-row"><span>${escapeHtml(d.when)}</span><span>${escapeHtml(d.shutter)} ${escapeHtml(d.target)} · ${escapeHtml(d.days)}</span></div>`).join("")}</div>` : "";
+  const dec = sp.declined.map(t => `<p class="heat-prev-info">ℹ️ ${escapeHtml(t)}</p>`).join("");
+  const off = sp.groups.length && !res.shutter_schedules_enabled
+    ? `<p class="heat-prev-warn">„Rollladen-Zeitpläne aktiv“ ist aus: die Pläne werden gespeichert, aber nicht ausgeführt.</p>` : "";
+  const dry = sp.immediate.length && res.dry_run ? `<p class="heat-prev-warn">Dry-Run: Rollläden fahren nicht, nur Log.</p>` : "";
+  return groups + imm + del + dec + off + dry;
+}
+
 function _renderProposal(res) {
   const p = res.proposal;
   const box = $("#heat-chat-preview");
@@ -213,7 +237,7 @@ function _renderProposal(res) {
   ].filter(Boolean).map(t => `<p class="heat-prev-warn">${t}</p>`).join("");
   box.innerHTML = `<div class="heat-prev">
       ${p.summary ? `<div class="heat-prev-sum">${escapeHtml(p.summary)}</div>` : ""}
-      ${groups}${imm}${del}${warn}
+      ${groups}${imm}${del}${warn}${_shutPreview(p.shutters, res)}
       <div class="heat-prev-actions">
         <button type="button" class="btn primary" data-chat-apply="${_hq(p.id)}">Übernehmen</button>
         <button type="button" class="btn" data-chat-cancel="1">Abbrechen</button>
@@ -255,21 +279,43 @@ async function chatSend(text) {
   }
 }
 
+function _chatErr(e) {                                 // api() wirft "409 Conflict — {\"detail\": …}"
+  const m = /— (.*)$/s.exec(e.message);
+  try { return JSON.parse(m[1]).detail || e.message; } catch (_) { return e.message; }
+}
+
 async function chatApply(id) {
   const c = HEAT.chat;
+  const doors = c.proposal?.shutters?.door_confirm || [];
+  // gleiche Regel wie bei den Buttons: Tür offen/ohne Kontakt → erst bestätigen
+  if (doors.length && !confirm(doors.join("\n") + "\n\nTrotzdem schließen?")) {
+    _chatAdd("assistant", "Nicht übernommen – Vorschlag bleibt stehen.", "info");
+    const b = $("#heat-chat-preview [data-chat-apply]"); if (b) b.disabled = false;
+    return;
+  }
+  const send = confirm_doors => api("/api/heating/chat/apply", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ proposal_id: id, confirm_doors }) });
   try {
-    const r = await api("/api/heating/chat/apply", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ proposal_id: id }) });
+    let r;
+    try { r = await send(doors.length > 0); } catch (e) {
+      const why = _chatErr(e);
+      if (!doors.length && /Bestätigung/.test(why) && confirm(why.replace(/ – Schließen nur mit Bestätigung\.?/, "") + "\n\nTrotzdem schließen?")) r = await send(true);
+      else throw e;
+    }
     const parts = [];
     if (r.created.length) parts.push(`${r.created.length} ${r.created.length > 1 ? "Zeitpläne" : "Zeitplan"} angelegt`);
     if (r.deleted.length) parts.push(`${r.deleted.length} gelöscht`);
     if (r.immediate.length) parts.push(`${r.immediate.filter(x => x.ok).length}/${r.immediate.length} sofort gesetzt`);
+    if (r.shutter_created?.length) parts.push(`${r.shutter_created.length} Rollladen-${r.shutter_created.length > 1 ? "Zeitpläne" : "Zeitplan"} angelegt`);
+    if (r.shutter_deleted?.length) parts.push(`${r.shutter_deleted.length} Rollladen-Zeitplan gelöscht`);
+    if (r.shutter_immediate?.length) parts.push(`${r.shutter_immediate.filter(x => x.ok).length}/${r.shutter_immediate.length} Rollläden ${r.shutter_immediate.some(x => x.dry_run) ? "(Dry-Run) " : ""}gefahren`);
     _chatAdd("assistant", "✓ Übernommen: " + (parts.join(", ") || "nichts zu tun"), r.ok ? "ok" : "err");
   } catch (e) {
-    _chatAdd("assistant", "Nicht übernommen: " + e.message, "err");
+    _chatAdd("assistant", "Nicht übernommen: " + _chatErr(e), "err");
   }
   c.proposal = null; c.history = []; _renderProposal({});
-  loadHeating();
+  if ($(".tab.active")?.dataset.tab === "rolllaeden") { loadShutters(); setTimeout(loadShutters, 3000); }
+  else loadHeating();
 }
 
 // ── Zeitpläne ──────────────────────────────────────────────────────────────

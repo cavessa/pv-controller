@@ -1726,3 +1726,9 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 .heat-form-row select { background: rgba(255,255,255,0.04); border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 6px 8px; font-family: inherit; font-size: 13px; color-scheme: dark; }
 .heat-form-row small.note { align-self: center; color: var(--text-muted); font-size: 11px; }
 .shut-val.moving { color: var(--accent); }
+.heat-prev-at { color: var(--text-muted); font-size: 11px; }
+.heat-prev-warnmark { display: block; color: var(--warn); font-size: 11px; }
+.heat-prev-info { margin: 6px 0 0; font-size: 12px; color: var(--text-dim); }
+.heat-prev-row.shut-prev-row { display: flex; flex-wrap: wrap; column-gap: 10px; row-gap: 0; }
+.shut-prev-when { color: var(--text-dim); font-size: 12px; }
+.shut-prev-row .heat-prev-warnmark { flex-basis: 100%; }

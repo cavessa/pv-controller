@@ -1,5 +1,8 @@
 """Heizung Phase 3: Chat → Zeitplan-Vorschlag über ein Sprachmodell (Claude oder ChatGPT, nur Backend).
 
+Ein Chat für Heizung **und Rollläden**: dasselbe Tool trägt zusätzlich ``shutter_entries``,
+``shutter_immediate`` und ``shutter_delete_ids`` (geprüft in ``shutter_chat``).
+
 Ablauf: Text + Kontext (Datum/Uhrzeit Europe/Berlin, Räume mit aktuellen Werten, Grenzen, Zeitpläne der
 nächsten 7 Tage) → Anthropic Messages API bzw. OpenAI Chat Completions mit genau einem Tool
 ``propose_schedule`` (strict, gleiches Schema für beide) → der Server prüft alles
@@ -153,12 +156,13 @@ def sdk_available(provider: str = ANTHROPIC) -> bool:
     return True
 
 
-def status(hcfg: heating.HeatingConfig, acfg: AssistantConfig, now: Optional[datetime] = None) -> dict[str, Any]:
+def status(hcfg: heating.HeatingConfig, acfg: AssistantConfig, now: Optional[datetime] = None,
+           shutters_enabled: bool = False) -> dict[str, Any]:
     used = used_today(now)
     hint = None
     if not acfg.enabled:
         hint = "Chat ist aus. Einschalten unter Settings → Heizung → „Chat aktiv“."
-    elif not hcfg.enabled:
+    elif not hcfg.enabled and not shutters_enabled:
         hint = "Heizung ist nicht aktiv."
     elif not acfg.key_set:
         hint = f"API-Key fehlt: assistant.{acfg.key_field} in config.json eintragen."
@@ -268,9 +272,26 @@ Regeln für propose_schedule:
   Keine Zeitpunkte in der Vergangenheit.
 - question: eine kurze Rückfrage auf Deutsch, wenn Raum, Zeit, Tag oder Sollwert nicht eindeutig sind
   (z. B. zwei Räume passen). Dann entries, immediate und delete_ids leer lassen. Sonst null.
-- summary: ein kurzer deutscher Satz, was geplant wird, oder null."""
+- summary: ein kurzer deutscher Satz, was geplant wird, oder null.
+
+Rollläden (nur wenn eine Rollladenliste im Kontext steht; sonst die shutter_-Felder leer lassen):
+- shutter_entries: Zeitpläne. kind = "time" (time HH:MM) oder "sunrise"/"sunset" (time null,
+  offset_min = Minuten danach, negativ = davor, 0 = genau; „30 min nach Sonnenuntergang“ = sunset, 30).
+  not_before / not_after (HH:MM oder null) für „aber nicht vor 18 Uhr“ / „spätestens 22 Uhr“.
+  action: "up" (hoch, auf, öffnen), "down" (runter, zu, schließen) oder "position" mit position in % ZU
+  (0 = ganz offen, 100 = ganz zu; „halb“ = 50). date/days wie bei der Heizung.
+  Zeitpläne nur für Rollläden mit „Automatik: PV Controller“ – trotzdem auch für openHAB-Rollläden eintragen,
+  wenn der Nutzer sie nennt (der Server lehnt sie freundlich ab und erklärt es).
+- shutter_immediate: sofort fahren („jetzt“, „sofort“) – für alle Rollläden erlaubt. action "up", "down",
+  "stop" oder "position" (dann position in % zu, sonst null).
+- shutter_delete_ids: IDs bestehender Rollladen-Zeitpläne, die gelöscht werden sollen.
+- „alle Rollläden“ = jeder Rollladen der Liste einzeln. Passt ein Name auf mehrere Rollläden (z. B.
+  „Wohnen“ → Wohnen links und Wohnen rechts) und sagt der Nutzer nicht „beide“ oder „alle“, stelle eine
+  Rückfrage (question) statt zu raten.
+- „morgen früh … um 7“ ohne Wochentag = einmalig morgen."""
 
 _DAY_ENUM = list(hs.DAYS)
+_NULL_STR = {"type": ["string", "null"]}
 TOOL = {
     "name": "propose_schedule",
     "description": "Schlägt neue Heizungs-Zeitpläne, sofortige Sollwerte und zu löschende Zeitpläne vor, "
@@ -309,9 +330,48 @@ TOOL = {
             "delete_ids": {"type": "array", "items": {"type": "integer"}},
             "question": {"type": ["string", "null"]},
             "summary": {"type": ["string", "null"]},
+            "shutter_entries": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["shutter_id", "action", "position", "kind", "time", "offset_min",
+                                 "not_before", "not_after", "date", "days"],
+                    "properties": {
+                        "shutter_id": {"type": "string"},
+                        "action": {"type": "string", "enum": ["up", "down", "position"]},
+                        "position": {"type": ["number", "null"], "description": "% zu bei action=position"},
+                        "kind": {"type": "string", "enum": ["time", "sunrise", "sunset"]},
+                        "time": {**_NULL_STR, "description": "HH:MM bei kind=time, sonst null"},
+                        "offset_min": {"type": ["integer", "null"], "description": "Minuten nach (−: vor) der Sonnenzeit"},
+                        "not_before": {**_NULL_STR, "description": "HH:MM oder null"},
+                        "not_after": {**_NULL_STR, "description": "HH:MM oder null"},
+                        "date": {**_NULL_STR, "description": "YYYY-MM-DD bei einmalig, sonst null"},
+                        "days": {"type": ["array", "null"], "items": {"type": "string", "enum": _DAY_ENUM}},
+                    },
+                },
+            },
+            "shutter_immediate": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["shutter_id", "action", "position"],
+                    "properties": {
+                        "shutter_id": {"type": "string"},
+                        "action": {"type": "string", "enum": ["up", "down", "stop", "position"]},
+                        "position": {"type": ["number", "null"]},
+                    },
+                },
+            },
+            "shutter_delete_ids": {"type": "array", "items": {"type": "integer"}},
         },
     },
 }
+TOOL["input_schema"]["required"] += ["shutter_entries", "shutter_immediate", "shutter_delete_ids"]
+TOOL["description"] = ("Schlägt neue Heizungs- und Rollladen-Zeitpläne, sofortige Sollwerte bzw. Rollladen-Fahrten "
+                       "und zu löschende Zeitpläne vor, oder stellt eine Rückfrage. Der Nutzer bestätigt den "
+                       "Vorschlag, bevor etwas gespeichert oder gefahren wird.")
 
 
 # ── API-Aufruf ──────────────────────────────────────────────────────────────
@@ -382,6 +442,7 @@ def _translate(e: Exception, acfg: AssistantConfig) -> ChatError:
 def _no_tool(text: str) -> dict[str, Any]:
     """Kein Tool-Aufruf: Text nur anzeigen, schaltet nichts."""
     return {"entries": [], "immediate": [], "delete_ids": [], "summary": None,
+            "shutter_entries": [], "shutter_immediate": [], "shutter_delete_ids": [],
             "question": text.strip()[:400] or "Das habe ich nicht verstanden. Bitte anders formulieren."}
 
 
@@ -487,6 +548,15 @@ class Proposal:
     summary: Optional[str] = None
     note: str = ""
     created: float = 0.0
+    shutter_entries: list[dict[str, Any]] = field(default_factory=list)    # validierte DB-Felder
+    shutter_immediate: list[dict[str, Any]] = field(default_factory=list)  # {shutter_id, action, target}
+    shutter_deletes: list[dict[str, Any]] = field(default_factory=list)
+    declined: list[str] = field(default_factory=list)                      # freundlich abgelehnt (Info)
+
+    @property
+    def empty(self) -> bool:
+        return not (self.entries or self.immediate or self.deletes or self.shutter_entries
+                    or self.shutter_immediate or self.shutter_deletes)
 
 
 _PROPOSALS: dict[str, Proposal] = {}
@@ -529,6 +599,14 @@ def store(p: Proposal) -> None:
     for k in [k for k, v in _PROPOSALS.items() if v.created < cutoff]:
         del _PROPOSALS[k]
     _PROPOSALS[p.id] = p
+
+
+def peek(pid: str) -> Optional[Proposal]:
+    """Vorschlag ansehen, ohne ihn zu verbrauchen (Tür-Bestätigung vor dem Übernehmen)."""
+    p = _PROPOSALS.get(pid)
+    if p is None or p.created < _time.time() - PROPOSAL_TTL_S:
+        return None
+    return p
 
 
 def take(pid: str) -> Optional[Proposal]:

@@ -575,31 +575,39 @@ def validate_command(sh: Shutter, command: str, position: Any = None) -> Optiona
 _group_lock = threading.Lock()
 
 
-def send_group(cfg: ShutterConfig, members: list[Shutter], command: str,
-               send_one: Callable[[Shutter], dict[str, Any]], contacts: dict[str, Optional[str]],
-               sleep: Optional[Callable[[float], None]] = None) -> list[dict[str, Any]]:
-    """Gruppenbefehl gestaffelt (``command_spacing_s`` zwischen zwei Sendungen, Funk-Duty-Cycle).
-
-    Türen, deren Schließen eine Bestätigung bräuchte, werden bei „zu“ übersprungen.
-    Läuft schon ein Gruppenbefehl, wirft RuntimeError.
-    """
+def send_sequence(cfg: ShutterConfig, jobs: list[tuple[Shutter, Callable[[], dict[str, Any]]]],
+                  sleep: Optional[Callable[[float], None]] = None) -> list[dict[str, Any]]:
+    """Mehrere Befehle gestaffelt (``command_spacing_s`` zwischen zwei echten Sendungen, Funk-Duty-Cycle).
+    Immer nur eine Folge gleichzeitig; läuft schon eine, wirft RuntimeError."""
     sleep = sleep or _time.sleep
     if not _group_lock.acquire(blocking=False):
         raise RuntimeError("Es läuft schon ein Gruppenbefehl")
     try:
         out = []
         sent_any = False
-        for sh in members:
-            if command == "down":
-                why = door_guard(sh, contacts.get(sh.id))
-                if why:
-                    out.append({"shutter_id": sh.id, "ok": True, "skipped": True, "reason": why})
-                    continue
+        for _sh, fn in jobs:
             if sent_any:
                 sleep(cfg.command_spacing_s)
-            res = send_one(sh)
+            res = fn()
             sent_any = sent_any or not res.get("dry_run")
             out.append(res)
         return out
     finally:
         _group_lock.release()
+
+
+def send_group(cfg: ShutterConfig, members: list[Shutter], command: str,
+               send_one: Callable[[Shutter], dict[str, Any]], contacts: dict[str, Optional[str]],
+               sleep: Optional[Callable[[float], None]] = None) -> list[dict[str, Any]]:
+    """Gruppenbefehl gestaffelt. Türen, deren Schließen eine Bestätigung bräuchte, werden bei „zu“
+    übersprungen. Läuft schon ein Gruppenbefehl, wirft RuntimeError."""
+    skipped: dict[str, dict[str, Any]] = {}
+    jobs = []
+    for sh in members:
+        why = door_guard(sh, contacts.get(sh.id)) if command == "down" else None
+        if why:
+            skipped[sh.id] = {"shutter_id": sh.id, "ok": True, "skipped": True, "reason": why}
+        else:
+            jobs.append((sh, lambda sh=sh: send_one(sh)))
+    sent = iter(send_sequence(cfg, jobs, sleep))
+    return [skipped[sh.id] if sh.id in skipped else next(sent) for sh in members]

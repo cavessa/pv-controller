@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-13 – Rollläden Phase 3: ein Chat für Heizung und Rollläden
+
+**Neu:** Der Heizungs-Chat versteht Rollläden – ein Chat-Feld (die Karte wandert mit in den aktiven Tab Heizung bzw. Rollläden, Verlauf bleibt), ein Tool `propose_schedule` mit zusätzlich `shutter_entries`, `shutter_immediate`, `shutter_delete_ids` (strict, gleiches Schema für Claude und ChatGPT). Wie bei der Heizung: nur Vorschläge, der Server prüft alles, gespeichert/gefahren wird erst nach „Übernehmen“.
+- Zeitpläne per Chat nur für „Automatik: PV Controller“. Für openHAB-Rollläden lehnt die Vorschau freundlich ab („Wohnen links wird über eine openHAB-Regel gesteuert – Zeitplan erst nach Umstellung.“), der Rest des Vorschlags bleibt gültig. Sofort-Befehle für alle Rollläden.
+- Sonnenzeiten: „bei Sonnenuntergang“, „30 min nach Sonnenuntergang“, „aber nicht vor 18 Uhr“ → `kind`/`offset_min`/`not_before`/`not_after`; die Vorschau zeigt die berechnete Uhrzeit („heute 19:07, morgen 19:05“).
+- „alle Rollläden“ = jeder einzeln in der Vorschau. Tür ohne Kontakt (bzw. offen/unbekannt) beim Schließen → ⚠️ in der Vorschau; „Übernehmen“ fragt wie die Buttons nach, der Server lehnt ohne Bestätigung mit 409 ab, ohne den Vorschlag zu verbrauchen. Mehrere Sofort-Befehle gestaffelt (`command_spacing_s`), Duty Cycle über der Grenze → nur einzeln.
+- Mehrdeutige Namen („Wohnen“ → links + rechts) → Rückfrage, auch wenn das Modell geraten hat (serverseitige Prüfung); „beide“, „alle“ oder Plural („Rollläden Wohnen“) gelten als eindeutig.
+- Abfragen lokal ohne Sprachmodell: „Was fahren die Rollläden heute Abend?“, „wann geht der Hintereingang morgen früh hoch?“ – PV-Controller-Zeitpläne (berechnete Uhrzeit) plus **openHAB-Regelzeiten** als Info („18:40 Wohnen links ▼ zu · openHAB-Regel „Rollladen Wohnen runter Automatik““). Regeln werden nur gelesen (`GET /rest/rules`, 10 min zwischengespeichert); Quartz-Cron und Tageszeit-Trigger, deaktivierte Regeln ausgelassen, Regeln mit `if` als „mit Bedingungen“, häufige Trigger als Spanne („22:00–23:45 mehrfach“). Geprüft gegen die echten Regeln in Dev.
+- Chat geht auch, wenn nur Rollläden aktiv sind.
+**Code:** `shutter_chat.py` (neu), `heating_chat.py` (Tool, Prompt, `Proposal` + `peek`), `web.py` (gemeinsamer Chat-Endpunkt, Apply mit `confirm_doors`, Chat-Status auch im Rollladen-Status), `shutters.send_sequence` (Staffelung, auch für Gruppen), `OpenHabClient.get_rules`, `web/heating.js` (Vorschau, Bestätigung), `web/shutters.js`. Tests: `tests/test_shutter_chat.py` (29, API gemockt wie bei der Heizung); Heizungs-Testdateien unverändert, alle grün.
+
 ## 2026-10-13 – Rollläden Phase 2: Zeitpläne (Uhrzeit / Sonnenauf- und -untergang) mit Sicherheitsregeln
 
 **Neu:** Zeitpläne je Rollladen, ausgeführt im Minuten-Cron nach PV-Steuerung und Heizungs-Zeitplänen (eigener Thread, Zeitbudget 20 s, Fehler isoliert). Eigener Schalter „Rollladen-Zeitpläne aktiv“ (Default aus). **Nur Rollläden mit „Automatik: PV Controller“** (aktuell Schlafzimmer); für „openHAB-Regel“ lehnt der Server Zeitpläne ab und der Cron fährt sie nie.

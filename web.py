@@ -36,6 +36,7 @@ import heating_schedule as _hsched
 import heating_chat as _hchat
 import shutters as _shutters
 import shutter_schedule as _ssched
+import shutter_chat as _schat
 from clients.goe_client import GoeClient, GoeError
 from config import Config, load_config
 from controller import ControllerMode, run_controller
@@ -2087,9 +2088,16 @@ def heating_schedule_delete(sid: int) -> dict[str, Any]:
 # ── Heizung: Chat (Phase 3) ─────────────────────────────────────────────────
 
 
+def _shutters_enabled(raw: dict[str, Any]) -> bool:
+    try:
+        return _shutters.parse_shutters(raw).enabled
+    except ValueError:
+        return False
+
+
 def _chat_status(raw: dict[str, Any], hcfg: "_heating.HeatingConfig") -> dict[str, Any]:
     try:
-        return _hchat.status(hcfg, _hchat.parse_assistant(raw))
+        return _hchat.status(hcfg, _hchat.parse_assistant(raw), shutters_enabled=_shutters_enabled(raw))
     except ValueError as e:
         return {"enabled": False, "ready": False, "hint": f"assistant-Config ungültig: {e}",
                 "used_today": 0, "limit": 0, "key_set": False, "model": "", "provider": "", "provider_name": ""}
@@ -2106,6 +2114,7 @@ class _ChatRequest(BaseModel):
 
 class _ChatApply(BaseModel):
     proposal_id: str
+    confirm_doors: bool = False          # Tür offen/ohne Kontakt: Schließen ausdrücklich bestätigt
 
 
 def _chat_ctx() -> tuple[dict[str, Any], "_heating.HeatingConfig", Any, "_hchat.AssistantConfig"]:
@@ -2116,15 +2125,24 @@ def _chat_ctx() -> tuple[dict[str, Any], "_heating.HeatingConfig", Any, "_hchat.
         raise HTTPException(500, f"assistant-Config ungültig: {e}")
     if not acfg.enabled:
         raise HTTPException(409, "Chat ist aus (Settings → Heizung → „Chat aktiv“).")
-    if not hcfg.enabled or client is None:
+    if not (hcfg.enabled or _shutters_enabled(raw)) or client is None:
         raise HTTPException(409, "Heizung nicht aktiv oder openHAB nicht konfiguriert")
     return raw, hcfg, client, acfg
 
 
+def _chat_shutters(raw: dict[str, Any]) -> "_shutters.ShutterConfig":
+    try:
+        return _shutters.parse_shutters(raw)
+    except ValueError as e:
+        raise HTTPException(500, f"shutters config ungültig: {e}")
+
+
 @app.post("/api/heating/chat")
 def heating_chat(body: _ChatRequest) -> dict[str, Any]:
-    """Text → Antwort: Abfrage aus der DB, Rückfrage oder Vorschlag (nichts wird gespeichert)."""
+    """Text → Antwort: Abfrage aus der DB, Rückfrage oder Vorschlag (nichts wird gespeichert).
+    Ein Chat für Heizung und Rollläden."""
     raw, hcfg, client, acfg = _chat_ctx()
+    scfg = _chat_shutters(raw)
     hist = [{"role": m.role, "content": m.content.strip()[:_hchat.MAX_TEXT]}
             for m in body.messages[-_hchat.MAX_HISTORY:] if m.role in ("user", "assistant") and m.content.strip()]
     while hist and hist[0]["role"] != "user":
@@ -2132,54 +2150,95 @@ def heating_chat(body: _ChatRequest) -> dict[str, Any]:
     if not hist or hist[-1]["role"] != "user":
         raise HTTPException(400, "Leere Nachricht")
     now = datetime.now(_hsched.TZ)
+    loc = _ssched.location(raw)
     entries = _hsched.list_schedules()
     base = {"chat": None}
-    answer = _hchat.local_answer(hist[-1]["content"], hcfg, entries, now)
+    st_now = lambda: _hchat.status(hcfg, acfg, now, shutters_enabled=scfg.enabled)  # noqa: E731
+    text = hist[-1]["content"]
+    if scfg.enabled and _schat.is_query(text, scfg):           # Rollläden zuerst: „was fahren die Rollläden …“
+        rules = _schat.cached_rules(client) if any(sh.automation == "openhab" for sh in scfg.rooms) else []
+        answer = _schat.local_answer(text, scfg, _ssched.list_schedules(), now, loc, rules, scfg.schedules_enabled)
+        if answer is not None:
+            return {**base, "type": "answer", "text": answer, "chat": st_now()}
+    answer = _hchat.local_answer(text, hcfg, entries, now) if hcfg.enabled else None
     if answer is not None:
-        return {**base, "type": "answer", "text": answer, "chat": _hchat.status(hcfg, acfg, now)}
-    st = _hchat.status(hcfg, acfg, now)
+        return {**base, "type": "answer", "text": answer, "chat": st_now()}
+    st = st_now()
     if not st["ready"]:
         kind = "limit" if st["key_set"] and st["used_today"] >= st["limit"] else "unavailable"
         return {**base, "type": kind, "text": st["hint"], "chat": st}
     if not _hchat.try_consume(acfg.max_requests_per_day, now):
-        st = _hchat.status(hcfg, acfg, now)
+        st = st_now()
         return {**base, "type": "limit", "text": st["hint"], "chat": st}
-    rooms = _heating.read_status(hcfg, client).get("rooms", [])
+    rooms = _heating.read_status(hcfg, client).get("rooms", []) if hcfg.enabled else []
     context = _hchat.build_context(hcfg, rooms, entries, now)
+    sh_status: list[dict[str, Any]] = []
+    if scfg.enabled:
+        sh_status = _shutters.read_status(scfg, client, now).get("rooms", [])
+        context += "\n" + _schat.build_context(scfg, sh_status, _ssched.list_schedules(), now, loc)
     try:
         inp = _hchat.call_model(acfg, context, hist)
     except _hchat.ChatError as e:
-        return {**base, "type": "error", "kind": e.kind, "text": str(e), "chat": _hchat.status(hcfg, acfg, now)}
-    st = _hchat.status(hcfg, acfg, now)
+        return {**base, "type": "error", "kind": e.kind, "text": str(e), "chat": st_now()}
+    st = st_now()
     q = inp.get("question")
-    if isinstance(q, str) and q.strip() and not (inp.get("entries") or inp.get("immediate") or inp.get("delete_ids")):
+    has_work = any(inp.get(k) for k in ("entries", "immediate", "delete_ids", "shutter_entries",
+                                        "shutter_immediate", "shutter_delete_ids"))
+    if isinstance(q, str) and q.strip() and not has_work:
         return {**base, "type": "question", "text": q.strip()[:400], "chat": st}
     proposal, errors = _hchat.validate_proposal(hcfg, inp, now)
+    errors += _schat.validate(scfg, proposal, inp, now, loc)
+    amb = _schat.ambiguity(text, scfg, _schat.touched(proposal, inp)) if scfg.enabled else None
+    if amb:                                                      # Rückfrage statt raten
+        return {**base, "type": "question", "text": amb, "chat": st}
     if errors:
         log.info("Chat: Vorschlag abgelehnt: %s", "; ".join(errors))
         return {**base, "type": "invalid", "text": "Das kann ich so nicht übernehmen:\n" + "\n".join(errors),
                 "chat": st}
-    if not (proposal.entries or proposal.immediate or proposal.deletes):
+    if proposal.empty:
+        if proposal.declined:
+            return {**base, "type": "answer", "text": "\n".join(proposal.declined), "chat": st}
         return {**base, "type": "question", "text": "Ich habe nichts zum Planen gefunden. Was soll geschehen?",
                 "chat": st}
-    proposal.note = hist[-1]["content"][:200]
+    proposal.note = text[:200]
     _hchat.store(proposal)
-    return {**base, "type": "proposal", "proposal": _hchat.preview(hcfg, proposal, now),
-            "schedules_enabled": hcfg.schedules_enabled, "dry_run": _heating_dry_run(raw), "chat": st}
+    pv = _hchat.preview(hcfg, proposal, now)
+    pv["shutters"] = _schat.preview(scfg, proposal, now, loc, sh_status) if scfg.enabled else None
+    return {**base, "type": "proposal", "proposal": pv, "schedules_enabled": hcfg.schedules_enabled,
+            "shutter_schedules_enabled": scfg.schedules_enabled, "dry_run": _heating_dry_run(raw), "chat": st}
 
 
 @app.post("/api/heating/chat/apply")
 def heating_chat_apply(body: _ChatApply) -> dict[str, Any]:
-    """Bestätigter Vorschlag: noch einmal prüfen, dann speichern/löschen/sofort setzen."""
+    """Bestätigter Vorschlag: noch einmal prüfen, dann speichern/löschen/sofort setzen bzw. fahren."""
     raw, hcfg, client, _acfg = _chat_ctx()
-    p = _hchat.take(body.proposal_id)
+    scfg = _chat_shutters(raw)
+    p = _hchat.peek(body.proposal_id)
     if p is None:
         raise HTTPException(410, "Vorschlag abgelaufen – bitte neu fragen.")
     now = datetime.now(_hsched.TZ)
+    loc = _ssched.location(raw)
+    if p.shutter_immediate:                      # gleiche Regeln wie bei den Buttons – vor dem Verbrauchen
+        st = _shutters.read_status(scfg, client, now)
+        warn = _schat.door_warnings(scfg, p, st.get("rooms", []))
+        if warn and not body.confirm_doors:
+            raise HTTPException(409, "; ".join(sorted(set(warn.values()))) + " – Schließen nur mit Bestätigung.")
+        dc = st.get("duty_cycle")
+        if dc and dc["high"] and len(p.shutter_immediate) > 1:
+            raise HTTPException(409, f"Duty Cycle {dc['value']:g} % über {dc['max']:g} % – mehrere Rollläden "
+                                     f"gerade nicht, bitte einzeln.")
+    p = _hchat.take(body.proposal_id)
+    if p is None:
+        raise HTTPException(410, "Vorschlag abgelaufen – bitte neu fragen.")
     try:                                                  # Zeit kann seit der Vorschau vergangen sein
         for e in p.entries:
             _hsched.validate_entry(hcfg, e["room_id"], e["setpoint"], e["time"],
                                    days=e["days"].split(",") if e["days"] else None, date=e["date"], now=now)
+        for e in p.shutter_entries:
+            _ssched.validate_entry(scfg, e["shutter_id"], e["action"], e["kind"], position=e["position"],
+                                   time=e["time"], offset_min=e["offset_min"], not_before=e["not_before"],
+                                   not_after=e["not_after"], days=e["days"].split(",") if e["days"] else None,
+                                   date=e["date"], loc=loc, now=now)
     except ValueError as e:
         raise HTTPException(400, f"Vorschlag nicht mehr gültig: {e}")
     created = [_hsched.create_schedule(e, source="chat", note=p.note) for e in p.entries]
@@ -2195,8 +2254,39 @@ def heating_chat_apply(body: _ChatApply) -> dict[str, Any]:
             _app_log(f"Zeitplan gelöscht (Chat): {room.name if room else d['room_id']} {d['time']} → "
                      f"{d['setpoint']:g} °C")
     sent = [_heating_send(raw, hcfg, client, hcfg.room(i["room_id"]), i["setpoint"], "Chat") for i in p.immediate]
-    return {"ok": all(r["ok"] for r in sent), "created": [e["id"] for e in created], "deleted": deleted,
-            "immediate": sent, "schedules_enabled": hcfg.schedules_enabled}
+    out = {"ok": all(r["ok"] for r in sent), "created": [e["id"] for e in created], "deleted": deleted,
+           "immediate": sent, "schedules_enabled": hcfg.schedules_enabled}
+    if not (p.shutter_entries or p.shutter_deletes or p.shutter_immediate):
+        return out
+    s_created = [_ssched.create_schedule(e, source="chat", note=p.note) for e in p.shutter_entries]
+    for e in s_created:
+        _app_log("Rollladen-Zeitplan angelegt (Chat): " + _sched_text(scfg.shutter(e["shutter_id"]).name, e),
+                 area="shutters")
+    s_deleted = []
+    for d in p.shutter_deletes:
+        if _ssched.delete_schedule(d["id"]):
+            s_deleted.append(d["id"])
+            sh = scfg.shutter(d["shutter_id"])
+            _app_log("Rollladen-Zeitplan gelöscht (Chat): " + _sched_text(sh.name if sh else d["shutter_id"], d),
+                     area="shutters")
+    jobs = []
+    for im in p.shutter_immediate:
+        sh = scfg.shutter(im["shutter_id"])
+        jobs.append((sh, lambda sh=sh, im=im: _shutter_send(raw, client, sh, im["action"], im["target"], "Chat")))
+    try:
+        s_sent = _shutters.send_sequence(scfg, jobs)
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    for im, r in zip(p.shutter_immediate, s_sent):
+        if r["ok"]:
+            try:
+                _ssched.clear_wait(im["shutter_id"])
+            except sqlite3.Error:
+                pass
+    out.update(ok=out["ok"] and all(r["ok"] for r in s_sent), shutter_created=[e["id"] for e in s_created],
+               shutter_deleted=s_deleted, shutter_immediate=s_sent,
+               shutter_schedules_enabled=scfg.schedules_enabled)
+    return out
 
 
 # ── Rollläden (openHAB-Rollershutter) ───────────────────────────────────────
@@ -2250,6 +2340,10 @@ def shutters_status(response: Response) -> dict[str, Any]:
         "command_spacing_s": scfg.command_spacing_s,
     }
     base["schedules_enabled"] = scfg.schedules_enabled
+    try:                                                 # ein Chat für Heizung + Rollläden: Status auch hier
+        base["chat"] = _chat_status(raw, _heating.parse_heating(raw))
+    except ValueError:
+        base["chat"] = None
     if not scfg.enabled or client is None:
         return {**base, "ok": True, "error": None, "rooms": [], "duty_cycle": None}
     st = {**base, **_shutters.read_status(scfg, client)}
