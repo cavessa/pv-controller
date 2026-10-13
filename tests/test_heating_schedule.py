@@ -230,6 +230,47 @@ class DstTest(DbCase):
         self.run_at(datetime(2026, 3, 29, 1, 0, 20, tzinfo=UTC), c)             # 03:00 CEST
         self.assertEqual(c.sends, [("W_Set", "21")])
 
+    def test_late_across_fall_back_is_skipped_not_sent_an_hour_later(self):
+        """02:50 CEST fällig, openHAB bis 02:09 CET (= 19 min später) tot → übersprungen.
+
+        Vorher: Python vergleicht/zieht aware datetimes mit derselben tzinfo als Wanduhrzeit ab (fold wird
+        ignoriert) → um 02:09 CET galt 02:50 als „noch nicht fällig“, um 02:50 CET wurde gesendet (1 h zu spät).
+        """
+        e = self.add(time="02:50", days=list(hs.DAYS))
+        c = SchedClient(dead=True)
+        t = datetime(2026, 10, 25, 0, 40, 20, tzinfo=UTC)              # 02:40 CEST
+        while t < datetime(2026, 10, 25, 2, 0, tzinfo=UTC):             # bis 03:00 CET
+            c.dead = t < datetime(2026, 10, 25, 1, 9, tzinfo=UTC)       # wieder da ab 02:09 CET
+            self.run_at(t, c)
+            t += timedelta(minutes=1)
+        self.assertEqual(c.sends, [])
+        self.assertEqual(hs.get_schedule(e["id"])["last_result"], hs.SKIPPED)
+        self.assertTrue(any("15 min verspätet" in m for _, m in self.logs))   # 15:20 min (02:05:20 CET)
+
+    def test_late_within_window_across_fall_back_is_caught_up(self):
+        self.add(time="02:55", days=list(hs.DAYS))
+        c = SchedClient(dead=True)
+        self.run_at(datetime(2026, 10, 25, 0, 55, 20, tzinfo=UTC), c)  # 02:55 CEST, tot
+        c.dead = False
+        self.run_at(datetime(2026, 10, 25, 1, 5, 20, tzinfo=UTC), c)   # 02:05 CET = 10 min später
+        self.assertEqual(c.sends, [("W_Set", "21")])
+
+    def test_verify_steps_in_real_minutes_across_fall_back(self):
+        """Rückprüfung 5 min nach dem Senden – auch wenn dazwischen die Uhr zurückgestellt wird."""
+        self.add(time="02:58", days=list(hs.DAYS))
+        c = SchedClient()
+        c.echo = False
+        self.run_at(datetime(2026, 10, 25, 0, 58, 20, tzinfo=UTC), c)  # 02:58 CEST gesendet
+        c.calls.clear()
+        self.run_at(datetime(2026, 10, 25, 1, 3, 30, tzinfo=UTC), c)   # 02:03 CET = 5 min später
+        self.assertEqual([x[0] for x in c.calls], ["get", "send"])      # geprüft + einmal erneut gesendet
+
+    def test_stale_verify_given_up_after_30_real_minutes(self):
+        hs._verify_start("wohnen", 21.0, datetime(2026, 10, 25, 2, 40, tzinfo=TZ))          # CEST
+        c = SchedClient(dead=True)
+        self.run_at(datetime(2026, 10, 25, 1, 15, 20, tzinfo=UTC), c)  # 02:15 CET = 35 min später
+        self.assertEqual(hs.alerts()["wohnen"]["status"], "mismatch")
+
     def test_next_change_across_dst(self):
         e = self.add(time="07:00", days=["so"])
         nxt = hs.next_changes([hs.get_schedule(e["id"])], at(date(2026, 10, 24), "12:00"))

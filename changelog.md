@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-13 – Fix Heizungs-Zeitpläne: Zeitumstellung im Oktober (doppelte Stunde)
+
+**Ursache:** Python vergleicht und subtrahiert aware datetimes mit derselben `tzinfo` als Wanduhrzeit, `fold` wird ignoriert. In der doppelten Stunde (So 25.10.2026, 02:00–03:00) war ein Zeitpunkt aus der ersten Stunde (CEST) daher „später“ als einer aus der zweiten (CET).
+**Folgen vorher (mit Tests nachgestellt):** 02:50 fällig, openHAB bis 02:09 CET weg → nicht übersprungen, sondern um 02:50 CET gesendet (1 h zu spät); Nachholen innerhalb 15 min über die Umstellung klappte nicht; Rückprüfung nach 02:58 CEST erst 1 h später statt nach 5 min; „Rückmeldung nicht prüfbar“ nach 30 min ebenso verzögert.
+**Fix (`heating_schedule.py`):** alle Vergleiche und Abstände (Fälligkeit, „erst danach angelegt“, Nachhol-Fenster, Reihenfolge, nächste Änderung, Rückprüf-Takt, Aufgeben, Datum in der Vergangenheit) laufen über UTC (`_utc`). Sonst unverändert. Tests: 4 neue in `DstTest` (Nacht 24./25.10.2026; die Umstellung ist 2026 am Sonntag 25.10. um 03:00), alle Heizungstests grün.
+
 ## 2026-10-13 – Rollläden Phase 1: Tab „Rollläden“ mit Anzeige und manueller Steuerung
 
 **Neu:** Tab „Rollläden“ (nach Heizung), gleiches Muster wie der Heizung-Tab (Cards in place aktualisiert, Polling alle 30 s, pausiert bei anderem Tab oder verdeckter Seite). Je Rollladen: Positionsbalken (0 = offen, 100 = zu), ▲ Auf / ■ Stop / ▼ Ab, Positions-Slider (nur wenn das Gerät Position kann), Kontaktanzeige (🚪 Tür / 🪟 Fenster · offen/zu), „Automatik: openHAB-Regel“ bzw. „PV Controller“. Gruppen-Card: „Alle“ und je Gruppe Auf/Zu, jeweils mit Bestätigung.

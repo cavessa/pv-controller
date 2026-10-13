@@ -165,7 +165,7 @@ def validate_entry(cfg: heating.HeatingConfig, room_id: str, setpoint: Any, time
     except (TypeError, ValueError):
         raise ValueError("Datum muss YYYY-MM-DD sein")
     now = (now or datetime.now(TZ)).astimezone(TZ)
-    if due_instant(d, time) <= now:
+    if _utc(due_instant(d, time)) <= _utc(now):
         raise ValueError("Zeitpunkt liegt in der Vergangenheit")
     return {"room_id": room_id, "setpoint": sp, "time": time, "days": None, "date": d.isoformat()}
 
@@ -212,7 +212,13 @@ def _verify_due(p: dict[str, Any], now: datetime) -> bool:
         sent = datetime.fromisoformat(p["sent_at"]).astimezone(TZ)
     except ValueError:
         return True
-    return now >= sent + timedelta(minutes=VERIFY_STEP_MIN * (int(p.get("checks") or 0) + 1))
+    return _utc(now) >= _utc(sent) + timedelta(minutes=VERIFY_STEP_MIN * (int(p.get("checks") or 0) + 1))
+
+
+def _utc(dt: datetime) -> datetime:
+    """Für Vergleiche und Abstände: aware datetimes mit derselben tzinfo vergleicht/subtrahiert Python als
+    Wanduhrzeit (fold wird ignoriert) – in der doppelten Stunde im Oktober 1 h daneben. In UTC stimmt es."""
+    return dt.astimezone(timezone.utc)
 
 
 def _c(v: float) -> str:
@@ -268,12 +274,12 @@ def due_entries(entries: list[dict[str, Any]], now: datetime) -> list[tuple[dict
         if not e["enabled"] or not applies_on(e, today) or _ran_on(e, today):
             continue
         at = due_instant(today, e["time"])
-        if at > now:
+        if _utc(at) > _utc(now):
             continue
         created = e.get("created_at")
         if created:
             try:
-                if datetime.fromisoformat(created).astimezone(TZ) > at:
+                if _utc(datetime.fromisoformat(created)) > _utc(at):
                     continue        # erst nach der Uhrzeit angelegt → heute nicht nachholen
             except ValueError:
                 pass
@@ -291,10 +297,10 @@ def next_changes(entries: list[dict[str, Any]], now: datetime, horizon_days: int
             if not e["enabled"] or not applies_on(e, day) or (offset == 0 and _ran_on(e, day)):
                 continue
             at = due_instant(day, e["time"])
-            if at <= now:
+            if _utc(at) <= _utc(now):
                 continue
             cur = out.get(e["room_id"])
-            if cur is None or at < cur["_at"]:
+            if cur is None or _utc(at) < _utc(cur["_at"]):
                 out[e["room_id"]] = {"_at": at, "at": at.isoformat(timespec="minutes"),
                                      "setpoint": e["setpoint"], "id": e["id"]}
     for v in out.values():
@@ -360,11 +366,11 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
         return res
 
     # Nachholen: > 15 min verspätet → überspringen
-    late = [(e, at) for e, at in due if now - at > timedelta(minutes=CATCH_UP_MIN)]
+    late = [(e, at) for e, at in due if _utc(now) - _utc(at) > timedelta(minutes=CATCH_UP_MIN)]
     for e, at in late:
         room = cfg.room(e["room_id"])
         emit(f"Zeitplan übersprungen: {room.name} {e['time']} → {e['setpoint']:g} °C "
-             f"({int((now - at).total_seconds() // 60)} min verspätet, max. {CATCH_UP_MIN})", logging.WARNING)
+             f"({int((_utc(now) - _utc(at)).total_seconds() // 60)} min verspätet, max. {CATCH_UP_MIN})", logging.WARNING)
     _mark([e["id"] for e, _ in late], SKIPPED, now, disable_once=True)
     res.skipped = len(late)
     late_ids = {e["id"] for e, _ in late}
@@ -372,7 +378,7 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
 
     # mehrere je Raum → nur der späteste
     latest: dict[str, tuple[dict, datetime]] = {}
-    for e, at in sorted(due, key=lambda x: (x[1], x[0]["id"])):
+    for e, at in sorted(due, key=lambda x: (_utc(x[1]), x[0]["id"])):
         latest[e["room_id"]] = (e, at)
     superseded = [e["id"] for e, _ in due if latest[e["room_id"]][0] is not e]
     _mark(superseded, SUPERSEDED, now, disable_once=True)
@@ -528,7 +534,7 @@ def _give_up_stale_verifies(pending: list[dict], cfg: heating.HeatingConfig, now
                             emit: Callable[[str, int], None]) -> None:
     for p in pending:
         try:
-            age = now - datetime.fromisoformat(p["sent_at"]).astimezone(TZ)
+            age = _utc(now) - _utc(datetime.fromisoformat(p["sent_at"]))
         except ValueError:
             continue
         if age > timedelta(minutes=VERIFY_GIVE_UP_MIN):
