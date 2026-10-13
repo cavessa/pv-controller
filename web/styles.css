@@ -1691,3 +1691,4 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 .heat-prev-group.del .heat-prev-row { color: var(--error); }
 .heat-prev-warn { margin: 0; font-size: 11px; color: var(--warn); }
 .heat-prev-actions { display: flex; gap: 8px; }
+.heat-settings > label select { background: rgba(255,255,255,0.04); border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 8px 10px; font-family: inherit; font-size: 13px; }

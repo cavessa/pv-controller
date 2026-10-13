@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=70">
+  <link rel="stylesheet" href="/static/styles.css?v=71">
 </head>
 <body>
   <div class="app-shell">
@@ -865,7 +865,8 @@
           <p class="note" id="hs-openhab"></p>
           <label class="check"><input type="checkbox" id="hs-enabled"> Heizung-Tab aktiv</label>
           <label class="check"><input type="checkbox" id="hs-sched"> Zeitpläne aktiv (der Minuten-Cron führt fällige Pläne aus)</label>
-          <label class="check"><input type="checkbox" id="hs-chat"> Chat aktiv (Zeitpläne per Text über die Claude API, jede Änderung mit Bestätigung)</label>
+          <label class="check"><input type="checkbox" id="hs-chat"> Chat aktiv (Zeitpläne per Text über ein Sprachmodell, jede Änderung mit Bestätigung)</label>
+          <label>Chat-Anbieter<select id="hs-provider"><option value="openai">ChatGPT (OpenAI)</option><option value="anthropic">Claude (Anthropic)</option></select></label>
           <p class="note" id="hs-chat-key"></p>
           <label>Chat-Modell<input type="text" id="hs-model" placeholder="claude-haiku-5-5" autocomplete="off"></label>
           <label>Chat-Anfragen pro Tag (Limit)<input type="number" id="hs-limit" min="1" max="10000" step="1"></label>
@@ -984,6 +985,6 @@
   </div>
 
   <script src="/static/app.js?v=20261013c" defer></script>
-  <script src="/static/heating.js?v=20261013f" defer></script>
+  <script src="/static/heating.js?v=20261013g" defer></script>
 </body>
 </html>

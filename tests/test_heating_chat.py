@@ -252,11 +252,12 @@ class WebChatTest(unittest.TestCase):
         db.DB_PATH = Path(self.tmp.name) / "t.db"
         hs.init_tables()
         self.setUp_web()
-        self.set_assistant(enabled=True, api_key=KEY, model="claude-haiku-5-5", max_requests_per_day=3)
+        self.set_assistant(enabled=True, provider="anthropic", api_key=KEY, openai_api_key="",
+                           model="claude-haiku-5-5", max_requests_per_day=3)
         self.api = FakeAPI(tool())
         self.factory = mock.Mock(side_effect=lambda a: self.api)
         self.p2 = [mock.patch.object(hc, "_default_client", self.factory),
-                   mock.patch.object(hc, "sdk_available", lambda: True)]
+                   mock.patch.object(hc, "sdk_available", lambda *a: True)]
         for p in self.p2:
             p.start()
         hc._PROPOSALS.clear()
@@ -364,7 +365,7 @@ class WebChatTest(unittest.TestCase):
         self.assertEqual(res["type"], "unavailable")
         self.assertIn("API-Key fehlt", res["text"])
         self.set_assistant(api_key=KEY)
-        with mock.patch.object(hc, "sdk_available", lambda: False):
+        with mock.patch.object(hc, "sdk_available", lambda *a: False):
             self.assertIn("anthropic", self.chat("morgen Wohnen um 7 auf 21")["text"])
         self.factory.assert_not_called()
 
@@ -384,15 +385,16 @@ class WebChatTest(unittest.TestCase):
                  json.dumps(web.heating_config_get()), json.dumps(web.api_config_get()), self.log_text()]
         for b in blobs:
             self.assertNotIn(KEY, b)
-        self.assertTrue(web.heating_config_get()["assistant"]["key_set"])
+        self.assertEqual(web.heating_config_get()["assistant"]["keys_set"], {"anthropic": True, "openai": False})
 
     def test_settings_switch_model_limit_keep_key(self):
         body = dict(enabled=True, setpoint_min=5, setpoint_max=26, rooms=th.ROOMS)
         web.heating_config_put(web._HeatingConfigUpdate(**body, assistant={"enabled": False, "model": "claude-opus-5-5",
-                                                                           "max_requests_per_day": 20, "api_key": "HACK"}))
+                                                                           "max_requests_per_day": 20, "api_key": "HACK",
+                                                                           "openai_api_key": "HACK2"}))
         saved = json.loads(self.cfg_path.read_text(encoding="utf-8"))["assistant"]
-        self.assertEqual(saved, {"enabled": False, "api_key": KEY, "model": "claude-opus-5-5", "max_requests_per_day": 20,
-                                 "workspace_id": ""})
+        self.assertEqual(saved, {"enabled": False, "provider": "anthropic", "openai_api_key": "", "api_key": KEY,
+                                 "model": "claude-opus-5-5", "max_requests_per_day": 20, "workspace_id": ""})
         self.assertIn("Chat deaktiviert (Settings)", self.log_text())
         with self.assertRaises(web.HTTPException):
             web.heating_config_put(web._HeatingConfigUpdate(**body, assistant={"model": "kein modell!"}))
@@ -418,13 +420,188 @@ class ClientConfigTest(unittest.TestCase):
         self.assertFalse(inspect.iscoroutinefunction(web.heating_chat_apply))
 
 
+# ── OpenAI (ChatGPT) ────────────────────────────────────────────────────────
+
+OKEY = "sk-proj-OPENAITESTKEY-987654321"
+
+
+class FakeOpenAI:
+    """Wie openai.OpenAI: chat.completions.create → Tool-Aufruf (arguments als JSON-String)."""
+
+    def __init__(self, tool_input=None, text=None, exc=None, finish_reason="tool_calls", refusal=None):
+        self.tool_input, self.text, self.exc, self.finish_reason, self.refusal = tool_input, text, exc, finish_reason, refusal
+        self.calls = []
+        self.chat = SimpleNamespace(completions=self)
+
+    def create(self, **kw):
+        self.calls.append(kw)
+        if self.exc:
+            raise self.exc
+        calls = None
+        if self.tool_input is not None:
+            calls = [SimpleNamespace(type="function", id="call_1", function=SimpleNamespace(
+                name="propose_schedule", arguments=json.dumps(self.tool_input)))]
+        msg = SimpleNamespace(content=self.text, tool_calls=calls, refusal=self.refusal)
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason=self.finish_reason)])
+
+
+OCFG = hc.AssistantConfig(enabled=True, provider="openai", openai_api_key=OKEY, api_key=KEY, model="gpt-4.1-mini")
+
+
+class OpenAIRequestTest(unittest.TestCase):
+    def call(self, api, history=None):
+        return hc.call_model(OCFG, "KONTEXT", history or [{"role": "user", "content": "x"}], client_factory=lambda a: api)
+
+    def test_request_shape(self):
+        api = FakeOpenAI(tool())
+        self.call(api, [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b?"},
+                        {"role": "user", "content": "c"}])
+        kw = api.calls[0]
+        self.assertEqual(kw["model"], "gpt-4.1-mini")
+        self.assertEqual([m["role"] for m in kw["messages"]], ["system", "user", "assistant", "user"])
+        self.assertTrue(kw["messages"][0]["content"].endswith("KONTEXT"))
+        self.assertEqual(kw["tools"][0]["type"], "function")
+        fn = kw["tools"][0]["function"]
+        self.assertEqual((fn["name"], fn["strict"]), ("propose_schedule", True))
+        self.assertIs(fn["parameters"], hc.TOOL["input_schema"])                 # gleiches Schema wie bei Claude
+        self.assertEqual(kw["tool_choice"], {"type": "function", "function": {"name": "propose_schedule"}})
+        self.assertFalse(kw["parallel_tool_calls"])
+        self.assertNotIn("temperature", kw)
+        self.assertNotIn(OKEY, json.dumps(kw, default=str))
+
+    def test_tool_arguments_parsed(self):
+        inp = tool([entry(date_="2026-10-14")], summary="s")
+        self.assertEqual(self.call(FakeOpenAI(inp)), inp)
+
+    def test_text_only_becomes_question_and_refusal_and_length(self):
+        self.assertEqual(self.call(FakeOpenAI(text="Welcher Raum?", finish_reason="stop"))["question"], "Welcher Raum?")
+        with self.assertRaises(hc.ChatError):
+            self.call(FakeOpenAI(refusal="nein", finish_reason="stop"))
+        with self.assertRaises(hc.ChatError) as cm:
+            self.call(FakeOpenAI(finish_reason="length"))
+        self.assertIn("unvollständig", str(cm.exception))
+
+    def test_broken_arguments(self):
+        api = FakeOpenAI(tool())
+        api.tool_input = None
+        orig = api.create
+
+        def bad(**kw):
+            r = orig(**kw)
+            r.choices[0].message.tool_calls = [SimpleNamespace(type="function", function=SimpleNamespace(
+                name="propose_schedule", arguments="{kaputt"))]
+            return r
+        api.create = bad
+        with self.assertRaises(hc.ChatError):
+            self.call(api)
+
+
+@unittest.skipUnless(hc.sdk_available("openai"), "openai nicht installiert (Prod-Vorabtest vor pip install)")
+class OpenAIErrorTest(unittest.TestCase):
+    def setUp(self):
+        import httpx2
+        import openai
+        self.O = openai
+        self.req = httpx2.Request("POST", "https://api.openai.com/v1/chat/completions")
+        self.resp = lambda code: httpx2.Response(code, request=self.req, headers={"x-request-id": "req_oa"})
+
+    def run_with(self, exc):
+        with self.assertLogs("pv-controller.heating", level="WARNING") as logs:
+            with self.assertRaises(hc.ChatError) as cm:
+                hc.call_model(OCFG, "ctx", [{"role": "user", "content": "x"}], client_factory=lambda a: FakeOpenAI(exc=exc))
+        out = "\n".join(logs.output)
+        for k in (OKEY, KEY):
+            self.assertNotIn(k, out)
+            self.assertNotIn(k, str(cm.exception))
+        return cm.exception, out
+
+    def test_insufficient_quota(self):
+        body = {"message": f"You exceeded your current quota ({OKEY})", "type": "insufficient_quota",
+                "code": "insufficient_quota"}
+        e, out = self.run_with(self.O.RateLimitError("quota", response=self.resp(429), body=body))
+        self.assertEqual(e.kind, "billing")
+        self.assertIn("OpenAI", str(e))
+        self.assertIn("ChatGPT RateLimitError 429", out)
+        self.assertIn("req_oa", out)
+
+    def test_plain_rate_limit(self):
+        e, _ = self.run_with(self.O.RateLimitError("slow down", response=self.resp(429),
+                                                   body={"message": "Rate limit reached", "code": "rate_limit_exceeded"}))
+        self.assertEqual(e.kind, "busy")
+
+    def test_invalid_key_names_openai_field(self):
+        e, _ = self.run_with(self.O.AuthenticationError("bad", response=self.resp(401),
+                                                        body={"message": f"Incorrect API key provided: {OKEY}"}))
+        self.assertEqual(e.kind, "auth")
+        self.assertIn("assistant.openai_api_key", str(e))
+
+    def test_model_not_found(self):
+        e, _ = self.run_with(self.O.NotFoundError("nf", response=self.resp(404),
+                                                  body={"message": "The model `gpt-x` does not exist", "code": "model_not_found"}))
+        self.assertEqual(str(e), "Modell „gpt-4.1-mini“ nicht verfügbar – in Settings ändern.")
+
+    def test_bad_request_reason_shown(self):
+        e, _ = self.run_with(self.O.BadRequestError("bad", response=self.resp(400),
+                                                    body={"message": "Invalid schema for function 'propose_schedule'"}))
+        self.assertIn("Invalid schema for function", str(e))
+
+    def test_timeout_and_offline(self):
+        e, _ = self.run_with(self.O.APITimeoutError(request=self.req))
+        self.assertEqual(e.kind, "timeout")
+        self.assertIn("ChatGPT antwortet nicht", str(e))
+        e, _ = self.run_with(self.O.APIConnectionError(request=self.req))
+        self.assertIn("api.openai.com", str(e))
+
+    def test_client_config(self):
+        c = hc._default_client(OCFG)
+        self.assertEqual(c.max_retries, 0)
+        self.assertEqual((c.timeout.read, c.timeout.connect), (20.0, 5.0))
+        self.assertEqual(c.api_key, OKEY)
+
+
+class OpenAIWebTest(WebChatTest):
+    """Gleicher Ablauf über die Endpunkte mit provider=openai."""
+
+    def setUp(self):
+        super().setUp()
+        self.set_assistant(provider="openai", openai_api_key=OKEY, model="gpt-4.1-mini")
+        self.api = FakeOpenAI(tool())
+
+    def test_flow_with_openai(self):
+        self.api.tool_input = tool([entry("wohnen", 21, "07:00", self.tomorrow)])
+        res = self.chat("morgen Wohnen um 7 auf 21")
+        self.assertEqual(res["type"], "proposal")
+        self.assertEqual((res["chat"]["provider"], res["chat"]["provider_name"]), ("openai", "ChatGPT"))
+        out = web.heating_chat_apply(web._ChatApply(proposal_id=res["proposal"]["id"]))
+        self.assertEqual(len(out["created"]), 1)
+        self.assertEqual(self.factory.call_args[0][0].provider, "openai")
+        blob = json.dumps(res, default=str) + json.dumps(web.heating_config_get()) + self.log_text()
+        self.assertNotIn(OKEY, blob)
+        self.assertEqual(web.heating_config_get()["assistant"]["keys_set"], {"anthropic": True, "openai": True})
+
+    def test_missing_openai_key(self):
+        self.set_assistant(openai_api_key="")
+        res = self.chat("morgen Wohnen um 7 auf 21")
+        self.assertEqual(res["type"], "unavailable")
+        self.assertIn("assistant.openai_api_key", res["text"])
+
+    # aus WebChatTest geerbte Anthropic-spezifische Tests hier nicht wiederholen
+    test_key_never_leaves_backend = None
+    test_settings_switch_model_limit_keep_key = None
+    test_missing_key_or_sdk = None
+    test_question_is_returned_and_nothing_stored = None
+
+
 class ParseTest(unittest.TestCase):
     def test_defaults_and_invalid(self):
         a = hc.parse_assistant({})
         self.assertEqual((a.enabled, a.model, a.max_requests_per_day, a.key_set), (False, "claude-haiku-5-5", 100, False))
+        o = hc.parse_assistant({"assistant": {"provider": "openai", "openai_api_key": " sk-x "}})
+        self.assertEqual((o.provider, o.model, o.key, o.key_field), ("openai", "gpt-4.1-mini", "sk-x", "openai_api_key"))
         self.assertEqual(hc.parse_assistant({"assistant": {"workspace_id": " wrkspc_01ABC "}}).workspace_id, "wrkspc_01ABC")
         for bad in ({"enabled": "ja"}, {"model": "x y"}, {"max_requests_per_day": 0}, {"api_key": 5},
-                    {"workspace_id": "wrkspc 1"}, {"workspace_id": 7}):
+                    {"workspace_id": "wrkspc 1"}, {"workspace_id": 7}, {"provider": "gemini"},
+                    {"openai_api_key": 3}):
             with self.assertRaises(ValueError):
                 hc.parse_assistant({"assistant": bad})
 

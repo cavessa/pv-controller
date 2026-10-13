@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-13 – Chat: ChatGPT (OpenAI) als Anbieter, wählbar in den Settings
+
+**Warum:** Der User hat API-Zugang und Guthaben bei OpenAI, nicht bei Anthropic.
+**Config:** `assistant.provider` = `openai` (ChatGPT) | `anthropic` (Claude, Default wenn das Feld fehlt), `assistant.openai_api_key` (nur config.json; beide Keys können nebeneinander stehen), `model` mit Default je Anbieter (`gpt-4.1-mini` bzw. `claude-haiku-5-5`). Settings: Auswahl „Chat-Anbieter“; beim Umschalten wird ein Default-Modell des anderen Anbieters durch das passende ersetzt; Key-Status je Anbieter („assistant.openai_api_key gesetzt/fehlt“). Chat-Kopf zeigt den Anbieter („ChatGPT · 3/100 heute“).
+**OpenAI-Aufruf:** offizielles SDK `openai` (neu in requirements.txt, Import erst beim Aufruf), Chat Completions mit demselben Tool-Schema als Function (`strict`), erzwungenem Aufruf von `propose_schedule`, `parallel_tool_calls=false`, 20 s Timeout ohne Retry; Argumente per `json.loads`, Text ohne Tool-Aufruf nur als Rückfrage, `refusal`/`length` mit eigener Meldung. Validierung, Vorschau, Bestätigung, Limit, lokale Abfragen und Ausführung unverändert.
+**Fehler:** gleiche Klassen wie bei Anthropic; `insufficient_quota` (429) → „Kein Guthaben … bei OpenAI unter „Billing“ aufladen“, 401 nennt `assistant.openai_api_key`, `model_not_found`/404 → „in Settings ändern“, 400 mit API-Fehlertext; beide Keys werden in Meldungen und Log maskiert.
+**Tests:** OpenAI-Request-Form, Parsing, Rückfrage/Refusal/Length, kaputte Argumente, Fehler (Quota, Rate-Limit, Key, Modell, 400, Timeout, offline), Client-Konfiguration, kompletter Web-Ablauf mit `provider=openai`; gesamt 267 (ohne SDKs: 18 übersprungen, 0 Fehler – wie im Deploy-Vorabtest).
+
 ## 2026-10-13 – Chat: API-Key ohne Workspace (400) – optionales assistant.workspace_id, API-Fehlertext sichtbar
 
 **Befund (Prod, erster echter Aufruf):** „Die API hat die Anfrage abgelehnt (400)“. Diagnose mit einem vom User ausgeführten Skript (Key nur aus config.json gelesen, maskiert): „This API key is not scoped to a workspace, so this request must include the anthropic-workspace-id header …“ – unabhängig vom Tool-Schema (beide Varianten gleich).

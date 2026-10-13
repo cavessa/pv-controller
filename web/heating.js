@@ -133,7 +133,8 @@ function renderChatStatus(st, heatingOn) {
   const hint = $("#heat-chat-hint");
   hint.textContent = st?.hint || "";
   hint.classList.toggle("hidden", !st?.hint);
-  $("#heat-chat-count").textContent = st && st.enabled ? `${st.used_today}/${st.limit} heute` : "";
+  $("#heat-chat-count").textContent = st && st.enabled
+    ? `${st.provider_name ? st.provider_name + " · " : ""}${st.used_today}/${st.limit} heute` : "";
 }
 
 function _chatAdd(role, text, cls = "") {
@@ -413,6 +414,16 @@ const HS_FIELDS = [
   ["battery_item", "Batterie"], ["humidity_item", "Luftfeuchte"], ["mode_item", "Modus"],
 ];
 let HS_ROOMS = [];
+let HS_ASSIST = {};
+const HS_KEY_FIELD = { openai: "openai_api_key", anthropic: "api_key" };
+
+function _hsKeyNote() {
+  const p = $("#hs-provider").value;
+  const set = (HS_ASSIST.keys_set || {})[p];
+  $("#hs-chat-key").textContent = set
+    ? `API-Key (${HS_KEY_FIELD[p]}): gesetzt – nur in config.json, wird nie angezeigt`
+    : `API-Key fehlt: assistant.${HS_KEY_FIELD[p]} in config.json eintragen`;
+}
 
 async function loadHeatingSettings() {
   const msg = $("#hs-msg");
@@ -422,12 +433,12 @@ async function loadHeatingSettings() {
     $("#hs-enabled").checked = !!h.enabled;
     $("#hs-sched").checked = !!h.schedules_enabled;
     const a = c.assistant || {};
+    HS_ASSIST = a;
     $("#hs-chat").checked = !!a.enabled;
-    $("#hs-model").value = a.model || "claude-haiku-5-5";
+    $("#hs-provider").value = a.provider || "anthropic";
+    $("#hs-model").value = a.model || (a.default_models || {})[a.provider] || "";
     $("#hs-limit").value = a.max_requests_per_day ?? 100;
-    $("#hs-chat-key").textContent = a.key_set
-      ? "API-Key: gesetzt (nur in config.json, wird nie angezeigt)"
-      : "API-Key: fehlt – assistant.api_key in config.json eintragen";
+    _hsKeyNote();
     $("#hs-min").value = h.setpoint_min ?? 5;
     $("#hs-max").value = h.setpoint_max ?? 26;
     HS_ROOMS = (h.rooms || []).map(r => ({ ...r }));
@@ -476,7 +487,7 @@ async function saveHeatingSettings() {
   const body = {
     enabled: $("#hs-enabled").checked,
     schedules_enabled: $("#hs-sched").checked,
-    assistant: { enabled: $("#hs-chat").checked, model: $("#hs-model").value.trim(),
+    assistant: { enabled: $("#hs-chat").checked, provider: $("#hs-provider").value, model: $("#hs-model").value.trim(),
                  max_requests_per_day: Number($("#hs-limit").value) },
     setpoint_min: Number($("#hs-min").value),
     setpoint_max: Number($("#hs-max").value),
@@ -535,6 +546,13 @@ function bootHeating() {
   });
 
   $("#hs-save")?.addEventListener("click", saveHeatingSettings);
+  $("#hs-provider")?.addEventListener("change", () => {
+    // Modell auf den Default des neuen Anbieters setzen, wenn noch das des anderen eingetragen ist
+    const defs = HS_ASSIST.default_models || {};
+    const m = $("#hs-model").value.trim();
+    if (!m || Object.values(defs).includes(m)) $("#hs-model").value = defs[$("#hs-provider").value] || "";
+    _hsKeyNote();
+  });
   $("#heat-chat-form")?.addEventListener("submit", e => {
     e.preventDefault();
     const inp = $("#heat-chat-input");

@@ -1955,9 +1955,13 @@ def heating_config_get() -> dict[str, Any]:
     return {
         "heating": raw.get("heating") or {"enabled": False, "setpoint_min": 5, "setpoint_max": 26, "rooms": []},
         "openhab": {"url": oh.get("url", ""), "token_set": bool(oh.get("token"))},
-        "assistant": {"enabled": bool(a.get("enabled", False)), "model": a.get("model") or _hchat.DEFAULT_MODEL,
+        "assistant": {"enabled": bool(a.get("enabled", False)),
+                      "provider": a.get("provider") or _hchat.ANTHROPIC,
+                      "model": a.get("model") or _hchat.DEFAULT_MODELS.get(a.get("provider") or _hchat.ANTHROPIC,
+                                                                            _hchat.DEFAULT_MODEL),
+                      "default_models": _hchat.DEFAULT_MODELS,
                       "max_requests_per_day": a.get("max_requests_per_day", _hchat.DEFAULT_LIMIT),
-                      "key_set": bool(a.get("api_key"))},
+                      "keys_set": {p: bool(a.get(f)) for p, f in _hchat._KEY_FIELD.items()}},
     }
 
 
@@ -1967,7 +1971,7 @@ class _HeatingConfigUpdate(BaseModel):
     setpoint_max: float
     rooms: list[dict[str, Any]]
     schedules_enabled: Optional[bool] = None    # None = unverändert lassen
-    assistant: Optional[dict[str, Any]] = None   # {enabled, model, max_requests_per_day}; api_key nie
+    assistant: Optional[dict[str, Any]] = None   # {enabled, provider, model, max_requests_per_day}; Keys nie
 
 
 @app.put("/api/heating/config")
@@ -1989,8 +1993,8 @@ def heating_config_put(body: _HeatingConfigUpdate) -> dict[str, Any]:
     new_cfg["heating"] = block
     old_chat = bool((current.get("assistant") or {}).get("enabled", False))
     if body.assistant is not None:
-        a = dict(current.get("assistant") or {})          # api_key bleibt, kommt nie vom Frontend
-        for k in ("enabled", "model", "max_requests_per_day"):
+        a = dict(current.get("assistant") or {})          # Keys bleiben, kommen nie vom Frontend
+        for k in ("enabled", "provider", "model", "max_requests_per_day"):
             if k in body.assistant:
                 a[k] = body.assistant[k]
         new_cfg["assistant"] = a
@@ -2085,7 +2089,7 @@ def _chat_status(raw: dict[str, Any], hcfg: "_heating.HeatingConfig") -> dict[st
         return _hchat.status(hcfg, _hchat.parse_assistant(raw))
     except ValueError as e:
         return {"enabled": False, "ready": False, "hint": f"assistant-Config ungültig: {e}",
-                "used_today": 0, "limit": 0, "key_set": False, "model": ""}
+                "used_today": 0, "limit": 0, "key_set": False, "model": "", "provider": "", "provider_name": ""}
 
 
 class _ChatMessage(BaseModel):
