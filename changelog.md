@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-13 – Chat: 20-s-Timeout ohne Retry (Dev)
+
+Der API-Aufruf hatte 45 s Timeout mit 1 automatischem Retry (bis ≈ 90 s Wartezeit im Chat). Jetzt `anthropic.Timeout(20 s, connect 5 s)` und `max_retries=0`; eine Zeitüberschreitung meldet der Chat als „Die API antwortet nicht (Zeitüberschreitung nach 20 s)“ (eigene Meldung statt „keine Verbindung“). Die Chat-Endpunkte sind synchron und laufen im FastAPI-Threadpool – geprüft mit einer hängenden Mock-API in Dev: Chat-Antwort nach 21,5 s, währenddessen Dashboard, `/api/status` und `/api/heating/status` normal in 3–540 ms. Tests: Timeout-Konfiguration, Timeout-Meldung, Endpunkte nicht `async`; gesamt 243.
+
 ## 2026-10-13 – Heizung Phase 3: Chat → Zeitplan-Vorschlag über die Claude API (Dev)
 
 **Ablauf (`heating_chat.py`, nur Backend):** Text + Kontext an die Messages API (Python-SDK `anthropic`, neu in `requirements.txt`, Import erst beim Aufruf). Kontext: Datum/Uhrzeit Europe/Berlin mit Wochentag und Kalender der nächsten 8 Tage, Räume mit IDs und aktuellen Ist/Soll-Werten (Anzeige-Räume markiert), Grenzen, alle Zeitpläne mit ID und die Schaltpunkte der nächsten 7 Tage. Genau ein Tool `propose_schedule` (`strict`, `tool_choice: auto` + Anweisung, ein Aufruf) mit `entries` (einmalig `date` oder wiederkehrend `days`), `immediate`, `delete_ids`, `question`, `summary`. Kein freier Text-Pfad schaltet etwas: Text ohne Tool-Aufruf wird nur angezeigt.

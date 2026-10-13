@@ -205,6 +205,11 @@ class ApiErrorTest(unittest.TestCase):
         e, _ = self.run_with(self.A.APIConnectionError(request=self.req))
         self.assertEqual(e.kind, "offline")
 
+    def test_timeout(self):
+        e, _ = self.run_with(self.A.APITimeoutError(request=self.req))
+        self.assertEqual(e.kind, "timeout")
+        self.assertIn("20 s", str(e))
+
     def test_bad_request_mentioning_model(self):
         e, _ = self.run_with(self.A.BadRequestError("model: invalid model name", response=self.resp(400, ""), body=None))
         self.assertEqual(e.kind, "model")
@@ -365,6 +370,20 @@ class WebChatTest(unittest.TestCase):
         self.assertIn("Chat deaktiviert (Settings)", self.log_text())
         with self.assertRaises(web.HTTPException):
             web.heating_config_put(web._HeatingConfigUpdate(**body, assistant={"model": "kein modell!"}))
+
+
+@unittest.skipUnless(hc.sdk_available(), "anthropic nicht installiert")
+class ClientConfigTest(unittest.TestCase):
+    def test_timeout_20s_no_retry(self):
+        c = hc._default_client(hc.AssistantConfig(enabled=True, api_key=KEY))
+        self.assertEqual(c.max_retries, 0)
+        self.assertEqual((c.timeout.read, c.timeout.connect), (20.0, 5.0))
+
+    def test_chat_endpoints_run_in_threadpool(self):
+        """Synchrone Endpunkte laufen im Threadpool: ein hängender API-Aufruf blockiert die Event-Loop nicht."""
+        import inspect
+        self.assertFalse(inspect.iscoroutinefunction(web.heating_chat))
+        self.assertFalse(inspect.iscoroutinefunction(web.heating_chat_apply))
 
 
 class ParseTest(unittest.TestCase):

@@ -35,7 +35,8 @@ log = logging.getLogger("pv-controller.heating")
 DEFAULT_MODEL = "claude-haiku-5-5"
 DEFAULT_LIMIT = 100
 MAX_TOKENS = 8000
-API_TIMEOUT_S = 45.0
+API_TIMEOUT_S = 20.0                  # harte Obergrenze je Chat-Anfrage (kein Retry, s. _default_client)
+API_CONNECT_TIMEOUT_S = 5.0
 MAX_HISTORY = 12                      # Nachrichten (Rückfragen + Antworten)
 MAX_TEXT = 500                        # Zeichen je Nachricht
 PROPOSAL_TTL_S = 15 * 60
@@ -290,7 +291,10 @@ def _default_client(acfg: AssistantConfig) -> Any:
         import anthropic
     except ImportError:
         raise ChatError("Python-Paket „anthropic“ fehlt – Chat nicht verfügbar.", "unavailable")
-    return anthropic.Anthropic(api_key=acfg.api_key, timeout=API_TIMEOUT_S, max_retries=1)
+    # Kein automatischer Retry: sonst bis zu (1 + max_retries) × Timeout Wartezeit im Chat.
+    # Der Endpunkt ist synchron (FastAPI-Threadpool) – ein hängender Aufruf blockiert keine anderen Requests.
+    return anthropic.Anthropic(api_key=acfg.api_key, max_retries=0,
+                               timeout=anthropic.Timeout(API_TIMEOUT_S, connect=API_CONNECT_TIMEOUT_S))
 
 
 def _translate(e: Exception, acfg: AssistantConfig) -> ChatError:
@@ -312,7 +316,10 @@ def _translate(e: Exception, acfg: AssistantConfig) -> ChatError:
         return ChatError("Die API hat die Anfrage abgelehnt (400).")
     if isinstance(e, anthropic.APIStatusError):
         return ChatError(f"API-Fehler ({e.status_code}). Bitte später noch einmal.", "busy")
-    if isinstance(e, anthropic.APIConnectionError):          # inkl. APITimeoutError
+    if isinstance(e, anthropic.APITimeoutError):
+        return ChatError(f"Die API antwortet nicht (Zeitüberschreitung nach {API_TIMEOUT_S:g} s). "
+                         "Bitte später noch einmal.", "timeout")
+    if isinstance(e, anthropic.APIConnectionError):
         return ChatError("Keine Verbindung zu api.anthropic.com (Internet?).", "offline")
     return ChatError("Unerwarteter Fehler beim Chat.")
 
