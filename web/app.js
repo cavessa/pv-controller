@@ -80,6 +80,29 @@ async function api(path, opts = {}) {
 }
 
 // ---------- render ----------
+// ---------- Aktualisieren ohne Neuaufbau ----------
+// Das Polling erzeugt bei jedem Lauf dasselbe HTML wie bisher, ersetzt es aber nur, wenn es sich
+// geändert hat (gleiche Optik, kein Flackern, keine ersetzten Charts bei unveränderten Daten).
+// el.htmlIfChanged = html / el.textIfChanged = text statt innerHTML / textContent.
+function setHTML(el, html) {
+  if (!el) return false;
+  html = html == null ? "" : String(html);
+  if (el._html === html && el._first === el.firstChild && el._count === el.childNodes.length) return false;
+  el.innerHTML = html;
+  el._html = html; el._first = el.firstChild; el._count = el.childNodes.length;
+  return true;
+}
+function invalidateHTML(el) { if (el) el._html = undefined; }   // DOM wurde von Hand geändert
+Object.defineProperty(Element.prototype, "classIfChanged", {
+  configurable: true, set(v) { const c = v == null ? "" : String(v); if (this.className !== c) this.className = c; },
+});
+Object.defineProperty(Element.prototype, "htmlIfChanged", { configurable: true, set(v) { setHTML(this, v); } });
+Object.defineProperty(Element.prototype, "textIfChanged", {
+  configurable: true,
+  // nur überspringen, wenn bereits genau dieser reine Text drinsteht (nicht z. B. ein Skeleton-Platzhalter)
+  set(v) { const t = v == null ? "" : String(v); if (this.childElementCount || this.textContent !== t) this.textContent = t; },
+});
+
 let lastZendure = null;
 let lastPhasesDisabled = {};
 
@@ -94,22 +117,22 @@ function renderStatus(s) {
   if (devBanner) {
     const alerts = s.device_alerts ?? [];
     if (alerts.length) {
-      devBanner.className = "wb-banner warn";
-      devBanner.textContent = alerts.map(a => a.text ?? `${a.label} seit ${a.since} Uhr nicht erreichbar`).join(" · ");
+      devBanner.classIfChanged = "wb-banner warn";
+      devBanner.textIfChanged = alerts.map(a => a.text ?? `${a.label} seit ${a.since} Uhr nicht erreichbar`).join(" · ");
     } else {
-      devBanner.className = "wb-banner warn hidden";
+      devBanner.classIfChanged = "wb-banner warn hidden";
     }
   }
 
   // pills
-  $("#pill-enabled").textContent = "Automatik: " + (s.runtime.enabled ? "aktiv" : "aus");
-  $("#pill-enabled").className = "pill " + (s.runtime.enabled ? "ok" : "warn");
+  $("#pill-enabled").textIfChanged = "Automatik: " + (s.runtime.enabled ? "aktiv" : "aus");
+  $("#pill-enabled").classIfChanged = "pill " + (s.runtime.enabled ? "ok" : "warn");
 
-  $("#pill-dry").textContent = "Dry-Run: " + (s.runtime.dry_run ? "an" : "aus");
-  $("#pill-dry").className = "pill " + (s.runtime.dry_run ? "warn" : "ok");
+  $("#pill-dry").textIfChanged = "Dry-Run: " + (s.runtime.dry_run ? "an" : "aus");
+  $("#pill-dry").classIfChanged = "pill " + (s.runtime.dry_run ? "warn" : "ok");
 
-  $("#pill-wb").textContent = "Wallbox: " + (s.wallbox.enabled ? "aktiv" : "aus");
-  $("#pill-wb").className = "pill " + (s.wallbox.enabled ? "ok" : "warn");
+  $("#pill-wb").textIfChanged = "Wallbox: " + (s.wallbox.enabled ? "aktiv" : "aus");
+  $("#pill-wb").classIfChanged = "pill " + (s.wallbox.enabled ? "ok" : "warn");
 
   const sm = s.summer_mode ?? {};
   const pillSummer = $("#pill-summer");
@@ -117,23 +140,23 @@ function renderStatus(s) {
     // immer sichtbar: an (grün) / aus (grau); bei Netz-Heizung Warnfarbe
     pillSummer.classList.remove("hidden");
     if (sm.enabled) {
-      pillSummer.textContent = sm.heating ? "Sommermodus: an · Netz-Heizung" : "Sommermodus: an";
-      pillSummer.className = "pill " + (sm.heating ? "warn" : "ok");
+      pillSummer.textIfChanged = sm.heating ? "Sommermodus: an · Netz-Heizung" : "Sommermodus: an";
+      pillSummer.classIfChanged = "pill " + (sm.heating ? "warn" : "ok");
     } else {
-      pillSummer.textContent = "Sommermodus: aus";
-      pillSummer.className = "pill subtle";
+      pillSummer.textIfChanged = "Sommermodus: aus";
+      pillSummer.classIfChanged = "pill subtle";
     }
   }
 
-  $("#pill-time").textContent = "aktualisiert " + fmtTime(s.timestamp);
+  $("#pill-time").textIfChanged = "aktualisiert " + fmtTime(s.timestamp);
 
   // summary
-  $("#summary-state").textContent = s.summary?.state ?? "–";
-  $("#summary-reason").textContent = s.summary?.reason ?? "";
+  $("#summary-state").textIfChanged = s.summary?.state ?? "–";
+  $("#summary-reason").textIfChanged = s.summary?.reason ?? "";
   const sev = s.summary?.severity ?? "ok";
   const badge = $("#summary-severity");
-  badge.textContent = sev;
-  badge.className = "severity-badge " + sev;
+  badge.textIfChanged = sev;
+  badge.classIfChanged = "severity-badge " + sev;
 
   // PV & Netz
   const h = s.heater;
@@ -142,14 +165,14 @@ function renderStatus(s) {
   // Wasserspeicher
   const heaterAktiv = (h.heater_meter_power ?? 0) > 50
     || ["ph1","ph2","ph3"].some(k => h.phases?.[k] === true);
-  $("#m-temp").textContent       = fmtTemp(h.storage_temp);
-  $("#m-temp-max").textContent   = fmtTemp(h.storage_max_temp);
-  $("#m-temp-resume").textContent = fmtTemp(h.resume_temp);
+  $("#m-temp").textIfChanged       = fmtTemp(h.storage_temp);
+  $("#m-temp-max").textIfChanged   = fmtTemp(h.storage_max_temp);
+  $("#m-temp-resume").textIfChanged = fmtTemp(h.resume_temp);
   const status = h.temperature_status ?? "–";
   const tempBadge = $("#m-temp-status");
   const { label: storageLabel, cls: storageCls } = storageBadge(status, heaterAktiv);
-  tempBadge.textContent = storageLabel;
-  tempBadge.className = "badge " + storageCls;
+  tempBadge.textIfChanged = storageLabel;
+  tempBadge.classIfChanged = "badge " + storageCls;
   const pct = (h.storage_temp != null && h.storage_max_temp)
     ? Math.max(0, Math.min(100, (h.storage_temp / h.storage_max_temp) * 100))
     : 0;
@@ -177,10 +200,10 @@ function renderStatus(s) {
     if (sm.enabled) {
       summerHint.classList.remove("hidden");
       if (sm.heating) {
-        summerHint.textContent =
+        summerHint.textIfChanged =
           `Sommermodus: Netz-Heizung aktiv – Ziel ${sm.target_temp ?? "–"} °C`;
       } else {
-        summerHint.textContent =
+        summerHint.textIfChanged =
           `Sommermodus: Netz-Heizung ab ${sm.min_temp ?? "–"} °C, Ziel ${sm.target_temp ?? "–"} °C`;
       }
     } else {
@@ -192,7 +215,7 @@ function renderStatus(s) {
   const phEl = $("#phases");
   const decisions = h.decisions ?? [];
   if (decisions.length > 0) {
-    phEl.innerHTML = `<div class="phases-dots">${
+    phEl.htmlIfChanged = `<div class="phases-dots">${
       decisions.map(d => {
         const off = h.phases_disabled?.[d.phase.toLowerCase()] === true;
         return `
@@ -203,7 +226,7 @@ function renderStatus(s) {
       }).join("")
     }</div>`;
   } else {
-    phEl.innerHTML = `<div class="phases-dots">
+    phEl.htmlIfChanged = `<div class="phases-dots">
       <div class="phase-dot-item"><div class="phase-dot"></div><div class="phase-dot-label">PH1</div></div>
       <div class="phase-dot-item"><div class="phase-dot"></div><div class="phase-dot-label">PH2</div></div>
       <div class="phase-dot-item"><div class="phase-dot"></div><div class="phase-dot-label">PH3</div></div>
@@ -242,9 +265,9 @@ function renderStatus(s) {
       mode = "idle";
     }
     ci.dataset.mode = mode;
-    $("#charge-state").textContent = stateLabel;
+    $("#charge-state").textIfChanged = stateLabel;
     const p = wbStatus.power_w;
-    $("#charge-power").textContent = (p != null && !isNaN(p) && p > 50)
+    $("#charge-power").textIfChanged = (p != null && !isNaN(p) && p > 50)
       ? fmtPower(p, { kw: true })
       : (wbCharging ? "0,00 kW" : "");
   } else {
@@ -255,15 +278,15 @@ function renderStatus(s) {
   const ce = $("#charge-energy");
   if (wb.enabled && (wbStatus.energy_session_wh != null || wbStatus.energy_total_wh != null || wbStatus.charge_duration_s != null)) {
     ce.classList.remove("hidden");
-    $("#charge-session").textContent  = fmtEnergy(wbStatus.energy_session_wh);
-    $("#charge-total").textContent    = fmtEnergy(wbStatus.energy_total_wh);
-    $("#charge-duration").textContent = fmtDuration(wbStatus.charge_duration_s);
+    $("#charge-session").textIfChanged  = fmtEnergy(wbStatus.energy_session_wh);
+    $("#charge-total").textIfChanged    = fmtEnergy(wbStatus.energy_total_wh);
+    $("#charge-duration").textIfChanged = fmtDuration(wbStatus.charge_duration_s);
   } else {
     ce.classList.add("hidden");
   }
 
   const lmoLabel = wbStatus.lmo === 3 ? "Basic" : wbStatus.lmo === 4 ? "Eco" : (wbStatus.lmo ?? "–");
-  $("#wallbox-kv").innerHTML = `
+  $("#wallbox-kv").htmlIfChanged = `
     <div><span>Modus (lmo)</span><b>${lmoLabel}</b></div>
     <div><span>forceState (frc)</span><b>${wbStatus.frc ?? "–"}</b></div>
     <div><span>allowed (alw)</span><b>${wbStatus.alw === true ? "ja" : wbStatus.alw === false ? "nein" : "–"}</b></div>
@@ -286,16 +309,16 @@ function renderStatus(s) {
   }
   const wbDecEl = $("#wallbox-decision");
   if (!wb.enabled) {
-    wbDecEl.innerHTML = `<b>Wallbox in Config deaktiviert.</b>`;
+    wbDecEl.htmlIfChanged = `<b>Wallbox in Config deaktiviert.</b>`;
   } else if (wbDec && wbDec.action) {
     const t = (wbDec.target_force_state == null) ? "–" : wbDec.target_force_state;
     const r = wbDec.reason ?? "";
-    wbDecEl.innerHTML = `
+    wbDecEl.htmlIfChanged = `
       <div><b>Entscheidung:</b> ${wbDec.action} (target frc=${t})</div>
       <div>${escapeHtml(r)}</div>
     `;
   } else {
-    wbDecEl.innerHTML = "";
+    wbDecEl.htmlIfChanged = "";
   }
 
   // active card glow – wallbox
@@ -307,24 +330,24 @@ function renderStatus(s) {
     const surplus = h.surplus_without_heater;
     const surplusKw = (surplus != null) ? ((-surplus) / 1000).toFixed(1) + " kW" : "–";
     if (!wb.enabled) {
-      banner.className = "wb-banner hidden";
+      banner.classIfChanged = "wb-banner hidden";
     } else if (wbDec.action === "error") {
-      banner.className = "wb-banner error";
-      banner.textContent = "Wallbox nicht erreichbar";
+      banner.classIfChanged = "wb-banner error";
+      banner.textIfChanged = "Wallbox nicht erreichbar";
     } else if (wbDec.action === "release" || (wbStatus.frc === 0 && wbStatus.fup)) {
       if (wbCharging) {
-        banner.className = "wb-banner ok";
-        banner.textContent = `Wallbox lädt — Überschuss: ${surplusKw}`;
+        banner.classIfChanged = "wb-banner ok";
+        banner.textIfChanged = `Wallbox lädt — Überschuss: ${surplusKw}`;
       } else {
-        banner.className = "wb-banner";
-        banner.textContent = `Wallbox freigegeben — kein Auto lädt (Überschuss: ${surplusKw})`;
+        banner.classIfChanged = "wb-banner";
+        banner.textIfChanged = `Wallbox freigegeben — kein Auto lädt (Überschuss: ${surplusKw})`;
       }
     } else if (wbDec.action === "skipped") {
-      banner.className = "wb-banner";
-      banner.textContent = "Wallbox manueller Modus — kein Eingriff";
+      banner.classIfChanged = "wb-banner";
+      banner.textIfChanged = "Wallbox manueller Modus — kein Eingriff";
     } else {
-      banner.className = "wb-banner warn";
-      banner.textContent = `Wallbox pausiert — Überschuss: ${surplusKw} (zu gering)`;
+      banner.classIfChanged = "wb-banner warn";
+      banner.textIfChanged = `Wallbox pausiert — Überschuss: ${surplusKw} (zu gering)`;
     }
   }
 
@@ -530,7 +553,7 @@ function renderEnergyFlow(heater, wb, cs, zd) {
   const hzEst = heater.heater_power_source === "phase_sum";   // Zähler tot: Ersatzwert aus den Phasen
   const hzKw  = (hzEst ? "≈" : "") + kwOrW(heaterW);
 
-  el.innerHTML = `<svg viewBox="0 0 ${W} ${SVG_H}" width="100%" style="display:block;margin-top:8px">
+  el.htmlIfChanged = `<svg viewBox="0 0 ${W} ${SVG_H}" width="100%" style="display:block;margin-top:8px">
 ${conn.join("\n")}
 ${node(pv.x, pv.y, NW, NH, { icon:"☀️", label:"PV", value:kwOrW(pv1W), sub:"", aktiv:pv1On, accent:PVC, always:true })}
 ${pergolaOn_ ? node(pg.x, pg.y, PG_W, pg.nh, { icon:"☀️", label:pgName, value: heater.pv2_power == null ? "n/a" : kwOrW(pgW), sub:"", aktiv:pgOn, accent:PVC, always:true }) : ""}
@@ -550,10 +573,10 @@ function renderSolax(d) {
 
   if (d == null) {
     console.log("[renderSolax] d=null – no data available, showing n/a");
-    if (totalEl) { totalEl.textContent = "n/a"; totalEl.style.color = "var(--text-dim)"; }
-    if (stringsEl) stringsEl.innerHTML = "";
-    if (feedinEl) feedinEl.textContent = "–";
-    if (consumptionEl) consumptionEl.textContent = "–";
+    if (totalEl) { totalEl.textIfChanged = "n/a"; totalEl.style.color = "var(--text-dim)"; }
+    if (stringsEl) stringsEl.htmlIfChanged = "";
+    if (feedinEl) feedinEl.textIfChanged = "–";
+    if (consumptionEl) consumptionEl.textIfChanged = "–";
     renderHausverbrauch(null);
     renderToday(null);
     return;
@@ -562,7 +585,7 @@ function renderSolax(d) {
   renderKpiGauges(d);
 
   if (totalEl) {
-    totalEl.textContent = Math.round(d.pv_total_w) + " W";
+    totalEl.textIfChanged = Math.round(d.pv_total_w) + " W";
     totalEl.style.color = d.pv_total_w > 50 ? "var(--c-pv)" : "var(--text-dim)";
   }
 
@@ -576,7 +599,7 @@ function renderSolax(d) {
   }
   const peakEl = document.getElementById('pv-peak-display');
   if (peakEl) {
-    peakEl.textContent = pvPeakToday > 0 ? `Tageshoch: ${pvPeakToday} W um ${pvPeakTime}` : 'Tageshoch: –';
+    peakEl.textIfChanged = pvPeakToday > 0 ? `Tageshoch: ${pvPeakToday} W um ${pvPeakTime}` : 'Tageshoch: –';
   }
 
   if (stringsEl) {
@@ -599,10 +622,10 @@ function renderSolax(d) {
       { n: "STR2 (Wand)", w: d.pv2_power_w, v: d.pv2_voltage_v, a: d.pv2_current_a, cls: "str2", max: str2Max },
     ].map(row).join("");
     if (!pergola) {
-      stringsEl.innerHTML = strs;
+      stringsEl.htmlIfChanged = strs;
     } else {
       const pgName = d.pergola_name || "Pergola";
-      stringsEl.innerHTML =
+      stringsEl.htmlIfChanged =
         group("PV-Anlage", d.main_total_w, 2) + strs +
         group("Balkonkraftwerk", d.pergola_ok ? d.pergola_power_w : null, 1) +
         row({ n: pgName, w: d.pergola_ok ? d.pergola_power_w : 0,
@@ -612,18 +635,18 @@ function renderSolax(d) {
     const lg = document.getElementById("legend-pergola");
     if (lg) {
       lg.classList.toggle("hidden", !pergola);
-      if (pergola) lg.textContent = d.pergola_name || "Pergola";
+      if (pergola) lg.textIfChanged = d.pergola_name || "Pergola";
     }
   }
 
   if (feedinEl) {
     const fi = d.feed_in_w;
-    feedinEl.textContent = (fi >= 0 ? "+" : "") + Math.round(fi) + " W";
+    feedinEl.textIfChanged = (fi >= 0 ? "+" : "") + Math.round(fi) + " W";
     feedinEl.style.color = fi >= 0 ? "var(--ok)" : "var(--error)";
   }
 
   if (consumptionEl) {
-    consumptionEl.textContent = Math.round(d.consumption_w) + " W";
+    consumptionEl.textIfChanged = Math.round(d.consumption_w) + " W";
   }
 
   renderHausverbrauch(d);
@@ -640,9 +663,9 @@ function fmtKw(w) { return (w / 1000).toFixed(1) + " kW"; }
 function renderHousePeak(d) {
   const el = document.getElementById("hv-peak");
   if (!el) return;
-  if (d == null || !(d.house_peak_w > 0)) { el.innerHTML = ""; return; }
+  if (d == null || !(d.house_peak_w > 0)) { el.htmlIfChanged = ""; return; }
   const w = d.house_peak_w;
-  el.innerHTML = `Tageshoch: <span style="color:${houseColor(w, d.house_max_load_kw)}">${fmtKw(w)}</span> um ${d.house_peak_time}`;
+  el.htmlIfChanged = `Tageshoch: <span style="color:${houseColor(w, d.house_max_load_kw)}">${fmtKw(w)}</span> um ${d.house_peak_time}`;
 }
 
 function renderHausverbrauch(d) {
@@ -651,47 +674,47 @@ function renderHausverbrauch(d) {
   const avgEl   = document.getElementById("hv-avg");
   if (!valEl || !todayEl) return;
   if (d == null) {
-    valEl.innerHTML     = `–<span class="hv-unit">W</span>`;
+    valEl.htmlIfChanged     = `–<span class="hv-unit">W</span>`;
     valEl.style.color   = "var(--text-dim)";
-    todayEl.textContent = "Heute: –";
+    todayEl.textIfChanged = "Heute: –";
     const b0 = document.getElementById("hv-bought");
-    if (b0) b0.textContent = "";
+    if (b0) b0.textIfChanged = "";
     const p0 = document.getElementById("hv-pv");
-    if (p0) p0.textContent = "";
+    if (p0) p0.textIfChanged = "";
     renderHousePeak(null);
-    if (avgEl) avgEl.textContent = "Ø – kW/h";
+    if (avgEl) avgEl.textIfChanged = "Ø – kW/h";
     return;
   }
   const w = Math.round(d.consumption_w);
   if (w >= 1000) {
-    valEl.innerHTML = `${(w / 1000).toFixed(2)}<span class="hv-unit">kW</span>`;
+    valEl.htmlIfChanged = `${(w / 1000).toFixed(2)}<span class="hv-unit">kW</span>`;
   } else {
-    valEl.innerHTML = `${w}<span class="hv-unit">W</span>`;
+    valEl.htmlIfChanged = `${w}<span class="hv-unit">W</span>`;
   }
   valEl.style.color = w > 3000 ? "var(--warn)" : "var(--text)";
   // Gesamtverbrauch heute (Hauptzähler bzw. Solax-Fallback); ohne meter_today alter Wert
   renderHousePeak(d);
   const mt = d.meter_today;
   const kwh = mt?.verbrauch_kwh ?? d.self_consumption_kwh;
-  todayEl.textContent = "Heute: " + (kwh != null ? kwh.toFixed(1) + " kWh" : "–");
+  todayEl.textIfChanged = "Heute: " + (kwh != null ? kwh.toFixed(1) + " kWh" : "–");
   const pvShareEl = document.getElementById("hv-pv");
   const boughtEl = document.getElementById("hv-bought");
   const hasShare = mt && mt.verbrauch_kwh > 0;
   const pvKwh = hasShare ? Math.max(0, mt.verbrauch_kwh - mt.bezug_kwh) : 0;
   const pvPct = hasShare ? Math.round(Math.min(100, pvKwh / mt.verbrauch_kwh * 100)) : 0;
   if (pvShareEl) {
-    pvShareEl.innerHTML = hasShare
+    pvShareEl.htmlIfChanged = hasShare
       ? `davon aus PV: <span style="color:#2ed8a3">${pvKwh.toFixed(1)} kWh (${pvPct}%)</span>`
       : "";
   }
   if (boughtEl) {
-    boughtEl.innerHTML = hasShare
+    boughtEl.htmlIfChanged = hasShare
       ? `davon zugekauft: <span style="color:#ff6b6b">${mt.bezug_kwh.toFixed(1)} kWh (${Math.round(Math.min(100, mt.bezug_kwh / mt.verbrauch_kwh * 100))}%)</span>`
       : "";
   }
   if (avgEl && kwh != null) {
     const hours = Math.max(1, new Date().getHours());
-    avgEl.textContent = "Ø " + (kwh / hours).toFixed(2) + " kW/h";
+    avgEl.textIfChanged = "Ø " + (kwh / hours).toFixed(2) + " kW/h";
   }
 }
 
@@ -787,7 +810,7 @@ function renderPvNetz(h, wb) {
   const wbLabel = wallboxW > 50
     ? `<span>Wallbox: ${wallboxW} W</span>` : '';
 
-  el.innerHTML = `
+  el.htmlIfChanged = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
       <span style="font-size:12px;color:var(--text-muted)">☀ PV Erzeugung</span>
       <span style="font-size:18px;font-weight:500;color:#e8a435">${pvDisp}</span>
@@ -841,7 +864,7 @@ function renderToday(d) {
   if (!d || (d.yield_today_kwh ?? 0) < 0.001) {
     const pvZero = barWrap(`<div style="width:100%;background:rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center;font-size:10px;color:rgba(255,255,255,0.3)">kein PV</div>`);
     const netzFull = barWrap(seg(100, 'rgba(255,107,107,0.5)', 'Netz 100%'));
-    el.innerHTML = `
+    el.htmlIfChanged = `
       ${bigTotal(null)}
       ${lbl('Wohin ging der PV-Strom?')}${pvZero}
       ${lbl('Woher kam der Hausstrom?')}${netzFull}
@@ -880,7 +903,7 @@ function renderToday(d) {
   const evQuote = pvKwh > 0 ? Math.round(eigenKwh / pvKwh * 100) : 0;
   const autarkie = gesamtKwh > 0 ? Math.round(eigenKwh / gesamtKwh * 100) : 0;
 
-  el.innerHTML = `
+  el.htmlIfChanged = `
     ${bigTotal(pvKwh)}
     ${splitHtml}
     ${lbl('Wohin ging der PV-Strom?')}
@@ -944,7 +967,7 @@ function renderKpiGauges(d) {
       </svg>
     </div>`;
   }
-  el.innerHTML = `<div class="kpi-gauges-row">
+  el.htmlIfChanged = `<div class="kpi-gauges-row">
     ${gauge(selfusePct, "Eigenverbrauch", !hasData)}
     ${gauge(autarkyPct, "Autarkie",       !hasData)}
   </div>`;
@@ -1028,7 +1051,7 @@ function renderStringChart(entries, wrapId = "chart-strings-wrap", win = [5, 21]
   const wrap = document.getElementById(wrapId);
   if (!wrap) return;
   if (!entries || entries.length < 2) {
-    wrap.innerHTML = '<div class="chart-empty">Noch keine Stundendaten.</div>';
+    wrap.htmlIfChanged = '<div class="chart-empty">Noch keine Stundendaten.</div>';
     return;
   }
   const VW = 480, VH = 90;
@@ -1040,7 +1063,7 @@ function renderStringChart(entries, wrapId = "chart-strings-wrap", win = [5, 21]
     return { h, s1: e.str1_w || 0, s2: e.str2_w || 0, s3: e.pv2_w || 0 };
   }).filter(p => p.h >= xMin && p.h <= xMax).sort((a, b) => a.h - b.h);
   if (pts.length < 2) {
-    wrap.innerHTML = '<div class="chart-empty">Keine Daten im Sonnenfenster.</div>';
+    wrap.htmlIfChanged = '<div class="chart-empty">Keine Daten im Sonnenfenster.</div>';
     return;
   }
   // dritte Linie (Pergola) nur wenn der Tag Pergola-Werte enthält
@@ -1071,7 +1094,7 @@ function renderStringChart(entries, wrapId = "chart-strings-wrap", win = [5, 21]
   const path = key => pts.map((p, i) => `${i===0?"M":"L"}${sx(p.h).toFixed(1)},${sy(p[key]).toFixed(1)}`).join(" ");
   const area = key => path(key) + ` L${sx(pts[pts.length-1].h).toFixed(1)},${(pad.t+ch).toFixed(1)} L${sx(pts[0].h).toFixed(1)},${(pad.t+ch).toFixed(1)} Z`;
 
-  wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">
+  wrap.htmlIfChanged = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">
     <g>${yElems}${xElems}</g>
     ${nowLine}
     <path d="${area('s2')}" fill="rgba(91,140,255,0.15)" stroke="none"/>
@@ -1460,15 +1483,15 @@ function renderForecastCard(data) {
   const today = data?.today;
 
   if (!t) {
-    kwhEl.textContent = "–";
-    badgeEl.textContent = today?.weather_icon ?? "";
+    kwhEl.textIfChanged = "–";
+    badgeEl.textIfChanged = today?.weather_icon ?? "";
     return;
   }
 
-  kwhEl.textContent = `~${t.predicted_kwh} kWh`;
-  badgeEl.textContent = `${t.weather_icon ?? ""} ${t.temp_max != null ? Math.round(t.temp_max) + "°C" : ""}`.trim();
-  if (sunEl) sunEl.textContent = t.sunshine_hours != null ? t.sunshine_hours.toFixed(1) + " h" : "–";
-  if (ghiEl) ghiEl.textContent = t.ghi_kwh_m2 != null ? t.ghi_kwh_m2.toFixed(1) + " kWh/m²" : "–";
+  kwhEl.textIfChanged = `~${t.predicted_kwh} kWh`;
+  badgeEl.textIfChanged = `${t.weather_icon ?? ""} ${t.temp_max != null ? Math.round(t.temp_max) + "°C" : ""}`.trim();
+  if (sunEl) sunEl.textIfChanged = t.sunshine_hours != null ? t.sunshine_hours.toFixed(1) + " h" : "–";
+  if (ghiEl) ghiEl.textIfChanged = t.ghi_kwh_m2 != null ? t.ghi_kwh_m2.toFixed(1) + " kWh/m²" : "–";
 }
 
 function getForecastAssessment(actualKwh, forecastKwh, currentHour, currentMinute, sunsetHour, sunsetMinute) {
@@ -1537,31 +1560,31 @@ function renderForecastProgress(data, histEntries) {
   const pctEl = document.getElementById("forecast-percent");
   if (fill) {
     fill.style.width = Math.min(pct, 100) + "%";
-    fill.className = "forecast-bar-fill" + (over100 ? " over" : "");
+    fill.classIfChanged = "forecast-bar-fill" + (over100 ? " over" : "");
   }
   if (pctEl) {
     if (actual == null) {
-      pctEl.textContent = "–";
+      pctEl.textIfChanged = "–";
     } else if (over100) {
-      pctEl.textContent = `${pct}% – besser als erwartet! 🎉`;
+      pctEl.textIfChanged = `${pct}% – besser als erwartet! 🎉`;
     } else {
-      pctEl.textContent = `${pct}% der Prognose erreicht`;
+      pctEl.textIfChanged = `${pct}% der Prognose erreicht`;
     }
   }
 
   const fpBarForecast = document.getElementById("fp-bar-forecast");
   const fpBarActual = document.getElementById("fp-bar-actual");
   const fpBarRemaining = document.getElementById("fp-bar-remaining");
-  if (fpBarForecast) fpBarForecast.textContent = predicted.toFixed(1);
-  if (fpBarActual) fpBarActual.textContent = actual != null ? `${actual.toFixed(1)} kWh` : "";
+  if (fpBarForecast) fpBarForecast.textIfChanged = predicted.toFixed(1);
+  if (fpBarActual) fpBarActual.textIfChanged = actual != null ? `${actual.toFixed(1)} kWh` : "";
 
   const fpForecast = document.getElementById("fp-forecast");
   const fpActual = document.getElementById("fp-actual");
   const fpRemaining = document.getElementById("fp-remaining");
   const fpSunset = document.getElementById("fp-sunset");
 
-  if (fpForecast) fpForecast.textContent = `~${predicted.toFixed(1)} kWh`;
-  if (fpActual) fpActual.textContent = actual != null ? `${actual.toFixed(1)} kWh` : "–";
+  if (fpForecast) fpForecast.textIfChanged = `~${predicted.toFixed(1)} kWh`;
+  if (fpActual) fpActual.textIfChanged = actual != null ? `${actual.toFixed(1)} kWh` : "–";
 
   const sunset = today?.sunset;
   const [sunsetH, sunsetM] = sunset ? sunset.split(":").map(Number) : [21, 0];
@@ -1577,20 +1600,20 @@ function renderForecastProgress(data, histEntries) {
       remainingText = rem > 0.05 ? `noch ~${rem.toFixed(1)} kWh` : "Ziel erreicht";
     }
   }
-  if (fpRemaining) fpRemaining.textContent = remainingText;
-  if (fpBarRemaining) fpBarRemaining.textContent = remainingText;
+  if (fpRemaining) fpRemaining.textIfChanged = remainingText;
+  if (fpBarRemaining) fpBarRemaining.textIfChanged = remainingText;
   if (fpSunset) {
     if (!sunset) {
-      fpSunset.textContent = "–";
+      fpSunset.textIfChanged = "–";
     } else if (isEndstand) {
-      fpSunset.textContent = `${sunset} (vorbei)`;
+      fpSunset.textIfChanged = `${sunset} (vorbei)`;
     } else {
       const now = new Date();
       const [sh, sm] = sunset.split(":").map(Number);
       const diffMin = (sh * 60 + sm) - (now.getHours() * 60 + now.getMinutes());
       const hLeft = Math.floor(diffMin / 60);
       const mLeft = diffMin % 60;
-      fpSunset.textContent = `${sunset} (noch ${hLeft}h ${mLeft}min)`;
+      fpSunset.textIfChanged = `${sunset} (noch ${hLeft}h ${mLeft}min)`;
     }
   }
 
@@ -1599,10 +1622,10 @@ function renderForecastProgress(data, histEntries) {
     const now = new Date();
     const [sh, sm] = sunset ? sunset.split(":").map(Number) : [21, 0];
     const a = getForecastAssessment(actual, predicted, now.getHours(), now.getMinutes(), sh, sm);
-    assessEl.textContent = a.text;
+    assessEl.textIfChanged = a.text;
     assessEl.style.color = a.color;
   } else if (assessEl) {
-    assessEl.textContent = "";
+    assessEl.textIfChanged = "";
   }
 
   const daysEl = document.getElementById("forecast-last-days");
@@ -1612,13 +1635,13 @@ function renderForecastProgress(data, histEntries) {
       .slice(-3)
       .reverse();
     if (recent.length === 0) {
-      daysEl.innerHTML = "";
+      daysEl.htmlIfChanged = "";
     } else {
       const yd = new Date(); yd.setDate(yd.getDate() - 1);
       const db = new Date(); db.setDate(db.getDate() - 2);
       const yStr = yd.toISOString().slice(0, 10);
       const dbStr = db.toISOString().slice(0, 10);
-      daysEl.innerHTML =
+      daysEl.htmlIfChanged =
         `<div class="forecast-last-days-title">Letzte Tage</div>` +
         recent.map(e => {
           const diff = Math.round((e.actual_kwh - e.forecast_kwh) / e.forecast_kwh * 100);
@@ -2026,10 +2049,10 @@ async function _checkLiveStringAlert() {
     const stillFaulty = p1 == null || p2 == null ||
       (p1 < 10 && p2 > 200) || (p2 < 10 && p1 > 200);
     const active = stillFaulty ? (data.entries || []) : [];
-    if (!active.length) { el.className = "string-dash-alert hidden"; return; }
+    if (!active.length) { el.classIfChanged = "string-dash-alert hidden"; return; }
     const top = active[0];
-    el.className = `string-dash-alert ${top.level === "error" ? "error" : "warn"}`;
-    el.textContent = "⚡ " + top.message;
+    el.classIfChanged = `string-dash-alert ${top.level === "error" ? "error" : "warn"}`;
+    el.textIfChanged = "⚡ " + top.message;
   } catch {
     // ignore — non-critical
   }
@@ -2392,17 +2415,17 @@ function renderHouseDayChart(d, ids = HOUSE_IDS_DAY) {
   const hourEl = document.getElementById(ids.hour);
   if (!wrap) return;
   const pts = d.points || [];
-  if (maxEl) maxEl.textContent = d.peak_w ? `Spitze: ${fmtKw(d.peak_w)}` : "";
+  if (maxEl) maxEl.textIfChanged = d.peak_w ? `Spitze: ${fmtKw(d.peak_w)}` : "";
   if (pts.length < 2) {
-    wrap.innerHTML = '<div class="chart-empty">Noch keine Messwerte (Aufzeichnung läuft seit dem letzten Neustart).</div>';
-    if (foot) foot.textContent = "";
+    wrap.htmlIfChanged = '<div class="chart-empty">Noch keine Messwerte (Aufzeichnung läuft seit dem letzten Neustart).</div>';
+    if (foot) foot.textIfChanged = "";
     if (hourBlock) hourBlock.classList.add("hidden");
     return;
   }
   const ticks = [0, 3, 6, 9, 12, 15, 18, 21, 24].map(h => ({
     m: h * 60, label: h + "h", anchor: h === 24 ? "end" : h === 0 ? "start" : "middle",
   }));
-  wrap.innerHTML = meterChartSvg(pts, 0, 1440, d, { h: 150, ticks, id: ids.pre + "mmd" });
+  wrap.htmlIfChanged = meterChartSvg(pts, 0, 1440, d, { h: 150, ticks, id: ids.pre + "mmd" });
 
   // Letzte Stunde nur für heute
   const isToday = d.date === new Date().toLocaleDateString("sv-SE");
@@ -2418,13 +2441,13 @@ function renderHouseDayChart(d, ids = HOUSE_IDS_DAY) {
       const top = hp.reduce((a, b) => (b[2] > a[2] ? b : a));
       if (top[2] > 0) { hd.peak_w = top[2]; hd.peak_time = lab(top[0]); }
     }
-    hourEl.innerHTML = meterChartSvg(pts, lo, nm, hd, {
+    hourEl.htmlIfChanged = meterChartSvg(pts, lo, nm, hd, {
       h: 110, id: ids.pre + "mmh",
       ticks: [{ m: lo, label: lab(lo), anchor: "start" }, { m: (lo + nm) / 2, label: lab(Math.round((lo + nm) / 2)) }, { m: nm, label: "jetzt", anchor: "end" }],
     });
   }
   if (foot) {
-    foot.innerHTML = `Ø <b>${fmtKw(d.avg_w)}</b>`
+    foot.htmlIfChanged = `Ø <b>${fmtKw(d.avg_w)}</b>`
       + (d.peak_w ? ` · Spitze Bezug <b>${fmtKw(d.peak_w)}</b> um ${d.peak_time}` : "")
       + (d.feed_w ? `<br>Max. Einspeisung <b>${fmtKw(d.feed_w)}</b> um ${d.feed_time}` : "");
   }
@@ -2585,28 +2608,28 @@ function renderZendureCard(z) {
   const on = z?.enabled === true;
   card.classList.toggle("hidden", !on);
   if (!on) return;
-  $("#zd-title").textContent = z.name || "Batterie";
+  $("#zd-title").textIfChanged = z.name || "Batterie";
   const dot = $("#zd-dot");
-  dot.className = "dot " + (z.reachable ? (z.state === "standby" ? "off" : "on") : "off");
+  dot.classIfChanged = "dot " + (z.reachable ? (z.state === "standby" ? "off" : "on") : "off");
 
-  $("#zd-soc").textContent = z.soc != null ? `${Math.round(z.soc)} %` : "–";
+  $("#zd-soc").textIfChanged = z.soc != null ? `${Math.round(z.soc)} %` : "–";
   const soc = Math.max(0, Math.min(100, z.soc ?? 0));
   $("#zd-cover").style.width = (100 - soc) + "%";
   $("#zd-minmark").style.left = (z.min_soc ?? 0) + "%";
 
   const kw = w => w >= 1000 ? (w / 1000).toFixed(2) + " kW" : Math.round(w) + " W";
   const st = $("#zd-status");
-  if (!z.reachable) { st.textContent = "nicht erreichbar"; st.className = "badge error"; }
-  else if (z.state === "charging") { st.textContent = `lädt ${kw(z.charge_w)}`; st.className = "badge ok"; }
-  else if (z.state === "discharging") { st.textContent = `entlädt ${kw(z.discharge_w)}`; st.className = "badge warn zd-orange"; }
-  else { st.textContent = "Standby"; st.className = "badge"; }
+  if (!z.reachable) { st.textIfChanged = "nicht erreichbar"; st.classIfChanged = "badge error"; }
+  else if (z.state === "charging") { st.textIfChanged = `lädt ${kw(z.charge_w)}`; st.classIfChanged = "badge ok"; }
+  else if (z.state === "discharging") { st.textIfChanged = `entlädt ${kw(z.discharge_w)}`; st.classIfChanged = "badge warn zd-orange"; }
+  else { st.textIfChanged = "Standby"; st.classIfChanged = "badge"; }
 
   const k = v => v == null ? "–" : v.toFixed(1) + " kWh";
-  $("#zd-charged").textContent = k(z.charged_kwh);
-  $("#zd-discharged").textContent = k(z.discharged_kwh);
-  $("#zd-temp").textContent = z.temp_c != null ? Math.round(z.temp_c) + " °C" : "–";
+  $("#zd-charged").textIfChanged = k(z.charged_kwh);
+  $("#zd-discharged").textIfChanged = k(z.discharged_kwh);
+  $("#zd-temp").textIfChanged = z.temp_c != null ? Math.round(z.temp_c) + " °C" : "–";
   const dec = $("#zd-decision");
-  dec.textContent = z.control_enabled && z.decision ? z.decision : "";
+  dec.textIfChanged = z.control_enabled && z.decision ? z.decision : "";
   dec.classList.toggle("hidden", !(z.control_enabled && z.decision));
 }
 
@@ -2616,7 +2639,7 @@ async function loadZendureChart() {
   if (!wrap || !card || card.classList.contains("hidden")) return;
   const d = await api("/api/zendure/history");
   const pts = (d.points || []).filter(p => p[1] != null);
-  if (pts.length < 2) { wrap.innerHTML = '<div class="chart-empty">Noch keine Verlaufsdaten.</div>'; return; }
+  if (pts.length < 2) { wrap.htmlIfChanged = '<div class="chart-empty">Noch keine Verlaufsdaten.</div>'; return; }
   const VW = 360, VH = 110;
   const pad = { l: 30, r: 8, t: 8, b: 18 };
   const cw = VW - pad.l - pad.r, ch = VH - pad.t - pad.b;
@@ -2634,7 +2657,7 @@ async function loadZendureChart() {
   g += `<path d="${line} L${sx(last[0]).toFixed(1)},${sy(0)} L${sx(pts[0][0]).toFixed(1)},${sy(0)} Z" fill="rgba(167,139,250,0.18)" stroke="none"/>`;
   g += `<path d="${line}" fill="none" stroke="#a78bfa" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
   g += `<circle cx="${sx(last[0]).toFixed(1)}" cy="${sy(last[1]).toFixed(1)}" r="3.5" fill="#a78bfa" stroke="#14161b" stroke-width="1.5"/>`;
-  wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">${g}</svg>`;
+  wrap.htmlIfChanged = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">${g}</svg>`;
 }
 
 // ---------- Wasserspeicher: Tagesverlauf + letzte Stunde + 7 Tage ----------
@@ -2669,11 +2692,11 @@ function setStorageRange(r) {
 //        rate, etaTs, zoomFrom, ticks, days}
 function renderStorageChart(el, opts) {
   if (!el) return;
-  if (opts.range === "7d") { el.innerHTML = storage7dSvg(opts); return; }
+  if (opts.range === "7d") { el.htmlIfChanged = storage7dSvg(opts); return; }
   const { temps = [], power = [], events = [], range } = opts;
   const day = range === "day";
   if (temps.length < 2) {
-    el.innerHTML = '<div class="chart-empty">Noch keine Verlaufsdaten.</div>';
+    el.htmlIfChanged = '<div class="chart-empty">Noch keine Verlaufsdaten.</div>';
     return;
   }
   const VW = 360, VH = day ? 190 : 112;
@@ -2796,7 +2819,7 @@ function renderStorageChart(el, opts) {
   g += `<circle cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="3.5" fill="${ST.temp}" opacity="0.6"><animate attributeName="r" values="3.5;9;3.5" dur="2s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.6;0;0.6" dur="2s" repeatCount="indefinite"/></circle>`;
   g += `<circle cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="3.5" fill="${ST.temp}" stroke="#14161b" stroke-width="1.5"/>`;
 
-  el.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">${g}</svg>`;
+  el.htmlIfChanged = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">${g}</svg>`;
 }
 
 function storage7dSvg(opts) {
@@ -2851,7 +2874,7 @@ function storage7dSvg(opts) {
 
 function renderStorage(d) {
   const title = $("#storage-title");
-  if (title) title.textContent = storageRange === "7d" ? "Wasserspeicher · 7 Tage" : storageRange === "1h" ? "Wasserspeicher · letzte Stunde" : "Wasserspeicher · heute";
+  if (title) title.textIfChanged = storageRange === "7d" ? "Wasserspeicher · 7 Tage" : storageRange === "1h" ? "Wasserspeicher · letzte Stunde" : "Wasserspeicher · heute";
   // Umschalter
   $$("#storage-range button").forEach(b => b.classList.toggle("on", b.dataset.range === storageRange));
 
@@ -2859,10 +2882,10 @@ function renderStorage(d) {
   const rEl = $("#m-rate");
   if (rEl) {
     const r = d.rate_c_per_h;
-    if (r == null) { rEl.textContent = ""; }
+    if (r == null) { rEl.textIfChanged = ""; }
     else {
       const up = r > 0.3, down = r < -0.3;
-      rEl.textContent = `${up ? "▲" : down ? "▼" : "▬"} ${r > 0 ? "+" : ""}${r.toFixed(1)} °C/h`;
+      rEl.textIfChanged = `${up ? "▲" : down ? "▼" : "▬"} ${r > 0 ? "+" : ""}${r.toFixed(1)} °C/h`;
       rEl.style.color = up ? "var(--ok)" : down ? "var(--error)" : "var(--text-muted)";
     }
   }
@@ -2884,7 +2907,7 @@ function renderStorage(d) {
     } else {
       heat = "Heizstab –";
     }
-    info.innerHTML = (storageRange === "7d" ? "" : `<div>${mm}</div>`) + `<div class="storage-heat">${heat}</div>`;
+    info.htmlIfChanged = (storageRange === "7d" ? "" : `<div>${mm}</div>`) + `<div class="storage-heat">${heat}</div>`;
   }
 
   const dayWrap = $("#storage-day"), hourBlock = $("#storage-hour-block"), hourEl = $("#storage-hour");
@@ -2919,7 +2942,7 @@ function renderStorage(d) {
     });
     const eta = $("#storage-eta");
     if (eta) {
-      eta.textContent = d.eta_label === "erreicht" ? "Resume erreicht"
+      eta.textIfChanged = d.eta_label === "erreicht" ? "Resume erreicht"
         : d.eta_label === "heute nicht" ? "ETA Resume: heute nicht"
         : d.eta_label ? `ETA Resume ≈ ${d.eta_label}` : "ETA Resume –";
     }
@@ -2928,7 +2951,7 @@ function renderStorage(d) {
   // Legende
   const lg = $("#storage-legend");
   if (lg) {
-    lg.innerHTML = storageRange === "7d"
+    lg.htmlIfChanged = storageRange === "7d"
       ? `<span><i class="lg-line"></i>Min–Max</span><span><i class="lg-box" style="background:${ST.heat};opacity:.55"></i>Heizstab kWh</span>`
       : `<span><i class="lg-line"></i>Temperatur</span><span><i class="lg-box" style="background:${ST.heat};opacity:.55"></i>Heizstab</span>`
         + (storageRange === "24h" ? `<span><i class="lg-box" style="background:rgba(251,191,36,.35)"></i>Sonne</span><span><i class="lg-box lg-dash"></i>Zoom</span>` : "");
@@ -2946,7 +2969,7 @@ function renderWbChart(entries) {
     .sort((a, b) => a.x - b.x);
 
   if (pts.length < 2) {
-    wrap.innerHTML = '<div class="chart-empty">Noch keine Ladeverlaufsdaten für heute.</div>';
+    wrap.htmlIfChanged = '<div class="chart-empty">Noch keine Ladeverlaufsdaten für heute.</div>';
     return;
   }
 
@@ -2995,7 +3018,7 @@ function renderWbChart(entries) {
   const nowLine = `<line x1="${nowX}" y1="${pad.t}" x2="${nowX}" y2="${(pad.t + ch).toFixed(1)}" class="now-line"/>`;
   const lastDot = `<circle cx="${sx(last.x).toFixed(1)}" cy="${sy(last.y).toFixed(1)}" r="3" class="wb-dot"/>`;
 
-  wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">
+  wrap.htmlIfChanged = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">
   <defs>
     <linearGradient id="wbg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#34d399" stop-opacity="1"/>
@@ -3086,7 +3109,7 @@ function renderPhaseTimeline(logs) {
     ticks += `<text x="${x}" y="${lineEndY + 12}" text-anchor="middle">${label}</text>`;
   }
 
-  wrap.innerHTML = `<svg class="phase-tl-svg" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">
+  wrap.htmlIfChanged = `<svg class="phase-tl-svg" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">
     ${rows}
     <line x1="${nowX}" y1="${padT}" x2="${nowX}" y2="${lineEndY}" stroke="rgba(255,255,255,0.3)" stroke-width="1"/>
     ${ticks}
@@ -3107,8 +3130,29 @@ async function loadPhaseLogs() {
 // Jeder Bereich rendert, sobald SEINE Daten da sind – kein Warten auf den
 // langsamsten Call. Nur Status + Solax werden gemeinsam gerendert, damit
 // Energiefluss, PV&Netz und PV-Erzeugung dieselbe PV-Leistung zeigen.
+// Dashboard-Daten braucht nur Dashboard und Prioritäten (Kaskade). Auf anderen Tabs und bei verdeckter
+// Seite (Handy gesperrt) pausiert das Polling; beim Zurückkommen sofort ein Update.
+const STATUS_TABS = new Set(["dashboard", "prioritaeten"]);
+let lastStatusRefresh = 0;
+const _activeTab = () => document.querySelector(".tab.active")?.dataset.tab;
+const _statusWanted = () => !document.hidden && STATUS_TABS.has(_activeTab());
+
+function _statusTick() { if (_statusWanted()) refreshStatus(); }
+
+function _refreshIfStale() {
+  if (Date.now() - lastStatusRefresh > 2000) { refreshStatus(); return true; }
+  return false;
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  if (_statusWanted()) _refreshIfStale();
+  if (_activeTab() === "logs" && $("#log-auto")?.checked) refreshLogs();
+});
+
 async function refreshStatus() {
-  const activeTab = document.querySelector(".tab.active")?.dataset.tab;
+  lastStatusRefresh = Date.now();
+  const activeTab = _activeTab();
   const statusP  = api("/api/status");
   const solaxP   = api("/api/solax").catch(() => null);
   const historyP = api("/api/temp-history").catch(() => ({ entries: [] }));
@@ -3422,24 +3466,54 @@ async function saveSettings(e) {
 }
 
 // ---------- logs ----------
+// Angezeigte Log-Zeilen; neue Zeilen werden angehängt. Ans Ende gesprungen wird nur, wenn man schon unten war.
+let _logShown = null;   // {limit, lines}
+
+function _newLogLines(old, cur) {
+  // Position der zuletzt angezeigten Zeile im neuen Ausschnitt suchen (mit bis zu 3 Zeilen Kontext)
+  if (!old || !old.length) return null;
+  const ctx = Math.min(3, old.length);
+  for (let k = cur.length - 1; k >= ctx - 1; k--) {
+    let ok = true;
+    for (let j = 0; j < ctx; j++) if (cur[k - j] !== old[old.length - 1 - j]) { ok = false; break; }
+    if (ok) return cur.slice(k + 1);
+  }
+  return null;
+}
+
 async function refreshLogs() {
   const lines = parseInt($("#log-lines").value, 10) || 200;
   try {
     const res = await api(`/api/logs?lines=${lines}`);
     const out = $("#log-output");
+    const atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 8;
     if (res.note && (!res.lines || res.lines.length === 0)) {
       out.textContent = res.note;
-    } else {
-      out.textContent = res.lines.join("\n");
+      _logShown = null;
+      out.scrollTop = out.scrollHeight;
+      return;
     }
-    out.scrollTop = out.scrollHeight;
+    const add = _logShown && _logShown.limit === lines ? _newLogLines(_logShown.lines, res.lines) : null;
+    const shown = add === null ? res.lines : _logShown.lines.concat(add);
+    if (add === null || shown.length > lines * 2) {
+      out.textContent = res.lines.join("\n");               // erstes Laden, anderer Ausschnitt oder zu lang
+      _logShown = { limit: lines, lines: res.lines.slice() };
+      if (add === null || atBottom) out.scrollTop = out.scrollHeight;
+      return;
+    }
+    if (add.length) out.append((out.textContent ? "\n" : "") + add.join("\n"));
+    _logShown.lines = shown;
+    if (atBottom && add.length) out.scrollTop = out.scrollHeight;
   } catch (e) {
     $("#log-output").textContent = "Konnte Logs nicht laden: " + e.message;
+    _logShown = null;
   }
 }
 function setupLogAuto() {
   if (logTimer) { clearInterval(logTimer); logTimer = null; }
-  if ($("#log-auto").checked) logTimer = setInterval(refreshLogs, 5_000);
+  if ($("#log-auto").checked) logTimer = setInterval(() => {
+    if (!document.hidden && _activeTab() === "logs") refreshLogs();
+  }, 5_000);
 }
 
 // ---------- tabs ----------
@@ -3450,7 +3524,8 @@ function activateTab(name) {
   if (name === "settings")     { loadSettings(); loadCascadeSettings(); loadHeatingSettings(); }
   if (name === "heizung")      heatActivate();
   if (name === "logs")         refreshLogs();
-  if (name === "prioritaeten") loadCascade();
+  // Dashboard/Prioritäten: nach Pause sofort aktualisieren (refreshStatus lädt auf Prioritäten die Kaskade mit)
+  if (STATUS_TABS.has(name) && !_refreshIfStale() && name === "prioritaeten") loadCascade();
 }
 
 // ---------- Wallbox Modus ----------
@@ -3628,7 +3703,7 @@ function boot() {
   });
 
   refreshStatus();
-  refreshTimer = setInterval(refreshStatus, REFRESH_MS);
+  refreshTimer = setInterval(_statusTick, REFRESH_MS);
   loadPeakTimeChart();
 }
 
@@ -3705,13 +3780,14 @@ function renderCascadeProfileTabs(status) {
     const p = btn.dataset.profile;
     btn.classList.toggle("selected", p === cascadeProfileSel);
     btn.classList.toggle("is-active-profile", p === active);
-    btn.setAttribute("aria-selected", p === cascadeProfileSel ? "true" : "false");
-    btn.textContent = (p === "summer" ? "☀ Sommer" : "❄ Winter") + (p === active ? " · aktiv" : "");
+    const sel = p === cascadeProfileSel ? "true" : "false";
+    if (btn.getAttribute("aria-selected") !== sel) btn.setAttribute("aria-selected", sel);
+    btn.textIfChanged = (p === "summer" ? "☀ Sommer" : "❄ Winter") + (p === active ? " · aktiv" : "");
   });
   const hint = document.getElementById("cascade-profile-hint");
   if (hint) {
     const sel = cascadeProfileSel;
-    hint.textContent = sel === active
+    hint.textIfChanged = sel === active
       ? (sel === "summer"
           ? `Sommerprofil ist aktiv (Öl aus): Wasserspeicher bis ${status.comfort_min_temp} °C → Batterie → Wasserspeicher bis ${status.storage_max_temp} °C.`
           : (status.comfort_min_temp != null
@@ -3740,11 +3816,11 @@ function renderCascadeTab(devices, surplusW) {
   const fillPct   = surplusW > 0 ? Math.min(100, assignedW / surplusW * 100) : 0;
 
   const el = id => document.getElementById(id);
-  if (el("cs-surplus"))  el("cs-surplus").textContent  = surplusW != null ? (surplusW / 1000).toFixed(2) + " kW" : "–";
-  if (el("cs-assigned")) el("cs-assigned").textContent = (assignedW / 1000).toFixed(2) + " kW";
+  if (el("cs-surplus"))  el("cs-surplus").textIfChanged  = surplusW != null ? (surplusW / 1000).toFixed(2) + " kW" : "–";
+  if (el("cs-assigned")) el("cs-assigned").textIfChanged = (assignedW / 1000).toFixed(2) + " kW";
   if (el("cs-fill"))     el("cs-fill").style.width     = fillPct.toFixed(1) + "%";
 
-  listEl.innerHTML = devices.map((d, i) => {
+  const cardsHtml = devices.map((d, i) => {
     const devId       = d.device_id || d.id;           // Heizstab-Stufen gehören zum Gerät "heizstab"
     const isShelly    = d.type.startsWith("shelly");
     const isProtected = devId === "heizstab" || devId === "wallbox" || devId === "zendure";
@@ -3798,9 +3874,32 @@ function renderCascadeTab(devices, surplusW) {
           data-device-id="${escapeHtml(devId)}">⋮</button>
       </div>
     </div>`;
-  }).join("");
+  });
 
-  _attachCardHandlers(listEl);
+  // Nicht während Drag & Drop oder offenem Aktionsmenü neu aufbauen. Sonst: gleiche Geräte in gleicher
+  // Reihenfolge → nur geänderte Cards ersetzen (z. B. Live-Leistung); andernfalls die Liste neu aufbauen.
+  if (_cDrag || _activeMenu) return;
+  const shown = Array.from(listEl.children);
+  const same = listEl._html !== undefined && listEl._cards && listEl._cards.length === cardsHtml.length
+    && shown.length === cardsHtml.length && shown.every((c, i) => c === listEl._cardEls[i]);
+  if (!same) {
+    listEl.innerHTML = cardsHtml.join("");
+    listEl._html = listEl.innerHTML;
+    listEl._cards = cardsHtml;
+    listEl._cardEls = Array.from(listEl.children);
+    _attachCardHandlers(listEl);
+    return;
+  }
+  cardsHtml.forEach((h, i) => {
+    if (listEl._cards[i] === h) return;
+    const t = document.createElement("template");
+    t.innerHTML = h;
+    const card = t.content.firstElementChild;
+    shown[i].replaceWith(card);
+    _attachCardHandlers(card);
+    listEl._cards[i] = h;
+    listEl._cardEls[i] = card;
+  });
 }
 
 function _attachCardHandlers(listEl) {
@@ -3883,6 +3982,7 @@ function _openCascadeMenu(btn) {
 async function _cascadeToggleEnabled(id, enabled) {
   const cards = Array.from(document.querySelectorAll(`.cascade-card[data-device-id="${id}"]`));
   const card = cards[0];
+  invalidateHTML(document.getElementById("cascade-device-list"));   // Schalter von Hand umgestellt
   cards.forEach(c => {
     c.classList.toggle("disabled-device", !enabled);
     const k = c.querySelector(".device-enabled-toggle");
@@ -4046,6 +4146,7 @@ function _cdEnd(e) {
   document.removeEventListener("pointercancel",_cdCancel);
 
   list.insertBefore(card, ph);  // place card at placeholder position
+  invalidateHTML(list);         // Reihenfolge von Hand geändert → nächstes Laden zeichnet neu
   ph.remove();
   ghost.remove();
   card.classList.remove("is-dragging");
@@ -4079,6 +4180,7 @@ function _cdCancel() {
   // Restore to original position
   const ref = cards[startIdx + 1] || null;
   list.insertBefore(card, ref);
+  invalidateHTML(list);
   ph.remove(); ghost.remove();
   card.classList.remove("is-dragging");
 }
@@ -4093,17 +4195,17 @@ function renderCascadeMini(status) {
   const freeW    = Math.max(0, surplusW - assignedW);
 
   const profEl = document.getElementById("cascade-mini-profile");
-  if (profEl) profEl.textContent = status.profile === "summer" ? "· Sommerprofil" : status.profile === "winter" ? "· Winterprofil" : "";
+  if (profEl) profEl.textIfChanged = status.profile === "summer" ? "· Sommerprofil" : status.profile === "winter" ? "· Winterprofil" : "";
 
   const surplusEl = document.getElementById("cascade-mini-surplus");
   if (surplusEl) {
-    surplusEl.innerHTML = `Überschuss: <b>${surplusW > 0 ? (surplusW / 1000).toFixed(1) + " kW" : "–"}</b>`;
+    surplusEl.htmlIfChanged = `Überschuss: <b>${surplusW > 0 ? (surplusW / 1000).toFixed(1) + " kW" : "–"}</b>`;
   }
 
   const devEl = document.getElementById("cascade-mini-devices");
   if (devEl) {
     const barScale = devices.length ? Math.max(...devices.map(d => d.power_watts)) || 1 : 1;
-    devEl.innerHTML = devices.map(d => {
+    devEl.htmlIfChanged = devices.map(d => {
       const on = d.is_on && d.enabled;
       const isShelly = d.type && d.type.startsWith("shelly");
       const warn = isShelly && d.last_status_ok === false ? " ⚠️" : "";
@@ -4129,7 +4231,7 @@ function renderCascadeMini(status) {
 
   const footerEl = document.getElementById("cascade-mini-footer");
   if (footerEl) {
-    footerEl.innerHTML = `
+    footerEl.htmlIfChanged = `
       <span>Frei: <b>${(freeW / 1000).toFixed(1)} kW</b></span>
       <button class="cascade-mini-link" id="cascade-mini-link">→ Prioritäten</button>
     `;
@@ -4310,7 +4412,7 @@ function checkCascadeAlerts(cascadeStatus) {
     return;
   }
   strip.classList.remove("hidden");
-  strip.innerHTML = alerts.map(a =>
+  strip.htmlIfChanged = alerts.map(a =>
     `<div class="cascade-alert ${a.cls}">
       <span class="cascade-alert-icon">${a.icon}</span>
       <span class="cascade-alert-text">${a.text}</span>

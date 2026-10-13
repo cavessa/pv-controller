@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-13 – Dashboard, Prioritäten, Logs: Polling pausiert, nur Geändertes wird ersetzt (Optik unverändert)
+
+**Vorher (gemessen, Headless-Browser je 30 s):** Das Dashboard-Polling (`refreshStatus`, 10 s) lief auf jedem Tab und bei verdeckter Seite: ≈ 78–90 Requests/min, ≈ 420 ersetzte DOM-Knoten je 30 s (Charts, Kaskaden-Mini, Phasen-Timeline per `innerHTML`). Im Heizung-Tab sichtbar: `#pill-time` („aktualisiert …“ in der Kopfzeile) alle 10 s – das gemeldete Neuladen „alle paar Sekunden“. Prioritäten baute die Geräteliste alle 10 s komplett neu (≈ 480 Knoten je 30 s), Logs ersetzte alle 5 s den ganzen Text und sprang ans Ende.
+**Jetzt (`web/app.js`):**
+- Polling nur auf Dashboard und Prioritäten bei sichtbarer Seite; Logs-Auto-Refresh nur auf dem Logs-Tab. Beim Zurückkommen (Tab oder Seite) sofort ein Update.
+- Dashboard: alle `innerHTML`/`textContent`/`className`-Zuweisungen der vom Polling aufgerufenen Render-Funktionen laufen über `htmlIfChanged`/`textIfChanged`/`classIfChanged` (`setHTML`): gleiches HTML wie bisher, ersetzt wird nur bei Änderung – Charts (Wallbox, Strings, Speicher, Haus, Batterie), Kaskaden-Mini und Phasen-Timeline nur bei geänderten Daten. Skeleton-Platzhalter mit gleichem Text werden trotzdem ersetzt.
+- Prioritäten: nie während Drag & Drop oder offenem Aktionsmenü; gleiche Geräte in gleicher Reihenfolge → nur geänderte Cards ersetzt (Handler nur an diese), sonst Neuaufbau; nach Drag/Umschalten von Hand wird der Cache verworfen.
+- Logs: neue Zeilen werden angehängt (Abgleich über die letzten 3 Zeilen); ans Ende nur, wenn man unten war; anderer Ausschnitt oder mehr als das Doppelte des Limits → einmal komplett neu.
+**Nachher (gleiche Messung):** Dashboard 78 Req/min, ≈ 87 ersetzte Knoten je 30 s (nur geänderte Werte/Charts); Heizung-Tab 4 Req/min, Kopfzeile unverändert; Logs 12 Req/min, 0 ersetzte Knoten (nur angehängt); Settings und verdeckte Seite 0 Requests.
+**Optik geprüft:** Screenshots mit fest aufgezeichneten API-Antworten (zwei Datensätze A/B) und fester Uhr, Animationen angehalten; Verfahren vorab zweimal gleich = pixelgleich. Vorher/Nachher: Dashboard frisch A, frisch B und Update A→B pixelgleich; Prioritäten Update A→B pixelgleich, frisch 26 Pixel mit max. 1/255 Farbabweichung (Kantenglättung, dieselbe Abweichung zeigte der alte Code zwischen seinen eigenen Pfaden); Logs Update pixelgleich, frisch 13 Pixel mit max. 3/255 am Rand der Kopfzeilen-Pill (Kantenglättung). Verhalten im Browser geprüft: keine Card bei gleichen Daten ersetzt, nur geänderte Card ersetzt, Menü und Drag unberührt, Schalter-Handler nicht doppelt, Logs anhängen/stehen bleiben, Pause und Sofort-Update.
+
 ## 2026-10-13 – Heizung-Tab: kein Flackern mehr (Werte in place statt Neuaufbau)
 
 **Vorher:** `renderHeatRooms` ersetzte bei jedem Poll (30 s), nach jedem −/+ und jedem Klick in den Zeitplänen alle Cards per `innerHTML` – inkl. SVG-Verlauf und Zeitplan-Formular (gemessen: 8 Cards je Poll ersetzt). 24-h-Verlauf alle 10 min neu geladen und bei jedem Poll neu gezeichnet. Polling lief bei verdeckter Seite weiter.
