@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-10-13 – Rollläden Phase 1: Tab „Rollläden“ mit Anzeige und manueller Steuerung
+
+**Neu:** Tab „Rollläden“ (nach Heizung), gleiches Muster wie der Heizung-Tab (Cards in place aktualisiert, Polling alle 30 s, pausiert bei anderem Tab oder verdeckter Seite). Je Rollladen: Positionsbalken (0 = offen, 100 = zu), ▲ Auf / ■ Stop / ▼ Ab, Positions-Slider (nur wenn das Gerät Position kann), Kontaktanzeige (🚪 Tür / 🪟 Fenster · offen/zu), „Automatik: openHAB-Regel“ bzw. „PV Controller“. Gruppen-Card: „Alle“ und je Gruppe Auf/Zu, jeweils mit Bestätigung.
+**Sicherheit:**
+- Tür (`is_door`) mit offenem oder unbekanntem Kontakt oder ganz ohne Kontakt-Item: Schließen (Ab, Position weiter zu) nur nach Bestätigungsdialog; der Server lehnt ohne `confirm` mit 409 ab (auch wenn sich der Kontakt seit dem letzten Poll geändert hat). Öffnen und Stop sind nie gesperrt.
+- Gruppenbefehle werden gestaffelt gesendet (`command_spacing_s`, Default 2 s), immer nur einer gleichzeitig; Türen, die eine Bestätigung bräuchten, werden bei „Zu“ übersprungen (Log + Hinweis im Dialog).
+- Duty Cycle (optional `duty_cycle_item`): Anzeige in der Gruppen-Card; über `duty_cycle_max` (Default 80 %) → Warnung, Gruppenbefehle pausiert (Einzelbefehle bleiben möglich).
+- `runtime.dry_run`: nichts wird an openHAB gesendet, nur geloggt (Dev).
+**Rückprüfung:** Jeder echte Befehl wird in `shutter_command` (pvcontroller.db, 30 Tage) gespeichert. Homematic nach 6 min, Shelly nach 60 s, sonst 2 min wird die gemeldete Position mit dem Ziel verglichen (Toleranz ±5 %, HmIP meldet „zu“ als 98/99 %). Bis dahin zeigt die Card „▼ Ab gesendet 18:40 · Rückmeldung ab 18:46“ und den Wert gedimmt (openHAB-autoupdate setzt das Item sofort auf das Ziel, der Aktor meldet danach kurz die alte Position). Abweichung → ⚠️ auf der Card, verschwindet, sobald das Gerät das Ziel meldet oder ein neuer Befehl kommt. openHAB 30 min nicht erreichbar → „Rückmeldung fehlt“. Stop wird nicht geprüft.
+**Config:** neuer Block `shutters` (`enabled`, `command_spacing_s`, `duty_cycle_item`, `duty_cycle_max`, `rooms[]` mit `id`, `name`, `item`, `contact_item`, `is_door`, `group`, `automation` = `openhab`|`pvcontroller`, `device` = `homematic`|`shelly`|`other`, `can_position`), editierbar unter Settings → Rollläden. Ohne Block ist der Tab aus (Prod-Config bleibt gültig). Beim Speichern bleiben unbekannte Felder im Block erhalten.
+**Code:** `shutters.py` (neu), Endpunkte `/api/shutters/{status,command,group,config}` in `web.py`, `web/shutters.js` (neu), Tab/Settings in `web/index.html`, Pill-Zeit + Tab-Aktivierung in `web/app.js`, CSS. `_app_log` hat einen optionalen Bereich (`pv-controller.shutters`); für die Heizung unverändert. Tests: `tests/test_shutters.py` (39 Tests); alle 306 Tests grün, Heizungs-Tests unverändert.
+**Dev-Config:** fünf Rollläden aus der Bestandsaufnahme (Wohnen links/rechts, Esszimmer, Hintereingang: Homematic, Automatik openHAB-Regel; Schlafzimmer: Shelly, Automatik PV Controller). Hintereingang vorläufig als Tür ohne Kontakt, keine Gruppen, kein Duty-Cycle-Item (Entscheidungen C/D/F/E offen).
+
 ## 2026-10-13 – Fix: Zeitplan-Liste blieb nach Löschen/Umschalten stehen (seit d83c81f)
 
 **Ursache:** Der Schutz „Formular nicht überschreiben“ griff, sobald irgendein Element im Zeitplan-Bereich den Fokus hatte. Nach einem Klick auf ✕ oder den An/Aus-Schalter behält genau dieser Button den Fokus → die Liste wurde beim Neuladen nicht ersetzt (Zähler und „Nächste Änderung“ schon). Im Browser reproduziert; der Chat war betroffen, wenn der Fokus vorher in der Liste lag.

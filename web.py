@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import sqlite3
 import json
 import logging
 import re
@@ -33,6 +34,7 @@ from pydantic import BaseModel
 import heating as _heating
 import heating_schedule as _hsched
 import heating_chat as _hchat
+import shutters as _shutters
 from clients.goe_client import GoeClient, GoeError
 from config import Config, load_config
 from controller import ControllerMode, run_controller
@@ -1817,15 +1819,15 @@ def _heating_dry_run(raw: dict[str, Any]) -> bool:
     return bool((raw.get("runtime") or {}).get("dry_run", False))
 
 
-def _app_log(msg: str, level: int = logging.INFO) -> None:
+def _app_log(msg: str, level: int = logging.INFO, area: str = "heating") -> None:
     """Zeile ins Controller-Log (runtime.log_file), damit sie im Log-Tab erscheint."""
     log.log(level, msg)
     try:
         path = Path(_load_cfg().runtime.log_file)
         with open(path, "a", encoding="utf-8") as f:
-            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} [{logging.getLevelName(level)}] pv-controller.heating: {msg}\n")
+            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} [{logging.getLevelName(level)}] pv-controller.{area}: {msg}\n")
     except Exception as e:  # Log darf das Schalten nie verhindern
-        log.warning("heating: Log-Datei nicht beschreibbar: %s", e)
+        log.warning("%s: Log-Datei nicht beschreibbar: %s", area, e)
 
 
 @app.get("/api/heating/status")
@@ -2194,3 +2196,171 @@ def heating_chat_apply(body: _ChatApply) -> dict[str, Any]:
     sent = [_heating_send(raw, hcfg, client, hcfg.room(i["room_id"]), i["setpoint"], "Chat") for i in p.immediate]
     return {"ok": all(r["ok"] for r in sent), "created": [e["id"] for e in created], "deleted": deleted,
             "immediate": sent, "schedules_enabled": hcfg.schedules_enabled}
+
+
+# ── Rollläden (openHAB-Rollershutter) ───────────────────────────────────────
+
+_SHUTTER_CMD_LABEL = {"up": "▲ Auf", "down": "▼ Ab", "stop": "■ Stop"}
+
+
+def _shutters_ctx() -> tuple[dict[str, Any], "_shutters.ShutterConfig", Any]:
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    try:
+        scfg = _shutters.parse_shutters(raw)
+    except ValueError as e:
+        raise HTTPException(500, f"shutters config ungültig: {e}")
+    return raw, scfg, _heating.make_client(raw)
+
+
+def _shutter_label(command: str, target: Optional[int]) -> str:
+    return f"→ {target} %" if command == "position" else _SHUTTER_CMD_LABEL[command]
+
+
+def _shutter_send(raw, client, sh: "_shutters.Shutter", command: str, target: Optional[int],
+                  source: str) -> dict[str, Any]:
+    """Einen Befehl senden (dry_run: nur loggen) und für die Rückprüfung merken."""
+    what = f"{sh.name} {_shutter_label(command, target)} ({source}"
+    if _heating_dry_run(raw):
+        _app_log(f"DRY-RUN: {what}, nicht gesendet)", area="shutters")
+        return {"shutter_id": sh.id, "ok": True, "dry_run": True, "command": command, "target": target}
+    try:
+        client.send_command(sh.item, _shutters.to_openhab(command, target))
+    except _heating.OpenHabError as e:
+        _app_log(f"FEHLER: {what}): {e}", logging.WARNING, area="shutters")
+        return {"shutter_id": sh.id, "ok": False, "error": str(e)}
+    _app_log(f"{what})", area="shutters")
+    try:
+        _shutters.record_command(sh, command, target, source, datetime.now(_shutters.TZ))
+    except sqlite3.Error as e:
+        log.warning("shutters: Befehl nicht gespeichert: %s", e)
+    return {"shutter_id": sh.id, "ok": True, "dry_run": False, "command": command, "target": target}
+
+
+@app.get("/api/shutters/status")
+def shutters_status(response: Response) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    raw, scfg, client = _shutters_ctx()
+    base = {
+        "enabled": scfg.enabled,
+        "dry_run": _heating_dry_run(raw),
+        "openhab_configured": client is not None,
+        "groups": scfg.groups(),
+        "command_spacing_s": scfg.command_spacing_s,
+    }
+    if not scfg.enabled or client is None:
+        return {**base, "ok": True, "error": None, "rooms": [], "duty_cycle": None}
+    return {**base, **_shutters.read_status(scfg, client)}
+
+
+class _ShutterCommand(BaseModel):
+    shutter_id: str
+    command: str                       # up | down | stop | position
+    position: Optional[float] = None
+    confirm: bool = False              # Tür offen/ohne Kontakt: Schließen ausdrücklich bestätigt
+
+
+@app.post("/api/shutters/command")
+def shutters_command(body: _ShutterCommand) -> dict[str, Any]:
+    raw, scfg, client = _shutters_ctx()
+    if not scfg.enabled or client is None:
+        raise HTTPException(409, "Rollläden nicht aktiv oder openHAB nicht konfiguriert")
+    sh = scfg.shutter(body.shutter_id)
+    if sh is None:
+        raise HTTPException(404, f"Rollladen {body.shutter_id!r} unbekannt")
+    try:
+        target = _shutters.validate_command(sh, body.command, body.position)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if sh.is_door and body.command in ("down", "position"):
+        st = next((r for r in _shutters.read_status(scfg, client)["rooms"] if r["id"] == sh.id), None)
+        current = st["position"] if st else None
+        why = st["door_guard"] if st else _shutters.door_guard(sh, None)
+        if why and _shutters.is_closing(body.command, target, current) and not body.confirm:
+            raise HTTPException(409, why + " – Schließen nur mit Bestätigung.")
+    res = _shutter_send(raw, client, sh, body.command, target, "manuell")
+    if not res["ok"]:
+        raise HTTPException(502, res["error"])
+    return res
+
+
+class _ShutterGroupCommand(BaseModel):
+    group: str                         # "all" oder Gruppenname
+    command: str                       # up | down
+
+
+@app.post("/api/shutters/group")
+def shutters_group(body: _ShutterGroupCommand) -> dict[str, Any]:
+    raw, scfg, client = _shutters_ctx()
+    if not scfg.enabled or client is None:
+        raise HTTPException(409, "Rollläden nicht aktiv oder openHAB nicht konfiguriert")
+    if body.command not in ("up", "down"):
+        raise HTTPException(400, "Gruppenbefehl nur auf/ab")
+    members = scfg.members(body.group)
+    if not members:
+        raise HTTPException(404, f"Gruppe {body.group!r} unbekannt oder leer")
+    st = _shutters.read_status(scfg, client)
+    dc = st.get("duty_cycle")
+    if dc and dc["high"]:
+        raise HTTPException(409, f"Duty Cycle {dc['value']:g} % über {dc['max']:g} % – Gruppenbefehle pausiert.")
+    contacts = {r["id"]: r["contact"] for r in st["rooms"]}
+    label = "alle" if body.group == "all" else body.group.upper()
+    try:
+        results = _shutters.send_group(
+            scfg, members, body.command,
+            lambda sh: _shutter_send(raw, client, sh, body.command, _shutters.target_of(body.command),
+                                     f"Gruppe {label}"),
+            contacts)
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    for r in results:
+        if r.get("skipped"):
+            _app_log(f"Gruppe {label} {_SHUTTER_CMD_LABEL[body.command]}: übersprungen – {r['reason']}",
+                     area="shutters")
+    return {"ok": all(r["ok"] for r in results), "results": results, "dry_run": _heating_dry_run(raw)}
+
+
+@app.get("/api/shutters/config")
+def shutters_config_get() -> dict[str, Any]:
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    return {"shutters": raw.get("shutters") or {"enabled": False, "command_spacing_s": 2, "duty_cycle_item": "",
+                                                "duty_cycle_max": 80, "rooms": []},
+            "openhab_configured": bool((raw.get("openhab") or {}).get("url"))}
+
+
+class _ShuttersConfigUpdate(BaseModel):
+    enabled: bool
+    command_spacing_s: float = 2
+    duty_cycle_item: str = ""
+    duty_cycle_max: float = 80
+    rooms: list[dict[str, Any]]
+
+
+_SHUTTER_ROOM_KEYS = ("id", "name", "item", "contact_item", "is_door", "group", "automation", "device",
+                      "can_position")
+
+
+@app.put("/api/shutters/config")
+def shutters_config_put(body: _ShuttersConfigUpdate) -> dict[str, Any]:
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        current = json.load(f)
+    block = dict(current.get("shutters") or {})          # unbekannte Felder (z. B. aus Phase 2) bleiben
+    block.update({
+        "enabled": body.enabled,
+        "command_spacing_s": body.command_spacing_s,
+        "duty_cycle_item": body.duty_cycle_item.strip(),
+        "duty_cycle_max": body.duty_cycle_max,
+        "rooms": [{k: v for k, v in r.items() if k in _SHUTTER_ROOM_KEYS and v not in (None, "")}
+                  for r in body.rooms],
+    })
+    new_cfg = copy.deepcopy(current)
+    new_cfg["shutters"] = block
+    try:
+        _shutters.parse_shutters(new_cfg)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if block["enabled"] and not (new_cfg.get("openhab") or {}).get("url"):
+        raise HTTPException(400, "openhab.url fehlt in config.json")
+    backup = _write_config(new_cfg)
+    return {"ok": True, "backup": backup, "shutters": block}

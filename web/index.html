@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=71">
+  <link rel="stylesheet" href="/static/styles.css?v=72">
 </head>
 <body>
   <div class="app-shell">
@@ -20,6 +20,7 @@
   <nav class="tabs">
     <button class="tab active" data-tab="dashboard">Dashboard</button>
     <button class="tab" data-tab="heizung">Heizung</button>
+    <button class="tab" data-tab="rolllaeden">Rollläden</button>
     <button class="tab" data-tab="verlauf">Verlauf</button>
     <button class="tab" data-tab="prioritaeten">Prioritäten</button>
     <button class="tab" data-tab="settings">Settings</button>
@@ -662,6 +663,16 @@
       <p class="note" id="heat-updated"></p>
     </section>
 
+    <!-- ========= Rollläden ========= -->
+    <section id="tab-rolllaeden" class="tab-panel">
+      <div id="shut-banner" class="banner hidden"></div>
+      <p class="heat-dry hidden" id="shut-dry">Dry-Run: Befehle werden nur geloggt, kein Rollladen fährt.</p>
+      <p class="shut-toast hidden" id="shut-toast" role="status"></p>
+      <div id="shut-groups"></div>
+      <div id="shut-rooms"><div class="chart-empty">Lade…</div></div>
+      <p class="note" id="shut-updated"></p>
+    </section>
+
     <!-- ========= Settings ========= -->
     <section id="tab-settings" class="tab-panel">
       <div class="card">
@@ -881,6 +892,21 @@
             <span id="hs-msg" class="form-msg"></span>
           </div>
         </fieldset>
+
+        <fieldset class="heat-settings" style="margin-top:20px">
+          <legend>Rollläden (openHAB-Rollershutter)</legend>
+          <label class="check"><input type="checkbox" id="ss-enabled"> Rollläden-Tab aktiv</label>
+          <label>Abstand zwischen Gruppenbefehlen (s)<input type="number" step="0.5" min="0.5" max="30" id="ss-spacing"></label>
+          <label>Duty-Cycle-Item der CCU (optional)<input type="text" list="hs-items" id="ss-dc-item" autocomplete="off" placeholder="Item auf DUTY_CYCLE_RATIO"></label>
+          <label>Duty Cycle: Gruppenbefehle pausieren über (%)<input type="number" step="1" min="10" max="100" id="ss-dc-max"></label>
+          <div id="ss-rooms"></div>
+          <button type="button" class="btn" id="ss-add">+ Rollladen</button>
+          <small class="field-hint">Pflicht: ID, Name, Rollladen-Item (0 = offen, 100 = zu). „Automatik: openHAB-Regel“ heißt: eine openHAB-Regel fährt diesen Rollladen, der PV Controller plant dafür nichts. Tür ohne Kontakt-Item oder mit offenem Kontakt: Schließen nur mit Bestätigung, Gruppenbefehle überspringen sie.</small>
+          <div class="form-actions">
+            <button type="button" id="ss-save" class="btn primary">Rollläden speichern</button>
+            <span id="ss-msg" class="form-msg"></span>
+          </div>
+        </fieldset>
       </div>
     </section>
 
@@ -984,7 +1010,8 @@
   </footer>
   </div>
 
-  <script src="/static/app.js?v=20261013h" defer></script>
+  <script src="/static/app.js?v=20261013i" defer></script>
   <script src="/static/heating.js?v=20261013j" defer></script>
+  <script src="/static/shutters.js?v=20261013a" defer></script>
 </body>
 </html>

@@ -3140,13 +3140,13 @@ const _statusWanted = () => !document.hidden && STATUS_TABS.has(_activeTab());
 
 // „aktualisiert“-Pill in der Kopfzeile: Zeit der Daten, die der aktive Tab zeigt.
 // Heizung → letztes Heizungs-Update, Settings → ausgeblendet (Platz bleibt), sonst → Dashboard-Status.
-const pillTimes = { status: null, heating: null };
+const pillTimes = { status: null, heating: null, shutters: null };
 function updatePillTime() {
   const el = $("#pill-time");
   if (!el) return;
   const tab = _activeTab();
   el.style.visibility = tab === "settings" ? "hidden" : "";
-  const t = tab === "heizung" ? pillTimes.heating : pillTimes.status;
+  const t = tab === "heizung" ? pillTimes.heating : tab === "rolllaeden" ? pillTimes.shutters : pillTimes.status;
   el.textIfChanged = t ? "aktualisiert " + t : "aktualisiert …";
 }
 
@@ -3535,8 +3535,9 @@ function activateTab(name) {
   updatePillTime();
   $$(".tab-panel").forEach(p => p.classList.toggle("active", p.id === "tab-" + name));
   if (name === "verlauf")      loadVerlauf();
-  if (name === "settings")     { loadSettings(); loadCascadeSettings(); loadHeatingSettings(); }
+  if (name === "settings")     { loadSettings(); loadCascadeSettings(); loadHeatingSettings(); loadShutterSettings(); }
   if (name === "heizung")      heatActivate();
+  if (name === "rolllaeden")   shutActivate();
   if (name === "logs")         refreshLogs();
   // Dashboard/Prioritäten: nach Pause sofort aktualisieren (refreshStatus lädt auf Prioritäten die Kaskade mit)
   if (STATUS_TABS.has(name) && !_refreshIfStale() && name === "prioritaeten") loadCascade();

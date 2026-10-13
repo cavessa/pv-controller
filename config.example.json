@@ -134,5 +134,30 @@
     "model": "gpt-4.1-mini",
     "max_requests_per_day": 100,
     "workspace_id": ""
+  },
+  "shutters": {
+    "enabled": false,
+    "command_spacing_s": 2,
+    "duty_cycle_item": "",
+    "duty_cycle_max": 80,
+    "rooms": [
+      {
+        "id": "wohnen",
+        "name": "Wohnen",
+        "item": "Rollladen_Wohnen_Level_4",
+        "device": "homematic",
+        "automation": "openhab"
+      },
+      {
+        "id": "terrasse",
+        "name": "Terrassentür",
+        "item": "Rollladen_Terrasse_Level",
+        "contact_item": "Terrassentuer_State",
+        "is_door": true,
+        "group": "eg",
+        "device": "shelly",
+        "automation": "pvcontroller"
+      }
+    ]
   }
 }
