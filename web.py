@@ -34,6 +34,7 @@ from pydantic import BaseModel
 
 import heating as _heating
 import heating_schedule as _hsched
+import explain as _explain
 import heating_chat as _hchat
 import redact as _redact
 import shutters as _shutters
@@ -2222,12 +2223,13 @@ def heating_chat(body: _ChatRequest) -> dict[str, Any]:
     base = {"chat": None}
     st_now = lambda: _hchat.status(hcfg, acfg, now, shutters_enabled=scfg.enabled)  # noqa: E731
     text = hist[-1]["content"]
-    if scfg.enabled and _schat.is_query(text, scfg):           # Rollläden zuerst: „was fahren die Rollläden …“
+    why = _explain.is_why(hist)                                # Warum-/Statusfrage: nur lesen, s. explain.py
+    if not why and scfg.enabled and _schat.is_query(text, scfg):   # Rollläden zuerst: „was fahren die Rollläden …“
         rules = _schat.cached_rules(client) if any(sh.automation == "openhab" for sh in scfg.rooms) else []
         answer = _schat.local_answer(text, scfg, _ssched.list_schedules(), now, loc, rules, scfg.schedules_enabled)
         if answer is not None:
             return {**base, "type": "answer", "text": answer, "chat": st_now()}
-    answer = _hchat.local_answer(text, hcfg, entries, now, loc) if hcfg.enabled else None
+    answer = _hchat.local_answer(text, hcfg, entries, now, loc) if hcfg.enabled and not why else None
     if answer is not None:
         return {**base, "type": "answer", "text": answer, "chat": st_now()}
     st = st_now()
@@ -2243,14 +2245,33 @@ def heating_chat(body: _ChatRequest) -> dict[str, Any]:
     if scfg.enabled:
         sh_status = _shutters.read_status(scfg, client, now).get("rooms", [])
         context += "\n" + _schat.build_context(scfg, sh_status, _ssched.list_schedules(), now, loc)
+    ectx = None
+    if why:
+        ectx = _explain.build(text, now, _load_cfg(), hcfg, scfg, rooms, sh_status)
+        context += "\n\n" + ectx.text
     try:
-        inp = _hchat.call_model(acfg, context, hist)
+        inp = _hchat.call_model(acfg, context, hist, explain=True) if why else _hchat.call_model(acfg, context, hist)
     except _hchat.ChatError as e:
         return {**base, "type": "error", "kind": e.kind, "text": str(e), "chat": st_now()}
     st = st_now()
+    usage = inp.pop("_usage", None)
+    expl = None
+    if why:
+        base = {**base, "basis": ectx.basis, "context_tokens": ectx.tokens, "usage": usage}
+        e = inp.get("explanation")
+        expl = _redact.redact(e.strip())[:_hchat.MAX_EXPLANATION] if isinstance(e, str) and e.strip() else None
+        if not _explain.has_command(text):          # reine Frage: nie ein Vorschlag, was immer das Modell liefert
+            for k in _hchat.WORK_KEYS:
+                inp[k] = []
     q = inp.get("question")
-    has_work = any(inp.get(k) for k in ("entries", "immediate", "delete_ids", "shutter_entries",
-                                        "shutter_immediate", "shutter_delete_ids"))
+    has_work = any(inp.get(k) for k in _hchat.WORK_KEYS)
+    if why and not has_work:
+        if expl is None and isinstance(q, str) and q.strip():
+            return {**base, "type": "question", "text": q.strip()[:400], "chat": st}
+        return {**base, "type": "explain", "chat": st,
+                "text": expl or "Das kann ich nicht sehen – dazu habe ich keine Antwort bekommen. Bitte anders fragen."}
+    if expl:
+        base = {**base, "explanation": expl}
     if isinstance(q, str) and q.strip() and not has_work:
         return {**base, "type": "question", "text": q.strip()[:400], "chat": st}
     proposal, errors = _hchat.validate_proposal(hcfg, inp, now, loc)

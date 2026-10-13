@@ -1911,6 +1911,12 @@ body.sheet-open { overflow: hidden; }
 .chat-pop-head { display: flex; align-items: center; justify-content: space-between; margin-right: -10px; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: rgba(255,255,255,0.7); }
 .chat-pop .heat-chat-log { max-height: none; }
 .chat-pop .heat-prev { margin-top: 0; }
+/* Warum-Antwort: aufklappbare „Grundlage“ (Fakten, die das Modell bekommen hat) */
+.chat-basis { margin-top: 8px; font-size: 12px; color: rgba(255,255,255,0.72); }
+.chat-basis summary { cursor: pointer; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(255,255,255,0.55); padding: 4px 0; }
+.chat-basis-title { margin-top: 8px; font-weight: 600; color: rgba(255,255,255,0.85); }
+.chat-basis ul { margin: 4px 0 0; padding-left: 16px; white-space: normal; }
+.chat-basis li { margin: 2px 0; line-height: 1.35; overflow-wrap: anywhere; }
 @media (max-width: 640px) {
   .chat-pop { left: 0; right: 0; transform: none; width: auto; margin-bottom: 0; max-height: 70vh; border-radius: 20px 20px 0 0; border-bottom: none; }
   .chatbar { padding-left: 8px; padding-right: 8px; }

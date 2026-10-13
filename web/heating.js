@@ -303,6 +303,40 @@ function _chatAdd(role, text, cls = "") {
   log.scrollTop = log.scrollHeight;
 }
 
+// Warum-Antwort: Text wie gewohnt, darunter klein aufklappbar die Fakten, die das Modell bekommen hat
+function _chatAddExplain(text, basis) {
+  const log = $("#heat-chat-log");
+  const div = document.createElement("div");
+  div.className = "heat-msg assistant explain";
+  const p = document.createElement("div");
+  p.textContent = text;
+  div.appendChild(p);
+  if (Array.isArray(basis) && basis.length) {
+    const det = document.createElement("details");
+    det.className = "chat-basis";
+    const sum = document.createElement("summary");
+    sum.textContent = "Grundlage";
+    det.appendChild(sum);
+    for (const sec of basis) {
+      const h = document.createElement("div");
+      h.className = "chat-basis-title";
+      h.textContent = sec.title;
+      det.appendChild(h);
+      const ul = document.createElement("ul");
+      for (const line of sec.lines || []) {
+        const li = document.createElement("li");
+        li.textContent = String(line).replace(/^- /, "");
+        ul.appendChild(li);
+      }
+      det.appendChild(ul);
+    }
+    div.appendChild(det);
+  }
+  log.appendChild(div);
+  _chatPop(true);
+  log.scrollTop = log.scrollHeight;
+}
+
 function _fmtSp(v) { return String(v).replace(".", ",") + " °C"; }
 
 function _shutPreview(sp, res) {
@@ -363,9 +397,14 @@ async function chatSend(text) {
     if (res.type === "question") {
       _chatAdd("assistant", res.text);
       c.history.push({ role: "assistant", content: res.text });
+    } else if (res.type === "explain") {                 // reine Warum-Frage: nur Text, nichts zu bestätigen
+      _chatAddExplain(res.text, res.basis);
+      c.history.push({ role: "assistant", content: res.text });   // Nachfragen („und um 15 Uhr?“) möglich
     } else if (res.type === "proposal") {
+      if (res.explanation) _chatAddExplain(res.explanation, res.basis);   // Mischfrage: erst die Erklärung
       _chatAdd("assistant", "Vorschlag – bitte prüfen:");
       c.proposal = res.proposal; _renderProposal(res);
+      const lg = $("#heat-chat-log"); lg.scrollTop = lg.scrollHeight;   // Vorschau verkleinert den Verlauf: ans Ende
     } else {
       const cls = { error: "err", invalid: "err", limit: "info", unavailable: "info", answer: "" }[res.type] ?? "";
       _chatAdd("assistant", res.text, cls);

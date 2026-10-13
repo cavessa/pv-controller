@@ -301,6 +301,25 @@ Rollläden (nur wenn eine Rollladenliste im Kontext steht; sonst die shutter_-Fe
   Rückfrage (question) statt zu raten.
 - „morgen früh … um 7“ ohne Wochentag = einmalig morgen."""
 
+EXPLAIN_PROMPT = """
+
+Warum- und Statusfragen („warum heizt der Heizstab nicht?“, „wieso ging Phase 2 aus?“):
+- Beantworte sie im Feld explanation. Verwende NUR Fakten aus dem Abschnitt ERKLÄR-KONTEXT weiter unten.
+  Erfinde nichts und schließe nicht aus Allgemeinwissen. Steht etwas dort als „unbekannt“ oder fehlt die
+  nötige Angabe (Zeitraum, Gerät, Raum), sage klar „Das kann ich nicht sehen“ und nenne, was fehlt.
+- Kurz: 2 bis 5 Sätze, Deutsch, Alltagssprache. Zahlen mit Einheit (W, kW, °C, %, min). Beginne mit
+  „Stand HH:MM:“ bzw. der Uhrzeit, auf die sich die Antwort bezieht.
+- Die Codes in eckigen Klammern (z. B. [below_start_threshold]) sind die Gründe der Steuerung; der Text
+  dahinter ist ihre Bedeutung. Gib die Bedeutung in eigenen Worten wieder, nenne den Code nicht.
+- Wenn es aus den Zahlen hervorgeht: sage, was sich ändern müsste („ab ca. 1,1 kW Überschuss startet
+  Phase 1“, „Mindestlaufzeit endet in 2 min“). Rechne nur mit Zahlen aus dem Kontext.
+- Empfiehl nicht, Einstellungen zu ändern, außer der Nutzer fragt danach.
+- Eine reine Frage ändert nichts: dann entries, immediate, delete_ids, shutter_entries, shutter_immediate und
+  shutter_delete_ids leer lassen, question und summary null.
+- Enthält die Nachricht zusätzlich einen Auftrag („… stell es auf 21“): explanation füllen UND den Auftrag wie
+  gewohnt in die anderen Felder eintragen (der Nutzer bestätigt ihn wie immer).
+- Ist es keine Warum-/Statusfrage: explanation null."""
+
 _DAY_ENUM = list(hs.DAYS)
 _NULL_STR = {"type": ["string", "null"]}
 TOOL = {
@@ -390,6 +409,18 @@ TOOL["description"] = ("Schlägt neue Heizungs- und Rollladen-Zeitpläne, sofort
                        "Vorschlag, bevor etwas gespeichert oder gefahren wird.")
 
 
+# Variante für Warum-Fragen: dasselbe Tool mit dem zusätzlichen Textfeld ``explanation``. Ohne Warum-Frage
+# bleibt alles beim bisherigen Tool (Prompt und Schema unverändert).
+TOOL_EXPLAIN = json.loads(json.dumps(TOOL))
+TOOL_EXPLAIN["input_schema"]["properties"]["explanation"] = {
+    "type": ["string", "null"],
+    "description": "Antwort auf eine Warum-/Statusfrage, nur aus dem ERKLÄR-KONTEXT; sonst null"}
+TOOL_EXPLAIN["input_schema"]["required"] = TOOL["input_schema"]["required"] + ["explanation"]
+TOOL_EXPLAIN["description"] += " Warum-/Statusfragen beantwortet das Feld explanation (reiner Text, ändert nichts)."
+MAX_EXPLANATION = 1200
+WORK_KEYS = ("entries", "immediate", "delete_ids", "shutter_entries", "shutter_immediate", "shutter_delete_ids")
+
+
 # ── API-Aufruf ──────────────────────────────────────────────────────────────
 
 
@@ -464,12 +495,21 @@ def _no_tool(text: str) -> dict[str, Any]:
             "question": text.strip()[:400] or "Das habe ich nicht verstanden. Bitte anders formulieren."}
 
 
-def _request_anthropic(client: Any, acfg: AssistantConfig, system: str, messages: list[dict]) -> dict[str, Any]:
+def _with_usage(inp: dict[str, Any], usage: Any, prompt: str, completion: str) -> dict[str, Any]:
+    """Token-Verbrauch der Anfrage an die Tool-Eingabe hängen (Schlüssel ``_usage``; nur zur Anzeige/Messung)."""
+    p, c = getattr(usage, prompt, None), getattr(usage, completion, None)
+    if isinstance(p, int) and isinstance(c, int):
+        inp["_usage"] = {"prompt_tokens": p, "completion_tokens": c}
+    return inp
+
+
+def _request_anthropic(client: Any, acfg: AssistantConfig, system: str, messages: list[dict],
+                       tool: dict = TOOL) -> dict[str, Any]:
     resp = client.messages.create(
         model=acfg.model,
         max_tokens=MAX_TOKENS,
         system=system,
-        tools=[TOOL],
+        tools=[tool],
         tool_choice={"type": "auto", "disable_parallel_tool_use": True},
         messages=messages,
     )
@@ -477,7 +517,7 @@ def _request_anthropic(client: Any, acfg: AssistantConfig, system: str, messages
         raise ChatError("Die Anfrage wurde abgelehnt. Bitte anders formulieren.")
     for block in resp.content:
         if block.type == "tool_use" and block.name == "propose_schedule":
-            return dict(block.input)
+            return _with_usage(dict(block.input), getattr(resp, "usage", None), "input_tokens", "output_tokens")
     if resp.stop_reason == "max_tokens":
         raise ChatError("Antwort unvollständig. Bitte kürzer formulieren.")
     return _no_tool(" ".join(b.text for b in resp.content if b.type == "text"))
@@ -487,12 +527,15 @@ OPENAI_TOOL = {"type": "function", "function": {
     "name": TOOL["name"], "description": TOOL["description"], "parameters": TOOL["input_schema"], "strict": True}}
 
 
-def _request_openai(client: Any, acfg: AssistantConfig, system: str, messages: list[dict]) -> dict[str, Any]:
+def _request_openai(client: Any, acfg: AssistantConfig, system: str, messages: list[dict],
+                    tool: dict = TOOL) -> dict[str, Any]:
     resp = client.chat.completions.create(
         model=acfg.model,
         max_completion_tokens=MAX_TOKENS,
         messages=[{"role": "system", "content": system}, *messages],
-        tools=[OPENAI_TOOL],
+        tools=[OPENAI_TOOL if tool is TOOL else {"type": "function", "function": {
+            "name": tool["name"], "description": tool["description"], "parameters": tool["input_schema"],
+            "strict": True}}],
         tool_choice={"type": "function", "function": {"name": TOOL["name"]}},
         parallel_tool_calls=False,
     )
@@ -503,7 +546,8 @@ def _request_openai(client: Any, acfg: AssistantConfig, system: str, messages: l
     for call in msg.tool_calls or []:
         if getattr(call, "type", "function") == "function" and call.function.name == TOOL["name"]:
             try:
-                return json.loads(call.function.arguments)
+                return _with_usage(json.loads(call.function.arguments), getattr(resp, "usage", None),
+                                   "prompt_tokens", "completion_tokens")
             except (TypeError, ValueError):
                 raise ChatError("Antwort nicht lesbar. Bitte noch einmal.")
     if choice.finish_reason == "length":
@@ -512,16 +556,21 @@ def _request_openai(client: Any, acfg: AssistantConfig, system: str, messages: l
 
 
 def call_model(acfg: AssistantConfig, context: str, history: list[dict[str, str]],
-               client_factory: Optional[Callable[[AssistantConfig], Any]] = None) -> dict[str, Any]:
+               client_factory: Optional[Callable[[AssistantConfig], Any]] = None,
+               explain: bool = False) -> dict[str, Any]:
     """Ein API-Aufruf beim gewählten Anbieter → Eingabe des Tools ``propose_schedule`` (dict).
 
+    ``explain``: Warum-Frage – Prompt und Tool tragen zusätzlich das Textfeld ``explanation`` (der Kontext
+    enthält dann den Erklär-Kontext). Ohne ``explain`` ist die Anfrage unverändert wie bisher.
     Fehler werden zu ChatError mit verständlichem Text; der API-Key erscheint nie (auch nicht im Log).
     """
     messages = [{"role": m["role"], "content": m["content"]} for m in history]
-    system = SYSTEM_PROMPT + "\n\n" + context
+    system = SYSTEM_PROMPT + (EXPLAIN_PROMPT if explain else "") + "\n\n" + context
     client = (client_factory or _default_client)(acfg)
     request = _request_openai if acfg.provider == OPENAI else _request_anthropic
     try:
+        if explain:
+            return request(client, acfg, system, messages, TOOL_EXPLAIN)
         return request(client, acfg, system, messages)
     except ChatError:
         raise
