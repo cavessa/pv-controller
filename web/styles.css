@@ -1752,7 +1752,9 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 /* ════════ Heizung + Rollläden: Card-Grid, Kopfzeile, Sheet, Chat-Leiste ════════ */
 .room-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); gap: 16px; align-items: stretch; }
 .room-grid > .card { margin-bottom: 0; }
-#tab-heizung.active, #tab-rolllaeden.active { padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px)); }
+/* Chat-Leiste auf allen Tabs: Platz in Höhe der Leiste (+ Safe-Area) unter dem Inhalt, nur wenn sie sichtbar ist */
+html.has-chatbar .app-shell { padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }
+html.has-chatbar { scroll-padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px)); }   /* Fokus/Anspringen landet über der Leiste */
 
 /* Kopfzeile pro Tab */
 .tab-head { display: flex; align-items: center; justify-content: space-between; gap: 6px 16px; flex-wrap: wrap; margin: 0 2px 14px; min-height: 44px; }
@@ -1918,3 +1920,14 @@ body.sheet-open { overflow: hidden; }
 .sch-limits summary::-webkit-details-marker { display: none; }
 .sch-limits summary::before { content: "▸"; color: var(--text-muted); }
 .sch-limits[open] summary::before { content: "▾"; }
+
+/* iOS Safari zoomt beim Antippen in Felder mit Schrift < 16 px und bleibt gezoomt.
+   Auf Mobil deshalb alle Eingabefelder mit 16 px (Zoomen per Geste bleibt möglich – kein maximum-scale). */
+@media (max-width: 768px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea, select { font-size: 16px !important; max-width: 100%; min-width: 0; }
+  fieldset { min-width: 0; }                           /* sonst dehnen breite Auswahlfelder die Seite über den Bildschirm */
+  .heat-settings, .hs-room { grid-template-columns: minmax(0, 1fr); }
+  .hs-room select { width: 100%; }
+  .sheet .heat-form-row .stepper input { width: 60px; }
+  .chatbar .heat-chat-form input { padding: 6px 10px; }
+}

@@ -22,7 +22,6 @@ const SHUT_ARROW = { up: "▲", down: "▼" };
 const _shutVisible = () => !document.hidden && $(".tab.active")?.dataset.tab === "rolllaeden";
 
 function shutActivate() {
-  placeChat("rolllaeden");                              // aus heating.js: ein Chat für beide Tabs
   loadShutters();
   clearInterval(SHUT.timer);
   // alle 30 s; pausiert, solange ein anderer Tab aktiv oder die Seite verdeckt ist
@@ -48,7 +47,7 @@ async function loadShutters() {
     if (seq !== SHUT.loadSeq) return;
     SHUT.status = s;
     if (sch) { SHUT.sched = sch.items; SHUT.sun = sch.sun_today || {}; SHUT.sun2 = sch.sun_tomorrow || {}; }
-    if (s.chat) renderChatStatus(s.chat, !!(s.enabled && s.openhab_configured));
+    if (s.chat) renderChatStatus(s.chat);
     banner.classList.add("hidden");
     if (!s.enabled || !s.openhab_configured) {
       const why = !s.openhab_configured

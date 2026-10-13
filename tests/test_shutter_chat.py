@@ -498,3 +498,22 @@ class RuleNextTest(unittest.TestCase):
         self.assertEqual(web.shutters_schedules(web.Response())["sun_tomorrow"], want)
         self.assertEqual(web.heating_schedules(web.Response())["sun_tomorrow"], want)
         self.assertNotEqual(web.shutters_schedules(web.Response())["sun_today"], {})
+
+
+class ChatBarStatusTest(unittest.TestCase):
+    """Chat-Leiste auf allen Tabs: schlanker Status-Endpoint ohne openHAB-Abfrage; „Chat aus“ → Leiste ausgeblendet."""
+    setUp = WebChatTest.setUp
+    tearDown = WebChatTest.tearDown
+
+    def test_status_without_openhab(self):
+        self.fake.get_items = self.fake.get_item = mock.Mock(side_effect=AssertionError("kein openHAB-Zugriff erwartet"))
+        st = web.heating_chat_status(web.Response())
+        self.assertEqual((st["enabled"], st["ready"], st["used_today"], st["limit"]), (True, True, 0, 20))
+        self.assertEqual(st, web.shutters_status.__globals__["_chat_status"](*web._heating_ctx()[:2]))
+
+    def test_disabled_chat_reports_enabled_false(self):
+        cfg = json.loads(self.cfg_path.read_text(encoding="utf-8"))
+        cfg["assistant"]["enabled"] = False
+        self.cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+        st = web.heating_chat_status(web.Response())
+        self.assertEqual((st["enabled"], st["ready"]), (False, False))

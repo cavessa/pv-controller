@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-13 – Chat-Leiste auf allen Tabs; iOS: kein Zoom mehr beim Antippen von Eingabefeldern
+
+**Chat-Leiste überall:** Die Leiste liegt jetzt auf Seitenebene (nicht mehr im Heizung-/Rollladen-Tab) und ist auf Dashboard, Heizung, Rollläden, Verlauf, Prioritäten, Settings und Logs dieselbe – gleicher Verlauf über alle Tabs. Ist der Chat in den Settings aus, wird sie überall ausgeblendet (statt ausgegraut); nach „Speichern“ in Settings → Heizung sofort. Solange sie sichtbar ist, bekommt die Seite unten 64 px + Safe-Area Platz (`html.has-chatbar .app-shell`) und `scroll-padding-bottom`, damit weder Inhalt noch angesprungene/fokussierte Felder unter der Leiste liegen. Neuer Lese-Endpoint `GET /api/heating/chat/status` (an/aus, bereit, Zähler; ohne openHAB-Abfrage) für die Tabs, die keinen Heizungs-/Rollladen-Status laden. Dashboard sonst unverändert.
+**iOS-Zoom:** iOS Safari zoomt in die Seite, wenn ein Feld mit Schrift < 16 px den Fokus bekommt, und bleibt gezoomt (Chat-Leiste 14 px, Formulare 13–14 px). Bis 768 px Breite haben alle `input` (außer Checkbox/Radio/Range), `textarea` und `select` 16 px – Chat-Leiste, Zeitplan-Sheet (Uhrzeit, ±Minuten, Datum, Soll, Position), Settings, Logs, Verlauf. Viewport unverändert (kein `maximum-scale`/`user-scalable=no`, Zoomen per Geste bleibt möglich).
+**Settings auf dem Handy nicht mehr breiter als der Bildschirm:** Die Settings-Blöcke Heizung/Rollläden waren bei 390 px schon vorher 476 px breit (breite Auswahlfelder dehnten das Raster), mit 16 px wären es 559 px geworden. Auf Mobil jetzt `minmax(0, 1fr)`, Felder höchstens 100 % breit → 390 px.
+**Geprüft im Testbrowser** (390 px und 1440 px, Chat an/aus): Leiste auf allen 7 Tabs, Fußzeile endet 3 px über der Leiste, kein Bedienelement verdeckt (auch „Rollläden speichern“), Chat-Verlauf bleibt beim Tab-Wechsel, bei „Chat aus“ keine Leiste und kein Zusatz-Abstand; alle 203 Felder bei 390/768 px ≥ 16 px; keine JS-Fehler. Tests: `ChatBarStatusTest` (2), Suite 452. Nicht prüfbar ohne iPhone: das Zoom-Verhalten selbst. Weiter vorhanden (war vorher schon so): die Unter-Navigation im Verlauf ragt bei 390 px über den Rand.
+
+## 2026-10-13 – Betrieb (Prod): Rollläden 1–4 auf „PV Controller“ umgestellt, Zeitpläne aktiv
+
+Kein Code. Auf Anweisung des Users um 17:45: Wohnen links, Wohnen rechts, Esszimmer, Hintereingang in den Settings (`PUT /api/shutters/config`, Backup `config.backup-20261013-174500.json`) auf Automatik „PV Controller“; „Rollladen-Zeitpläne aktiv“ eingeschaltet. Neu angelegt: Hintereingang ▲ 06:20 und ▼ 22:01 täglich (Tür ohne Kontakt → schließt automatisch nur bis 80 %). Bestehend: Wohnen links/rechts, Esszimmer je ▼ Sonnenuntergang und ▲ Sonnenaufgang täglich. Schlafzimmer hat keinen Zeitplan. In openHAB die Regel „Rollladen automatisch runter wenn abends nicht zuhause“ (75088ccfb7) wieder aktiviert; die fünf anderen Rollladen-Regeln bleiben deaktiviert. Kein Rollladen wurde von Hand bewegt. Danach `af28697` deployt.
+
 ## 2026-10-13 – Redesign Heizung- und Rollladen-Tab
 
 Nur `web/heating.js`, `web/shutters.js`, `web/styles.css`, `web/index.html` (Abschnitte der beiden Tabs). Logik, Zeitplan-Ausführung und Sicherheitsregeln (Tür-Bestätigung, Duty Cycle, Dry-Run) unverändert; API nur um zwei Lese-Felder ergänzt (`rule_next`, `sun_tomorrow`); andere Tabs nicht angefasst.

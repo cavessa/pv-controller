@@ -2196,6 +2196,14 @@ def _chat_shutters(raw: dict[str, Any]) -> "_shutters.ShutterConfig":
         raise HTTPException(500, f"shutters config ungültig: {e}")
 
 
+@app.get("/api/heating/chat/status")
+def heating_chat_status(response: Response) -> dict[str, Any]:
+    """Chat-Status für die Leiste auf allen Tabs (ohne openHAB-Abfrage): an/aus, bereit, Zähler."""
+    response.headers["Cache-Control"] = "no-store"
+    raw, hcfg, _client = _heating_ctx()
+    return _chat_status(raw, hcfg)
+
+
 @app.post("/api/heating/chat")
 def heating_chat(body: _ChatRequest) -> dict[str, Any]:
     """Text → Antwort: Abfrage aus der DB, Rückfrage oder Vorschlag (nichts wird gespeichert).

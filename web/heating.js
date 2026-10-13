@@ -25,15 +25,13 @@ const fmtPct = v => v == null ? "–" : Math.round(v) + " %";
 
 const _heatVisible = () => !document.hidden && $(".tab.active")?.dataset.tab === "heizung";
 
-// Ein Chat für Heizung + Rollläden: die Eingabezeile (unten fixiert) wandert in den aktiven Tab
-function placeChat(tab) {
-  const bar = $("#heat-chat");
-  const sec = $(tab === "rolllaeden" ? "#tab-rolllaeden" : "#tab-heizung");
-  if (bar && sec && bar.parentElement !== sec) sec.appendChild(bar);
+// Ein Chat für Heizung + Rollläden: eine Leiste unten auf allen Tabs. Der Status kommt mit dem Heizungs-/
+// Rollladen-Status; auf den anderen Tabs (und beim Start) über den schlanken Endpoint ohne openHAB-Abfrage.
+async function loadChatStatus() {
+  try { renderChatStatus(await api("/api/heating/chat/status")); } catch (_) { /* Leiste bleibt, wie sie ist */ }
 }
 
 function heatActivate() {
-  placeChat("heizung");
   loadHeating();
   clearInterval(HEAT.timer);
   // alle 30 s; pausiert, solange ein anderer Tab aktiv oder die Seite verdeckt ist
@@ -59,7 +57,7 @@ async function loadHeating() {
     if (seq !== HEAT.loadSeq) return;                // inzwischen neuer geladen (z. B. nach Löschen) → verwerfen
     HEAT.status = s;
     if (sch) { HEAT.sched = sch.items; HEAT.sun = sch.sun_today || {}; HEAT.sun2 = sch.sun_tomorrow || {}; }
-    renderChatStatus(s.chat, s.enabled && s.openhab_configured);
+    renderChatStatus(s.chat);
     banner.classList.add("hidden");
     if (!s.enabled || !s.openhab_configured) {
       const why = !s.openhab_configured
@@ -270,11 +268,13 @@ const _schedDom = () => SCHED[{ hsched: "heat", ssched: "shut" }[SHEET.kind]];
 
 // ── Chat ───────────────────────────────────────────────────────────────────
 
-function renderChatStatus(st, heatingOn) {
+function renderChatStatus(st) {
   HEAT.chat.status = st;
   const bar = $("#heat-chat");
   if (!bar) return;
-  bar.classList.toggle("hidden", !heatingOn);
+  const on = !!(st && st.enabled);                   // Chat in den Settings aus → Leiste überall ausgeblendet
+  bar.classList.toggle("hidden", !on);
+  document.documentElement.classList.toggle("has-chatbar", on);   // Platz unter dem Inhalt, damit nichts verdeckt wird
   const ready = !!(st && st.ready);
   const inp = $("#heat-chat-input");
   inp.disabled = !ready || HEAT.chat.busy;
@@ -350,7 +350,7 @@ async function chatSend(text) {
   c.proposal = null; _renderProposal({});
   _chatAdd("user", text);
   c.history.push({ role: "user", content: text });
-  c.busy = true; renderChatStatus(c.status, true);
+  c.busy = true; renderChatStatus(c.status);
   const wait = document.createElement("div");
   wait.className = "heat-msg assistant pending"; wait.textContent = "…";
   $("#heat-chat-log").appendChild(wait);
@@ -375,7 +375,7 @@ async function chatSend(text) {
     wait.remove();
     _chatAdd("assistant", "Fehler: " + e.message, "err");
   } finally {
-    c.busy = false; renderChatStatus(c.status, true);
+    c.busy = false; renderChatStatus(c.status);
     $("#heat-chat-input").focus();
   }
 }
@@ -415,8 +415,10 @@ async function chatApply(id) {
     _chatAdd("assistant", "Nicht übernommen: " + _chatErr(e), "err");
   }
   c.proposal = null; c.history = []; _renderProposal({});
-  if ($(".tab.active")?.dataset.tab === "rolllaeden") { loadShutters(); setTimeout(loadShutters, 3000); }
-  else loadHeating();
+  const tab = $(".tab.active")?.dataset.tab;           // Anzeige nur auf dem Tab nachladen, der gerade offen ist
+  if (tab === "rolllaeden") { loadShutters(); setTimeout(loadShutters, 3000); }
+  else if (tab === "heizung") loadHeating();
+  else loadChatStatus();
 }
 
 // ── Zeitpläne ──────────────────────────────────────────────────────────────
@@ -889,6 +891,7 @@ async function saveHeatingSettings() {
   try {
     const res = await api("/api/heating/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     msg.textContent = "Gespeichert (Backup: " + res.backup + ")"; msg.className = "form-msg ok";
+    loadChatStatus();                                // „Chat aktiv“ geändert → Leiste sofort ein-/ausblenden
   } catch (e) {
     msg.textContent = "Fehler: " + e.message; msg.className = "form-msg error";
   }
@@ -982,6 +985,7 @@ function _bindSheet(el) {
 }
 
 function bootHeating() {
+  loadChatStatus();
   document.addEventListener("keydown", e => { if (e.key === "Escape" && SHEET.kind) closeSheet(); });
   $("#heat-rooms")?.addEventListener("click", e => {
     const b = e.target.closest("[data-step]");
