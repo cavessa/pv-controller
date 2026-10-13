@@ -5,11 +5,10 @@ const HEAT = {
   status: null,
   pending: {},          // room_id → {value, timer}  (−/+ wird gesammelt und nach kurzer Pause gesendet)
   history: {},          // room_id → {temp, setpoint, t}
-  open: {},             // room_id → Verlauf aufgeklappt
   sched: [],            // alle Zeitpläne (GET /api/heating/schedules)
   sun: {},              // heute: {sunrise, sunset}
-  schedOpen: {},        // room_id → Zeitpläne aufgeklappt
-  form: {},             // room_id → Eingaben „+ Zeitplan“ (überleben das 30-s-Neuzeichnen)
+  sun2: {},             // morgen
+  form: {},             // room_id → Eingaben im Zeitplan-Sheet (überleben das 30-s-Neuzeichnen)
   timer: null,
   roomsSig: null,       // Raumliste der gerenderten Cards (Neuaufbau nur bei Änderung)
   loadSeq: 0,           // nur das zuletzt gestartete Laden wird angezeigt (Poll vs. Laden nach Änderung)
@@ -26,11 +25,11 @@ const fmtPct = v => v == null ? "–" : Math.round(v) + " %";
 
 const _heatVisible = () => !document.hidden && $(".tab.active")?.dataset.tab === "heizung";
 
-// Ein Chat für Heizung + Rollläden: die Karte wandert in den aktiven Tab (Verlauf bleibt erhalten)
+// Ein Chat für Heizung + Rollläden: die Eingabezeile (unten fixiert) wandert in den aktiven Tab
 function placeChat(tab) {
-  const card = $("#heat-chat");
-  const anchor = tab === "rolllaeden" ? $("#shut-groups") : $("#heat-rooms");
-  if (card && anchor && card.nextElementSibling !== anchor) anchor.before(card);
+  const bar = $("#heat-chat");
+  const sec = $(tab === "rolllaeden" ? "#tab-rolllaeden" : "#tab-heizung");
+  if (bar && sec && bar.parentElement !== sec) sec.appendChild(bar);
 }
 
 function heatActivate() {
@@ -59,29 +58,28 @@ async function loadHeating() {
     ]);
     if (seq !== HEAT.loadSeq) return;                // inzwischen neuer geladen (z. B. nach Löschen) → verwerfen
     HEAT.status = s;
-    if (sch) { HEAT.sched = sch.items; HEAT.sun = sch.sun_today || {}; }
+    if (sch) { HEAT.sched = sch.items; HEAT.sun = sch.sun_today || {}; HEAT.sun2 = sch.sun_tomorrow || {}; }
     renderChatStatus(s.chat, s.enabled && s.openhab_configured);
     banner.classList.add("hidden");
     if (!s.enabled || !s.openhab_configured) {
       const why = !s.openhab_configured
         ? "openHAB ist nicht konfiguriert: in config.json fehlt der Block „openhab“ (url, token)."
         : "Heizung ist nicht aktiv. In den Settings unter „Heizung“ Räume eintragen und aktivieren.";
-      $("#heat-dry").classList.add("hidden");
-      $("#heat-sched-off").classList.add("hidden");
+      _setSlot($("#heat-head"), "");
       $("#heat-updated").textContent = "";
       $("#heat-rooms").innerHTML = `<div class="card"><p class="note">${why}</p></div>`;
       HEAT.roomsSig = null;
       return;
     }
     if (!s.ok) { banner.textContent = s.error || "openHAB nicht erreichbar"; banner.classList.remove("hidden"); }
-    $("#heat-dry").classList.toggle("hidden", !s.dry_run);
-    $("#heat-sched-off").classList.toggle("hidden", !!s.schedules_enabled);
+    _renderHeatHead(s);
     renderHeatRooms(s);
+    renderSheet();                                   // offenes Sheet (Zeitpläne/Verlauf) bleibt offen und aktuell
     const stand = new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     $("#heat-updated").textContent = "Stand " + stand;
     pillTimes.heating = stand;                       // Kopfzeilen-Pill zeigt auf dem Heizung-Tab diese Zeit
     updatePillTime();
-    for (const r of s.rooms) if (HEAT.open[r.id]) loadHeatHistory(r.id);
+    _loadSparks(s.rooms);
   } catch (e) {
     banner.textContent = "Heizung: " + e.message;
     banner.classList.remove("hidden");
@@ -93,6 +91,28 @@ function _tempClass(r) {
   if (r.temp < r.setpoint - 1) return "cold";
   if (r.temp > r.setpoint + 1) return "warm";
   return "";
+}
+
+// Schalter „Zeitpläne an/aus“ in der Kopfzeile (Heizung + Rollläden)
+function _headSwitch(on, what) {
+  return `<label class="head-switch" title="${_hq(what)} ${on ? "werden ausgeführt" : "werden gespeichert, aber nicht ausgeführt"}">
+      <span>Zeitpläne</span><span class="heat-switch"><input type="checkbox" data-sched-master ${on ? "checked" : ""} aria-label="${_hq(what)} aktiv"><span></span></span>
+      <small class="${on ? "" : "off"}">${on ? "an" : "aus"}</small></label>`;
+}
+
+// Kopfzeile: Ø-Temperatur · wie viele Räume heizen · nächste Änderung · Zeitpläne-Schalter
+function _renderHeatHead(s) {
+  const temps = s.rooms.filter(r => r.temp != null).map(r => r.temp);
+  const parts = [];
+  if (temps.length) parts.push(`Ø ${fmtC(temps.reduce((a, b) => a + b, 0) / temps.length)}`);
+  if (s.rooms.some(r => r.has.valve)) {
+    const n = s.rooms.filter(r => r.has.valve && r.valve > 0).length;
+    parts.push(n === 1 ? "1 Raum heizt" : `${n} Räume heizen`);
+  }
+  const nx = s.rooms.filter(r => r.next).sort((a, b) => new Date(a.next.at) - new Date(b.next.at))[0];
+  if (nx) parts.push(`nächste: ${escapeHtml(nx.name)} ${_fmtNext(nx.next)} → ${fmtC(nx.next.setpoint)}`);
+  _setSlot($("#heat-head"), `<div class="tab-head-main"><h1>Heizung</h1><span class="tab-head-sum">${parts.join('<span class="sep">·</span>')}</span></div>
+    <div class="tab-head-actions">${s.dry_run ? `<span class="cb warn" title="Dry-Run: Änderungen werden nur geloggt, nicht an openHAB gesendet">Dry-Run</span>` : ""}${_headSwitch(!!s.schedules_enabled, "Heizungs-Zeitpläne")}</div>`);
 }
 
 // Cards: einmal aufbauen (bzw. wenn sich die Raumliste ändert), danach nur geänderte Slots ersetzen.
@@ -108,22 +128,29 @@ function renderHeatRooms(s) {
 
 function _roomSkeleton(r) {
   const id = _hq(r.id);
-  const ctrl = r.controllable ? `
-        <div class="heat-set">
-          <span class="heat-set-label">Soll</span>
-          <button type="button" class="heat-step" data-room="${id}" data-step="-1" aria-label="${_hq(r.name)} kälter">−</button>
-          <span class="heat-set-val" data-slot="sp"></span>
-          <button type="button" class="heat-step" data-room="${id}" data-step="1" aria-label="${_hq(r.name)} wärmer">+</button>
-        </div>` : `<div class="heat-set"><span class="heat-set-label">nur Anzeige</span></div>`;
+  if (!r.controllable) {                              // nur Anzeige (z. B. Waschküche): halbe Höhe, Ist + Feuchte
+    return `
+      <div class="card heat-room hcard mini" data-room="${id}">
+        <div class="hcard-head"><h2>${escapeHtml(r.name)}</h2><span class="card-badges" data-slot="badges"></span></div>
+        <div class="hcard-main"><div class="hcard-temp"><span class="heat-temp" data-slot="temp"></span></div><div class="hcard-meta" data-slot="meta"></div></div>
+        <div data-slot="err"></div>
+      </div>`;
+  }
   return `
-      <div class="card heat-room" data-room="${id}">
-        <div class="heat-room-head"><h2>${escapeHtml(r.name)}</h2><span data-slot="bat"></span></div>
-        <div class="heat-room-main"><div class="heat-temp" data-slot="temp"></div>${ctrl}</div>
-        <div data-slot="meta"></div><div data-slot="mode"></div><div data-slot="next"></div>
+      <div class="card heat-room hcard" data-room="${id}">
+        <div class="hcard-head"><h2>${escapeHtml(r.name)}</h2><span class="card-badges" data-slot="badges"></span></div>
+        <div class="hcard-main">
+          <div class="hcard-temp"><span class="heat-temp" data-slot="temp"></span><small class="hcard-delta" data-slot="delta"></small></div>
+          <div class="heat-set">
+            <button type="button" class="heat-step" data-room="${id}" data-step="-1" aria-label="${_hq(r.name)} kälter">−</button>
+            <span class="heat-set-val" data-slot="sp" title="Soll"></span>
+            <button type="button" class="heat-step" data-room="${id}" data-step="1" aria-label="${_hq(r.name)} wärmer">+</button>
+          </div>
+        </div>
+        <button type="button" class="hcard-spark" data-hist="${id}" data-slot="spark" aria-label="${_hq(r.name)}: Verlauf 24 h öffnen" title="Verlauf 24 h"></button>
+        <div class="hcard-meta" data-slot="meta"></div>
         <div data-slot="alert"></div><div data-slot="err"></div>
-        <div class="heat-toggles" data-slot="toggles"></div>
-        <div class="heat-chart" id="heat-chart-${id}"></div>
-        <div data-slot="sched"></div>
+        <button type="button" class="card-link" data-sched="${id}" data-slot="schedlink"></button>
       </div>`;
 }
 
@@ -136,8 +163,16 @@ function _setSlot(el, html) {
   if (el && el._html !== html) { el.innerHTML = html; el._html = html; }
 }
 
-// Einen Raum in place aktualisieren. force: Zeitplan-Bereich auch bei Fokus darin neu zeichnen (eigener Klick).
-function updateHeatRoom(roomId, force = false) {
+const _fmtDelta = d => (d > 0 ? "+" : "−") + Math.abs(d).toFixed(1).replace(".", ",");
+
+// Zeile am Fuß der Card: öffnet das Zeitplan-Sheet
+function _schedLink(n, dormant = false) {
+  return n ? `<span>☰ ${n} ${n === 1 ? "Zeitplan" : "Zeitpläne"}${dormant ? " · ruhen" : ""}</span><span class="chev">›</span>`
+           : `<span>+ Zeitplan</span><span class="chev">›</span>`;
+}
+
+// Einen Raum in place aktualisieren (die Card selbst wird nie neu aufgebaut).
+function updateHeatRoom(roomId) {
   const s = HEAT.status;
   const r = s?.rooms.find(x => x.id === roomId);
   const card = document.querySelector(`.heat-room[data-room="${CSS.escape(roomId)}"]`);
@@ -150,49 +185,112 @@ function updateHeatRoom(roomId, force = false) {
   const tCls = "heat-temp " + _tempClass(r);
   if (t.className.trim() !== tCls.trim()) t.className = tCls;
   if (t.textContent !== fmtC(r.temp)) t.textContent = fmtC(r.temp);
+  const dl = slot("delta");
+  if (dl) {                                          // Abweichung als Text statt eingefärbter Zahl
+    const d = r.temp != null && r.setpoint != null ? r.temp - r.setpoint : 0;
+    const txt = Math.abs(d) >= 0.5 ? `${_fmtDelta(d)} ${d > 0 ? "über" : "unter"} Soll` : "";
+    if (dl.textContent !== txt) dl.textContent = txt;
+  }
   const v = slot("sp");
   if (v) {                                           // −/+ gesammelt: angezeigter Wert bleibt der eigene
     if (v.textContent !== fmtC(sp)) v.textContent = fmtC(sp);
     v.classList.toggle("pending", !!pend);
     card.querySelectorAll(".heat-step").forEach(b => { b.disabled = sp == null; });
   }
-  _setSlot(slot("bat"), r.battery == null ? "" : r.battery.low
-    ? `<span class="heat-bat low" title="Batterie schwach">⚠️ Batterie</span>`
-    : `<span class="heat-bat" title="Batterie OK">🔋 ${r.battery.percent != null ? r.battery.percent + " %" : "OK"}</span>`);
-  const meta = [r.has.valve ? `Ventil ${fmtPct(r.valve)}` : "", r.has.humidity ? `Luftfeuchte ${fmtPct(r.humidity)}` : ""]
-    .filter(Boolean).join('<span class="sep">·</span>');
-  _setSlot(slot("meta"), meta ? `<div class="heat-meta">${meta}</div>` : "");
-  _setSlot(slot("mode"), r.mode == null ? "" : `<div class="heat-meta">${r.mode === "AUTO"
-    ? `<span class="heat-mode auto" title="Gerät folgt eigenem Wochenprofil">AUTO · Gerät folgt eigenem Wochenprofil</span>`
-    : `<span class="heat-mode">${_hq(r.mode)}</span>`}</div>`);
-  _setSlot(slot("next"), r.next ? `<div class="heat-meta heat-next">Nächste Änderung: ${_fmtNext(r.next)} → ${fmtC(r.next.setpoint)}${s.schedules_enabled ? "" : ` <span class="heat-off">(Zeitpläne aus)</span>`}</div>` : "");
-  _setSlot(slot("alert"), r.alert ? `<div class="heat-alert">⚠️ ${escapeHtml(r.alert)}</div>` : "");
+  // Badges oben rechts: nur Warnungen in Warn-Orange (Batterie schwach, AUTO-Modus, Hinweis)
+  const badges = [];
+  if (r.alert) badges.push(`<span class="cb warn" title="${_hq(r.alert)}">⚠ Hinweis</span>`);
+  if (r.battery?.low) badges.push(`<span class="cb warn" title="Batterie schwach">⚠ Batterie</span>`);
+  else if (r.battery) badges.push(`<span class="cb plain" title="Batterie OK">🔋${r.battery.percent != null ? " " + r.battery.percent + " %" : ""}</span>`);
+  if (r.mode === "AUTO") badges.push(`<span class="cb warn" title="Gerät folgt eigenem Wochenprofil">AUTO</span>`);
+  else if (r.mode != null) badges.push(`<span class="cb">${_hq(r.mode)}</span>`);
+  _setSlot(slot("badges"), badges.join(""));
+  const meta = [
+    r.has.humidity ? `<span title="Luftfeuchte">💧 ${fmtPct(r.humidity)}</span>` : "",
+    r.has.valve ? `<span title="Ventil">Ventil ${fmtPct(r.valve)}</span>` : "",
+    r.next ? `<span title="Nächste Änderung">⏱ ${_fmtNext(r.next)} → ${fmtC(r.next.setpoint)}${s.schedules_enabled ? "" : ` <span class="heat-off">(aus)</span>`}</span>` : "",
+  ].filter(Boolean).join("");
+  _setSlot(slot("meta"), meta);
+  _setSlot(slot("alert"), r.alert ? `<div class="heat-alert">${escapeHtml(r.alert)}</div>` : "");
   _setSlot(slot("err"), r.error ? `<div class="heat-err">${escapeHtml(r.error)}</div>` : "");
-  _setSlot(slot("toggles"), `<button type="button" class="heat-hist-toggle" data-hist="${_hq(r.id)}">${HEAT.open[r.id] ? "▾" : "▸"} Verlauf 24 h</button>`
-    + (r.controllable ? `<button type="button" class="heat-hist-toggle" data-sched="${_hq(r.id)}">${HEAT.schedOpen[r.id] ? "▾" : "▸"} Zeitpläne (${HEAT.sched.filter(e => e.room_id === r.id).length})</button>` : ""));
-  const sch = slot("sched");
-  // nur während im Formular getippt wird nicht ersetzen (Fokus in einem Eingabefeld) – ein fokussierter
-  // Button/Schalter (✕, An/Aus, Wochentag) blockiert nichts
-  if (force || !_typingIn(sch)) _setSlot(sch, r.controllable && HEAT.schedOpen[r.id] ? _schedPanel(r, s) : "");
+  _setSlot(slot("spark"), _sparkSvg(r.id));
+  _setSlot(slot("schedlink"), _schedLink(HEAT.sched.filter(e => e.room_id === r.id).length));
 }
+
+// ── Sheet (Handy: von unten, Desktop: Modal 480 px) ─────────────────────────
+// Ein Element für Zeitpläne (Heizung/Rollläden) und den großen Verlauf. Bleibt beim Poll offen;
+// neu gezeichnet wird nur, wenn sich der Inhalt geändert hat und gerade nicht getippt wird.
+
+const SHEET = { kind: null, id: null, form: false };
+const SHEET_VIEWS = {};                               // kind → id => {title, html} (null = schließen)
+const SCHED = {};                                     // "heat" / "shut" → Zugriff auf Zeitpläne des Tabs
+
+function _sheetRoot() {
+  let el = $("#sheet");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "sheet"; el.className = "sheet hidden";
+    el.innerHTML = `<div class="sheet-backdrop" data-sheet-close="1"></div>
+      <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+        <div class="sheet-head"><h2 id="sheet-title"></h2><button type="button" class="sheet-x" data-sheet-close="1" aria-label="Schließen">✕</button></div>
+        <div class="sheet-body" id="sheet-body"></div>
+      </div>`;
+    document.body.appendChild(el);
+    _bindSheet(el);
+  }
+  return el;
+}
+
+function openSheet(kind, id, form = false) {
+  SHEET.kind = kind; SHEET.id = id; SHEET.form = form;
+  const el = _sheetRoot();
+  el.classList.remove("hidden");
+  document.body.classList.add("sheet-open");
+  renderSheet(true);
+}
+
+function closeSheet() {
+  SHEET.kind = null;
+  $("#sheet")?.classList.add("hidden");
+  document.body.classList.remove("sheet-open");
+}
+
+function renderSheet(force = false) {
+  if (!SHEET.kind) return;
+  const body = $("#sheet-body");
+  if (!body || (!force && _typingIn(body))) return;
+  const v = SHEET_VIEWS[SHEET.kind]?.(SHEET.id);
+  if (!v) { closeSheet(); return; }
+  const t = $("#sheet-title");
+  if (t.textContent !== v.title) t.textContent = v.title;
+  _setSlot(body, v.html);
+}
+
+const _schedDom = () => SCHED[{ hsched: "heat", ssched: "shut" }[SHEET.kind]];
 
 // ── Chat ───────────────────────────────────────────────────────────────────
 
 function renderChatStatus(st, heatingOn) {
   HEAT.chat.status = st;
-  const card = $("#heat-chat");
-  if (!card) return;
-  card.classList.toggle("hidden", !heatingOn);
+  const bar = $("#heat-chat");
+  if (!bar) return;
+  bar.classList.toggle("hidden", !heatingOn);
   const ready = !!(st && st.ready);
   const inp = $("#heat-chat-input");
   inp.disabled = !ready || HEAT.chat.busy;
   $("#heat-chat-send").disabled = !ready || HEAT.chat.busy;
-  card.classList.toggle("disabled", !ready);
-  const hint = $("#heat-chat-hint");
-  hint.textContent = st?.hint || "";
-  hint.classList.toggle("hidden", !st?.hint);
-  $("#heat-chat-count").textContent = st && st.enabled
-    ? `${st.provider_name ? st.provider_name + " · " : ""}${st.used_today}/${st.limit} heute` : "";
+  bar.classList.toggle("disabled", !ready);
+  const ph = st?.hint || "z. B. „morgen Bad um 7 auf 21 Grad“ oder „Schlafzimmer jetzt auf 50 %“";
+  if (inp.placeholder !== ph) inp.placeholder = ph;
+  const count = st && st.enabled ? `${st.used_today}/${st.limit}` : "";
+  const cEl = $("#heat-chat-count");
+  if (cEl.textContent !== count) cEl.textContent = count;
+  cEl.title = st && st.enabled ? `${st.provider_name ? st.provider_name + " · " : ""}${st.used_today} von ${st.limit} Anfragen heute` : "";
+}
+
+// Antwort/Vorschau als Sheet über der Eingabezeile (Handy: Bottom-Sheet, Desktop: Popover)
+function _chatPop(open) {
+  $("#heat-chat-pop")?.classList.toggle("hidden", !open);
 }
 
 function _chatAdd(role, text, cls = "") {
@@ -201,6 +299,7 @@ function _chatAdd(role, text, cls = "") {
   div.className = `heat-msg ${role}${cls ? " " + cls : ""}`;
   div.textContent = text;
   log.appendChild(div);
+  _chatPop(true);
   log.scrollTop = log.scrollHeight;
 }
 
@@ -255,6 +354,7 @@ async function chatSend(text) {
   const wait = document.createElement("div");
   wait.className = "heat-msg assistant pending"; wait.textContent = "…";
   $("#heat-chat-log").appendChild(wait);
+  _chatPop(true);
   try {
     const res = await api("/api/heating/chat", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ messages: c.history }) });
@@ -343,12 +443,12 @@ function _fmtDate(ymd) {
 const _RESULT = { sent: "gesendet", unchanged: "war schon eingestellt", dry_run: "Dry-Run", skipped: "verpasst",
   superseded: "durch späteren ersetzt", failed: "Fehler" };
 
-// "heute 18:22" bzw. mit Zeittyp: "heute Sonnenuntergang −15 min (18:22)"
+// "heute 18:22" bzw. mit Zeittyp kurz: "heute ☀↓ −15 min (18:22)"
 function _fmtNext(n) {
   const at = _fmtWhen(n.at);
   if (!n.when || /^\d\d:\d\d$/.test(n.when)) return at;
   const i = at.lastIndexOf(" ");
-  return `${escapeHtml(at.slice(0, i))} ${escapeHtml(n.when)} (${at.slice(i + 1)})`;
+  return `${escapeHtml(at.slice(0, i))} ${escapeHtml(_whenShort(n.when).replace(/ \(.*$/, ""))} (${at.slice(i + 1)})`;
 }
 
 // Zeittyp + berechnete Uhrzeit für heute: "Sonnenuntergang −15 min (18:22)"
@@ -356,32 +456,39 @@ function _whenToday(e) {
   return escapeHtml(e.when) + (e.at_today ? ` <span class="sched-at">(${_hq(e.at_today)})</span>` : "");
 }
 
-// Gemeinsamer Formularteil „Wann“ (Heizung + Rollläden): ( ) Uhrzeit ( ) Sonnenaufgang ( ) Sonnenuntergang,
-// Offset ± Minuten, optional nicht vor / nicht nach. attr = data-Attribut der Felder ("f" bzw. "sf").
+// Gemeinsamer Formularteil „Wann“ (Heizung + Rollläden): Segmented Control Uhrzeit | Sonnenaufgang |
+// Sonnenuntergang; je nach Typ Uhrzeit-Feld oder ±Minuten-Stepper, „nicht vor / nicht nach“ unter „Grenzen“.
+// attr = data-Attribut der Felder ("f" bzw. "sf").
 const SCHED_KINDS = [["time", "Uhrzeit"], ["sunrise", "Sonnenaufgang"], ["sunset", "Sonnenuntergang"]];
+function _whenCalc(f, sun) {                         // Vorschau der Uhrzeit für heute (Server rechnet genau)
+  const base = f.kind !== "time" && sun && sun[f.kind] ? sun[f.kind] : null;
+  if (!base) return null;
+  const [h, m] = base.split(":").map(Number);
+  let t = h * 60 + m + (Math.round(Number(f.offset)) || 0);
+  const lim = v => { const [a, b] = v.split(":").map(Number); return a * 60 + b; };
+  if (f.not_before) t = Math.max(t, lim(f.not_before));
+  if (f.not_after) t = Math.min(t, lim(f.not_after));
+  t = ((t % 1440) + 1440) % 1440;
+  return { at: `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`, base };
+}
 function _whenFields(f, attr, name, sun) {
   const isSun = f.kind !== "time";
-  const base = isSun && sun[f.kind] ? sun[f.kind] : null;
-  let calc = "";
-  if (base) {                                        // Vorschau der Uhrzeit für heute (ohne Grenzen: Server rechnet genau)
-    const [h, m] = base.split(":").map(Number);
-    let t = h * 60 + m + (Math.round(Number(f.offset)) || 0);
-    const lim = v => { const [a, b] = v.split(":").map(Number); return a * 60 + b; };
-    if (f.not_before) t = Math.max(t, lim(f.not_before));
-    if (f.not_after) t = Math.min(t, lim(f.not_after));
-    t = ((t % 1440) + 1440) % 1440;
-    calc = `heute ${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")} (${f.kind === "sunrise" ? "Aufgang" : "Untergang"} ${base})`;
-  }
-  return `<div class="sched-kind" role="radiogroup" aria-label="Zeitart">
-      ${SCHED_KINDS.map(([v, l]) => `<label class="sched-radio"><input type="radio" name="${_hq(name)}" data-${attr}="kind" value="${v}"${f.kind === v ? " checked" : ""}> ${l}</label>`).join("")}
+  const c = _whenCalc(f, sun);
+  const calc = c ? `heute ${c.at} (${f.kind === "sunrise" ? "Aufgang" : "Untergang"} ${c.base})` : "";
+  return `<div class="seg sched-kind" role="radiogroup" aria-label="Zeitart">
+      ${SCHED_KINDS.map(([v, l]) => `<label class="seg-opt"><input type="radio" name="${_hq(name)}" data-${attr}="kind" value="${v}"${f.kind === v ? " checked" : ""}><span>${l}</span></label>`).join("")}
     </div>
-    <div class="heat-form-row">
-      ${isSun ? `<label>± Minuten (z. B. 30 oder −15)<input type="number" data-${attr}="offset" step="5" min="-180" max="180" value="${_hq(f.offset)}"></label>
-        <label>nicht vor<input type="time" data-${attr}="not_before" value="${_hq(f.not_before)}"></label>
-        <label>nicht nach<input type="time" data-${attr}="not_after" value="${_hq(f.not_after)}"></label>
-        <small class="note" data-calc="1">${_hq(calc)}</small>`
-      : `<label>Uhrzeit<input type="time" data-${attr}="time" value="${_hq(f.time)}"></label>`}
-    </div>`;
+    ${isSun ? `<div class="heat-form-row">
+        <label>± Minuten<span class="stepper"><button type="button" data-off-step="-5" aria-label="5 Minuten früher">−</button><input type="number" data-${attr}="offset" step="5" min="-180" max="180" value="${_hq(f.offset)}" inputmode="numeric"><button type="button" data-off-step="5" aria-label="5 Minuten später">+</button></span></label>
+        <small class="note" data-calc="1">${_hq(calc)}</small>
+      </div>
+      <details class="sch-limits"${f.limits || f.not_before || f.not_after ? " open" : ""}><summary>Grenzen</summary>
+        <div class="heat-form-row">
+          <label>nicht vor<input type="time" lang="de" data-${attr}="not_before" value="${_hq(f.not_before)}"></label>
+          <label>nicht nach<input type="time" lang="de" data-${attr}="not_after" value="${_hq(f.not_after)}"></label>
+        </div>
+      </details>`
+    : `<div class="heat-form-row"><label>Uhrzeit<input type="time" lang="de" data-${attr}="time" value="${_hq(f.time)}"></label></div>`}`;
 }
 
 // Formularwerte → Felder für die API
@@ -406,65 +513,133 @@ function _whenFromEntry(e) {
 
 function _schedForm(roomId, r) {
   const f = HEAT.form[roomId] ||= { kind: "time", time: "", offset: 0, not_before: "", not_after: "",
-                                    setpoint: r.setpoint ?? 20, days: [], date: "", editId: null };
+                                    setpoint: r?.setpoint ?? 20, days: [], date: "", once: false, editId: null };
   return f;
 }
 
-function _schedPanel(r, s) {
-  const list = HEAT.sched.filter(e => e.room_id === r.id)
-    .sort((a, b) => (a.date || "").localeCompare(b.date || "") || a.time.localeCompare(b.time));
-  const f = _schedForm(r.id, r);
+// "Mo–Fr", "täglich", "Mo, Mi, Fr", "einmalig Do 16.10."
+function _daysText(e) {
+  if (e.date) return _fmtDate(e.date);
+  const idx = HEAT_DAYS.map(([k], i) => (e.days || []).includes(k) ? i : -1).filter(i => i >= 0);
+  if (!idx.length) return "kein Tag";
+  if (idx.length === 7) return "täglich";
+  const runs = [];
+  for (const i of idx) { const l = runs[runs.length - 1]; if (l && l[1] === i - 1) l[1] = i; else runs.push([i, i]); }
+  const L = i => HEAT_DAYS[i][1];
+  return runs.map(([a, b]) => a === b ? L(a) : b === a + 1 ? `${L(a)}, ${L(b)}` : `${L(a)}–${L(b)}`).join(", ");
+}
+
+// "Sonnenuntergang −15 min (nicht nach 22:00)" → "☀↓ −15 min (nicht nach 22:00)"
+const _whenShort = w => String(w || "").replace("Sonnenuntergang", "☀↓").replace("Sonnenaufgang", "☀↑");
+
+// Live-Vorschau unter dem Formular: "Mo–Fr bei Sonnenuntergang −15 min → heute 18:22, morgen 18:20 · → 21,0 °C"
+function _schedPreviewText(D, f, it) {
+  const days = f.once ? (f.date ? _fmtDate(f.date) : "einmalig (Datum fehlt)") : _daysText({ days: f.days });
+  const off = Math.round(Number(f.offset)) || 0;
+  const c = _whenCalc(f, D.sun()), c2 = _whenCalc(f, D.sun2());      // Sonnenzeiten heute/morgen vom Server (suntime.py)
+  const at = [c ? `heute ${c.at}` : "", c2 ? `morgen ${c2.at}` : ""].filter(Boolean).join(", ");
+  const when = f.kind === "time" ? (f.time ? `um ${f.time}` : "Uhrzeit fehlt")
+    : `bei ${f.kind === "sunrise" ? "Sonnenaufgang" : "Sonnenuntergang"}${off ? ` ${off > 0 ? "+" : "−"}${Math.abs(off)} min` : ""}${at ? ` → ${at}` : ""}`;
+  return `${days} ${when} · ${D.formTarget(f, it)}`;
+}
+
+// Zeitplan-Sheet: kompakte Liste + „+ Zeitplan“ → Formular im selben Sheet
+function _schedSheet(D, id) {
+  const it = D.item(id);
+  if (!it) return null;
+  const f = D.form(id, it);
+  const list = D.list(id).sort((a, b) => (a.date || "").localeCompare(b.date || "") || (a.time || a.kind).localeCompare(b.time || b.kind));
   const rows = list.map(e => {
-    const when = e.date ? `<span class="heat-chip once">${_fmtDate(e.date)}</span>`
-      : HEAT_DAYS.map(([k, l]) => `<span class="heat-chip${e.days.includes(k) ? " on" : ""}">${l}</span>`).join("");
-    const last = e.last_run ? `<small class="heat-last" title="${_hq(e.last_run)}">zuletzt ${_hq(e.last_run.slice(5, 16).replace("T", " "))} · ${_RESULT[e.last_result] || _hq(e.last_result || "")}</small>` : "";
+    const last = e.last_run ? `<small class="heat-last" title="${_hq(e.last_message || e.last_run)}">zuletzt ${_hq(e.last_run.slice(5, 16).replace("T", " "))} · ${D.result[e.last_result] || _hq(e.last_result || "")}</small>` : "";
     const sun = e.kind && e.kind !== "time";
-    return `<div class="heat-sched-row${sun ? " sun" : ""}${e.enabled ? "" : " off"}${f.editId === e.id ? " editing" : ""}">
-        <span class="heat-sched-time">${sun ? _whenToday(e) : _hq(e.time)}</span>
-        <span class="heat-sched-sp">${fmtC(e.setpoint)}</span>
-        <span class="heat-chips">${when}</span>
-        <label class="heat-switch" title="${e.enabled ? "aktiv" : "inaktiv"}"><input type="checkbox" data-sched-toggle="${e.id}" ${e.enabled ? "checked" : ""}><span></span></label>
-        <button type="button" class="heat-del" data-sched-edit="${e.id}" aria-label="Zeitplan bearbeiten" title="bearbeiten">✎</button>
-        <button type="button" class="heat-del" data-sched-del="${e.id}" aria-label="Zeitplan löschen">✕</button>
-        ${last}
+    return `<div class="sch-row${e.enabled ? "" : " off"}${SHEET.form && f.editId === e.id ? " editing" : ""}">
+        <div class="sch-main"><span class="sch-days">${_hq(_daysText(e))}</span><span class="sep">·</span><span class="sch-when">${_hq(_whenShort(e.when))}${sun && e.at_today ? ` <span class="sched-at">(${_hq(e.at_today)})</span>` : ""}</span><span class="sep">·</span><span class="sch-target">${D.target(e)}</span>${last}</div>
+        <label class="heat-switch" title="${e.enabled ? "aktiv" : "inaktiv"}"><input type="checkbox" data-sched-toggle="${e.id}" ${e.enabled ? "checked" : ""} aria-label="Zeitplan aktiv"><span></span></label>
+        <button type="button" class="sch-btn" data-sched-edit="${e.id}" aria-label="Zeitplan bearbeiten" title="bearbeiten">✎</button>
+        <button type="button" class="sch-btn del" data-sched-del="${e.id}" aria-label="Zeitplan löschen" title="löschen">🗑</button>
       </div>`;
   }).join("") || `<p class="note">Noch keine Zeitpläne.</p>`;
-  return `<div class="heat-sched" data-room="${_hq(r.id)}">
-      ${rows}
-      <div class="heat-sched-form" data-room="${_hq(r.id)}">
-        ${f.editId ? `<div class="sched-editing">Zeitplan bearbeiten</div>` : ""}
-        ${_whenFields(f, "f", "hkind-" + r.id, HEAT.sun)}
-        <div class="heat-form-row">
-          <label>Soll (°C)<input type="number" data-f="setpoint" step="${s.setpoint_step}" min="${s.setpoint_min}" max="${s.setpoint_max}" value="${_hq(f.setpoint)}"></label>
+  const wk = "mo,di,mi,do,fr", all = "mo,di,mi,do,fr,sa,so";
+  const cur = HEAT_DAYS.map(x => x[0]).filter(k => f.days.includes(k)).join(",");
+  const form = !SHEET.form ? `<button type="button" class="btn sch-add" data-form-open="1">+ Zeitplan</button>`
+    : `<div class="heat-sched-form" data-owner="${_hq(id)}">
+        <div class="sched-editing">${f.editId ? "Zeitplan bearbeiten" : "Neuer Zeitplan"}</div>
+        ${_whenFields(f, D.attr, D.attr + "kind-" + id, D.sun())}
+        ${D.targetFields(f, it)}
+        <div class="seg seg-days" role="group" aria-label="Tage">
+          <button type="button" class="seg-btn${!f.once && cur === wk ? " on" : ""}" data-days="${wk}">Werktags</button>
+          <button type="button" class="seg-btn${!f.once && cur === all ? " on" : ""}" data-days="${all}">Täglich</button>
+          <button type="button" class="seg-btn${f.once ? " on" : ""}" data-once="1">Einmalig</button>
         </div>
-        <div class="heat-chips pick">${HEAT_DAYS.map(([k, l]) => `<button type="button" class="heat-chip${f.days.includes(k) ? " on" : ""}" data-day="${k}" aria-pressed="${f.days.includes(k)}">${l}</button>`).join("")}
-          <button type="button" class="heat-chip quick" data-days="mo,di,mi,do,fr">Werktags</button>
-          <button type="button" class="heat-chip quick" data-days="mo,di,mi,do,fr,sa,so">Täglich</button></div>
-        <div class="heat-form-row">
-          <label>oder einmalig am<input type="date" data-f="date" value="${_hq(f.date)}"></label>
-          <button type="button" class="btn primary" data-sched-add="${_hq(r.id)}">${f.editId ? "Speichern" : "+ Zeitplan"}</button>
-          ${f.editId ? `<button type="button" class="btn" data-sched-cancel="${_hq(r.id)}">Abbrechen</button>` : ""}
+        ${f.once ? `<div class="heat-form-row"><label>Datum<input type="date" lang="de" data-${D.attr}="date" value="${_hq(f.date)}"></label></div>`
+          : `<div class="heat-chips pick">${HEAT_DAYS.map(([k, l]) => `<button type="button" class="heat-chip${f.days.includes(k) ? " on" : ""}" data-day="${k}" aria-pressed="${f.days.includes(k)}">${l}</button>`).join("")}</div>`}
+        <div class="sch-preview" data-preview="1">${_hq(_schedPreviewText(D, f, it))}</div>
+        <div class="sheet-actions">
+          <button type="button" class="btn primary" data-sched-add="1">${f.editId ? "Speichern" : "Zeitplan anlegen"}</button>
+          <button type="button" class="btn" data-sched-cancel="1">Abbrechen</button>
         </div>
-        <span class="form-msg" id="heat-sched-msg-${_hq(r.id)}"></span>
-      </div>
-    </div>`;
+        <span class="form-msg" id="sched-msg"></span>
+      </div>`;
+  return { title: `Zeitpläne · ${it.name}`, html: `${D.banner(it)}<div class="sch-list">${rows}</div>${form}` };
+}
+
+SCHED.heat = {
+  attr: "f",
+  item: id => HEAT.status?.rooms.find(r => r.id === id && r.controllable),
+  form: (id, r) => _schedForm(id, r),
+  store: () => HEAT.form,
+  list: id => HEAT.sched.filter(e => e.room_id === id),
+  find: sid => HEAT.sched.find(e => e.id === sid),
+  owner: e => e.room_id,
+  fromEntry: e => ({ ..._whenFromEntry(e), once: !!e.date, setpoint: e.setpoint }),
+  sun: () => HEAT.sun,
+  sun2: () => HEAT.sun2,
+  result: _RESULT,
+  banner: () => "",
+  target: e => `→ ${fmtC(e.setpoint)}`,
+  formTarget: f => `→ ${fmtC(Number(f.setpoint))}`,
+  targetFields: f => {
+    const s = HEAT.status;
+    return `<div class="heat-form-row"><label>Soll (°C)<span class="stepper"><button type="button" data-sp-step="-1" aria-label="kälter">−</button><input type="number" data-f="setpoint" step="${s.setpoint_step}" min="${s.setpoint_min}" max="${s.setpoint_max}" value="${_hq(f.setpoint)}" inputmode="decimal"><button type="button" data-sp-step="1" aria-label="wärmer">+</button></span></label></div>`;
+  },
+  save: id => _schedAdd(id),
+  toggle: (sid, on) => _schedToggle(sid, on),
+  del: sid => _schedDelete(sid),
+};
+SHEET_VIEWS.hsched = id => _schedSheet(SCHED.heat, id);
+
+// Meldung im offenen Formular (Fehler vom Server oder fehlende Eingabe)
+function _schedMsg(text) {
+  const msg = $("#sched-msg");
+  if (msg) { msg.textContent = text; msg.className = "form-msg error"; }
+}
+
+// Tage/Datum aus dem Formular; liefert null und zeigt den Hinweis, wenn etwas fehlt
+function _schedDaysBody(f) {
+  if (f.once) {
+    if (!f.date) { _schedMsg("Bitte ein Datum wählen."); return null; }
+    return { date: f.date };
+  }
+  if (!f.days.length) { _schedMsg("Bitte mindestens einen Wochentag wählen."); return null; }
+  return { days: f.days };
 }
 
 async function _schedAdd(roomId) {
   const f = HEAT.form[roomId];
-  const msg = document.getElementById("heat-sched-msg-" + roomId);
   const err = _whenError(f);
-  if (err) { if (msg) { msg.textContent = err; msg.className = "form-msg error"; } return; }
-  const body = { room_id: roomId, setpoint: Number(f.setpoint), ..._whenBody(f) };
-  if (f.date) body.date = f.date; else body.days = f.days;
+  if (err) { _schedMsg(err); return; }
+  const when = _schedDaysBody(f);
+  if (!when) return;
+  const body = { room_id: roomId, setpoint: Number(f.setpoint), ..._whenBody(f), ...when };
   try {
     await api(f.editId ? `/api/heating/schedules/${f.editId}` : "/api/heating/schedules",
       { method: f.editId ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    HEAT.form[roomId] = { ...f, time: "", date: "", offset: 0, not_before: "", not_after: "", editId: null };
+    HEAT.form[roomId] = { ...f, time: "", date: "", once: false, offset: 0, not_before: "", not_after: "", editId: null };
+    SHEET.form = false;
     document.activeElement?.blur();
     await loadHeating();
   } catch (e) {
-    if (msg) { msg.textContent = _chatErr(e); msg.className = "form-msg error"; }
+    _schedMsg(_chatErr(e));
   }
 }
 
@@ -523,27 +698,30 @@ async function _heatSend(roomId) {
 
 async function loadHeatHistory(roomId, force = false) {
   const h = HEAT.history[roomId];
-  if (!force && h && Date.now() - h.t < HEAT_HISTORY_TTL_MS) { _paintHeatChart(roomId); return; }
+  if (!force && h && Date.now() - h.t < HEAT_HISTORY_TTL_MS) return;
   try {
     const d = await api(`/api/heating/history/${encodeURIComponent(roomId)}?hours=24`);
     HEAT.history[roomId] = { temp: d.temp || [], setpoint: d.setpoint || [], t: Date.now(), error: d.error };
   } catch (e) {
     HEAT.history[roomId] = { temp: [], setpoint: [], t: Date.now(), error: e.message };
   }
-  _paintHeatChart(roomId);
+  updateHeatRoom(roomId);
+  if (SHEET.kind === "hist" && SHEET.id === roomId) renderSheet(true);
 }
 
-function _paintHeatChart(roomId) {
-  // nur zeichnen, wenn aufgeklappt – und nur ersetzen, wenn sich das SVG (= die Daten) geändert hat
-  const el = document.getElementById("heat-chart-" + roomId);
-  if (el && HEAT.open[roomId]) _setSlot(el, _heatChartSvg(roomId));
+// Sparklines: 24-h-Verlauf je Raum nacheinander laden (höchstens alle 5 min, nur solange der Tab sichtbar ist)
+async function _loadSparks(rooms) {
+  if (HEAT.sparkBusy) return;
+  HEAT.sparkBusy = true;
+  try {
+    for (const r of rooms) {
+      if (!r.controllable || !_heatVisible()) continue;
+      await loadHeatHistory(r.id);
+    }
+  } finally { HEAT.sparkBusy = false; }
 }
 
-function _heatChartSvg(roomId) {
-  const h = HEAT.history[roomId];
-  if (!h) return `<div class="chart-empty">Lade…</div>`;
-  if (!h.temp.length && !h.setpoint.length) return `<div class="chart-empty">${h.error ? escapeHtml(h.error) : "Keine Verlaufsdaten"}</div>`;
-  const W = 320, H = 110, pad = { l: 30, r: 6, t: 8, b: 18 };
+function _histScale(h, W, H, pad) {
   const all = [...h.temp, ...h.setpoint];
   const t0 = Math.min(...all.map(p => p[0])), t1 = Math.max(...all.map(p => p[0]));
   let lo = Math.floor(Math.min(...all.map(p => p[1])) - 0.5), hi = Math.ceil(Math.max(...all.map(p => p[1])) + 0.5);
@@ -551,12 +729,33 @@ function _heatChartSvg(roomId) {
   const x = t => pad.l + (t - t0) / Math.max(1, t1 - t0) * (W - pad.l - pad.r);
   const y = v => pad.t + (hi - v) / (hi - lo) * (H - pad.t - pad.b);
   const line = pts => pts.map((p, i) => `${i ? "L" : "M"}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join("");
-  const step = pts => pts.map((p, i) => i ? `H${x(p[0]).toFixed(1)}V${y(p[1]).toFixed(1)}` : `M${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join("");
+  const step = pts => pts.map((p, i) => i ? `H${x(p[0]).toFixed(1)}V${y(p[1]).toFixed(1)}` : `M${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join("")
+    + (pts.length ? `H${x(t1).toFixed(1)}` : "");
+  return { t0, t1, lo, hi, x, y, line, step };
+}
+
+// Sparkline in der Card: Ist als Linie, Soll fein gestrichelt, 40 px hoch, ohne Achsen
+function _sparkSvg(roomId) {
+  const h = HEAT.history[roomId];
+  if (!h || !h.temp.length) return `<span class="spark-empty">${h ? "kein Verlauf" : ""}</span>`;
+  const W = 300, H = 40;
+  const sc = _histScale(h, W, H, { l: 1, r: 1, t: 4, b: 4 });
+  return `<svg viewBox="0 0 ${W} ${H}" class="spark" preserveAspectRatio="none" aria-hidden="true">
+    ${h.setpoint.length ? `<path d="${sc.step(h.setpoint)}" class="sp-set"/>` : ""}<path d="${sc.line(h.temp)}" class="sp-temp"/></svg>`;
+}
+
+// Großer Verlauf im Sheet: in echten Pixeln gezeichnet (Breite des Sheets, 200 px hoch, Schrift 11,5 px)
+function _heatChartSvg(roomId, W, H = 200) {
+  const h = HEAT.history[roomId];
+  if (!h) return `<div class="chart-empty">Lade…</div>`;
+  if (!h.temp.length && !h.setpoint.length) return `<div class="chart-empty">${h.error ? escapeHtml(h.error) : "Keine Verlaufsdaten"}</div>`;
+  const pad = { l: 36, r: 8, t: 10, b: 24 };
+  const { t0, t1, lo, hi, x, y, line, step } = _histScale(h, W, H, pad);
   let g = "";
   const ticks = hi - lo <= 6 ? 1 : 2;
   for (let v = lo; v <= hi; v += ticks) {
     g += `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(v)}" y2="${y(v)}" class="hc-grid"/>`;
-    g += `<text x="${pad.l - 4}" y="${y(v) + 3}" text-anchor="end" class="hc-lbl">${v}°</text>`;
+    g += `<text x="${pad.l - 6}" y="${y(v) + 4}" text-anchor="end" class="hc-lbl">${v}°</text>`;
   }
   // Stundenmarken alle 6 h
   const d0 = new Date(t0); d0.setMinutes(0, 0, 0);
@@ -564,14 +763,41 @@ function _heatChartSvg(roomId) {
     const hr = new Date(t).getHours();
     if (t < t0 || hr % 6) continue;
     g += `<line x1="${x(t)}" x2="${x(t)}" y1="${pad.t}" y2="${H - pad.b}" class="hc-grid"/>`;
-    g += `<text x="${x(t)}" y="${H - 5}" text-anchor="middle" class="hc-lbl">${String(hr).padStart(2, "0")}h</text>`;
+    g += `<text x="${x(t)}" y="${H - 7}" text-anchor="middle" class="hc-lbl">${String(hr).padStart(2, "0")}h</text>`;
   }
-  return `<svg viewBox="0 0 ${W} ${H}" class="heat-svg" role="img" aria-label="Verlauf 24 h">
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" class="hist-svg" role="img" aria-label="Verlauf 24 h">
     ${g}
     ${h.setpoint.length ? `<path d="${step(h.setpoint)}" class="hc-set"/>` : ""}
     ${h.temp.length ? `<path d="${line(h.temp)}" class="hc-temp"/>` : ""}
   </svg>
   <div class="heat-legend"><span><i class="hc-temp-k"></i>Ist</span>${h.setpoint.length ? `<span><i class="hc-set-k"></i>Soll</span>` : ""}</div>`;
+}
+
+SHEET_VIEWS.hist = id => {
+  const r = HEAT.status?.rooms.find(x => x.id === id);
+  if (!r) return null;
+  const W = Math.max(260, Math.round(($("#sheet-body")?.clientWidth || 360) - 36));
+  return { title: `Verlauf 24 h · ${r.name}`, html: `<div class="hist-now"><span class="heat-temp">${fmtC(r.temp)}</span><span class="note">Soll ${fmtC(r.setpoint)}</span></div>${_heatChartSvg(id, W)}` };
+};
+
+// Zeitpläne an/aus in der Kopfzeile: gleicher Endpoint wie Settings → Heizung (PUT /api/heating/config)
+async function _heatSchedMaster(on, box) {
+  if (on && !confirm("Heizungs-Zeitpläne einschalten? Gespeicherte Pläne werden ab jetzt ausgeführt.")) { box.checked = false; return; }
+  box.disabled = true;
+  try {
+    const c = await api("/api/heating/config");
+    const h = c.heating, a = c.assistant || {};
+    await api("/api/heating/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+      enabled: !!h.enabled, schedules_enabled: on,
+      assistant: { enabled: !!a.enabled, provider: a.provider || "anthropic", model: a.model || (a.default_models || {})[a.provider] || "",
+                   max_requests_per_day: a.max_requests_per_day ?? 100 },
+      setpoint_min: h.setpoint_min ?? 5, setpoint_max: h.setpoint_max ?? 26, rooms: h.rooms || [],
+    }) });
+  } catch (e) {
+    alert("Zeitpläne nicht umgeschaltet: " + _chatErr(e));
+  }
+  $("#heat-head")._html = undefined;                 // Schalter von Hand umgestellt → neu zeichnen
+  loadHeating();
 }
 
 // ── Settings: Räume ────────────────────────────────────────────────────────
@@ -668,72 +894,106 @@ async function saveHeatingSettings() {
   }
 }
 
-// berechnete Uhrzeit neben dem Offset aktualisieren, ohne das Formular neu zu zeichnen (Fokus bleibt)
-function _refreshCalc(form, f, sun) {
+// berechnete Uhrzeit und Vorschau-Zeile aktualisieren, ohne das Formular neu zu zeichnen (Fokus bleibt)
+function _refreshCalc(form, f, D, it) {
   const el = form.querySelector("[data-calc]");
-  if (!el) return;
-  const tmp = document.createElement("div");
-  tmp.innerHTML = _whenFields(f, "x", "x", sun);
-  el.textContent = tmp.querySelector("[data-calc]")?.textContent || "";
+  if (el) {
+    const c = _whenCalc(f, D.sun());
+    el.textContent = c ? `heute ${c.at} (${f.kind === "sunrise" ? "Aufgang" : "Untergang"} ${c.base})` : "";
+  }
+  const pv = form.querySelector("[data-preview]");
+  if (pv) pv.textContent = _schedPreviewText(D, f, it);
+}
+
+// Sheet: ein Satz Handler für Zeitpläne beider Tabs (D = SCHED.heat / SCHED.shut) und den Verlauf
+function _bindSheet(el) {
+  el.addEventListener("click", e => {
+    if (e.target.closest("[data-sheet-close]")) { closeSheet(); return; }
+    const D = _schedDom(), id = SHEET.id;
+    if (!D) return;
+    const it = D.item(id), f = D.form(id, it);
+    if (e.target.closest("[data-form-open]")) {
+      Object.assign(f, { editId: null, time: "", date: "", once: false });
+      SHEET.form = true; renderSheet(true); return;
+    }
+    const day = e.target.closest("[data-day]"), quick = e.target.closest("[data-days]");
+    if (day || quick) {
+      if (quick) f.days = quick.dataset.days.split(",");
+      else f.days = f.days.includes(day.dataset.day) ? f.days.filter(d => d !== day.dataset.day) : [...f.days, day.dataset.day];
+      f.once = false; f.date = "";
+      renderSheet(true); return;
+    }
+    if (e.target.closest("[data-once]")) { f.once = true; f.days = []; renderSheet(true); return; }
+    const os = e.target.closest("[data-off-step]");
+    if (os) {                                          // ±5 min, Feld bleibt stehen (kein Neuzeichnen)
+      f.offset = Math.max(-180, Math.min(180, (Math.round(Number(f.offset)) || 0) + Number(os.dataset.offStep)));
+      const inp = os.parentElement.querySelector("input");
+      inp.value = f.offset;
+      _refreshCalc(os.closest(".heat-sched-form"), f, D, it); return;
+    }
+    const ss = e.target.closest("[data-sp-step]");
+    if (ss) {
+      const s = HEAT.status, st = s.setpoint_step;
+      const v = Math.round(((Number(f.setpoint) || 0) + Number(ss.dataset.spStep) * st) / st) * st;
+      f.setpoint = Math.min(s.setpoint_max, Math.max(s.setpoint_min, v));
+      ss.parentElement.querySelector("input").value = f.setpoint;
+      _refreshCalc(ss.closest(".heat-sched-form"), f, D, it); return;
+    }
+    if (e.target.closest("[data-sched-add]")) { D.save(id); return; }
+    const ed = e.target.closest("[data-sched-edit]");
+    if (ed) {                                          // Eintrag ins Formular laden
+      const en = D.find(Number(ed.dataset.schedEdit));
+      if (en) { D.store()[id] = D.fromEntry(en); SHEET.form = true; renderSheet(true); }
+      return;
+    }
+    if (e.target.closest("[data-sched-cancel]")) {
+      Object.assign(f, { editId: null, time: "", date: "", once: false });
+      SHEET.form = false; renderSheet(true); return;
+    }
+    const del = e.target.closest("[data-sched-del]");
+    if (del) D.del(Number(del.dataset.schedDel));
+  });
+  el.addEventListener("change", e => {
+    const D = _schedDom(), id = SHEET.id;
+    if (!D) return;
+    const t = e.target.closest("[data-sched-toggle]");
+    if (t) { D.toggle(Number(t.dataset.schedToggle), t.checked); return; }
+    const k = e.target.closest(`.heat-sched-form input[type="radio"], .heat-sched-form select`);
+    if (k) {                                           // Zeitart/Ziel gewechselt → andere Felder
+      D.form(id, D.item(id))[k.dataset[D.attr]] = k.value;
+      document.activeElement?.blur();
+      renderSheet(true);
+    }
+  });
+  el.addEventListener("input", e => {
+    const D = _schedDom(), id = SHEET.id;
+    if (!D) return;
+    const inp = e.target.closest(`.heat-sched-form input[data-${D.attr}]`);
+    if (!inp || inp.type === "radio") return;
+    const it = D.item(id), f = D.form(id, it);
+    f[inp.dataset[D.attr]] = inp.value;
+    _refreshCalc(inp.closest(".heat-sched-form"), f, D, it);
+  });
+  // <details> „Grenzen“: Zustand merken, damit es beim Neuzeichnen offen bleibt (toggle steigt nicht auf)
+  el.addEventListener("toggle", e => {
+    const D = _schedDom();
+    if (D && e.target.matches?.(".sch-limits")) D.form(SHEET.id, D.item(SHEET.id)).limits = e.target.open;
+  }, true);
 }
 
 function bootHeating() {
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && SHEET.kind) closeSheet(); });
   $("#heat-rooms")?.addEventListener("click", e => {
     const b = e.target.closest("[data-step]");
     if (b) { heatStep(b.dataset.room, Number(b.dataset.step)); return; }
     const t = e.target.closest("[data-hist]");
-    if (t) {
-      const id = t.dataset.hist;
-      HEAT.open[id] = !HEAT.open[id];
-      updateHeatRoom(id);
-      const el = document.getElementById("heat-chart-" + id);
-      if (!HEAT.open[id]) _setSlot(el, ""); else { _setSlot(el, _heatChartSvg(id)); loadHeatHistory(id); }
-      return;
-    }
+    if (t) { openSheet("hist", t.dataset.hist); loadHeatHistory(t.dataset.hist); return; }
     const sc = e.target.closest("[data-sched]");
-    if (sc) { HEAT.schedOpen[sc.dataset.sched] = !HEAT.schedOpen[sc.dataset.sched]; updateHeatRoom(sc.dataset.sched, true); return; }
-    const day = e.target.closest("[data-day]"), quick = e.target.closest("[data-days]");
-    if (day || quick) {
-      const f = HEAT.form[e.target.closest(".heat-sched-form").dataset.room];
-      if (quick) f.days = quick.dataset.days.split(",");
-      else f.days = f.days.includes(day.dataset.day) ? f.days.filter(d => d !== day.dataset.day) : [...f.days, day.dataset.day];
-      f.date = "";
-      updateHeatRoom(e.target.closest(".heat-sched-form").dataset.room, true);
-      return;
-    }
-    const add = e.target.closest("[data-sched-add]");
-    if (add) { _schedAdd(add.dataset.schedAdd); return; }
-    const ed = e.target.closest("[data-sched-edit]");
-    if (ed) {                                          // Eintrag ins Formular laden
-      const en = HEAT.sched.find(x => x.id === Number(ed.dataset.schedEdit));
-      if (en) { HEAT.form[en.room_id] = { ..._whenFromEntry(en), setpoint: en.setpoint }; updateHeatRoom(en.room_id, true); }
-      return;
-    }
-    const ca = e.target.closest("[data-sched-cancel]");
-    if (ca) { const f = HEAT.form[ca.dataset.schedCancel]; HEAT.form[ca.dataset.schedCancel] = { ...f, editId: null, time: "", date: "" }; updateHeatRoom(ca.dataset.schedCancel, true); return; }
-    const del = e.target.closest("[data-sched-del]");
-    if (del) { _schedDelete(Number(del.dataset.schedDel)); return; }
+    if (sc) openSheet("hsched", sc.dataset.sched, !HEAT.sched.some(x => x.room_id === sc.dataset.sched));
   });
-  $("#heat-rooms")?.addEventListener("change", e => {
-    const t = e.target.closest("[data-sched-toggle]");
-    if (t) { _schedToggle(Number(t.dataset.schedToggle), t.checked); return; }
-    const k = e.target.closest('.heat-sched-form input[type="radio"][data-f="kind"]');
-    if (k) {                                           // Zeitart gewechselt → andere Felder
-      const room = k.closest(".heat-sched-form").dataset.room;
-      HEAT.form[room].kind = k.value;
-      updateHeatRoom(room, true);
-    }
-  });
-  $("#heat-rooms")?.addEventListener("input", e => {
-    const inp = e.target.closest(".heat-sched-form [data-f]");
-    if (!inp || inp.type === "radio") return;
-    const f = HEAT.form[inp.closest(".heat-sched-form").dataset.room];
-    f[inp.dataset.f] = inp.value;
-    _refreshCalc(inp.closest(".heat-sched-form"), f, HEAT.sun);
-    if (inp.dataset.f === "date" && inp.value) {
-      f.days = [];
-      inp.closest(".heat-sched-form").querySelectorAll("[data-day]").forEach(b => { b.classList.remove("on"); b.setAttribute("aria-pressed", "false"); });
-    }
+  $("#heat-head")?.addEventListener("change", e => {
+    const m = e.target.closest("[data-sched-master]");
+    if (m) _heatSchedMaster(m.checked, m);
   });
 
   $("#hs-save")?.addEventListener("click", saveHeatingSettings);
@@ -754,6 +1014,8 @@ function bootHeating() {
   $("#heat-chat")?.addEventListener("click", e => {
     const a = e.target.closest("[data-chat-apply]");
     if (a) { a.disabled = true; chatApply(a.dataset.chatApply); return; }
+    if (e.target.closest("[data-chat-close]")) { _chatPop(false); return; }
+    if (e.target.closest("[data-chat-toggle]")) { _chatPop($("#heat-chat-pop").classList.contains("hidden")); return; }
     if (e.target.closest("[data-chat-cancel]")) {
       HEAT.chat.proposal = null; HEAT.chat.history = []; _renderProposal({});
       _chatAdd("assistant", "Verworfen – nichts gespeichert.", "info");

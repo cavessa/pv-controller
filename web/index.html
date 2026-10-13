@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=78">
+  <link rel="stylesheet" href="/static/styles.css?v=79">
 </head>
 <body>
   <div class="app-shell">
@@ -647,30 +647,32 @@
     <!-- ========= Heizung ========= -->
     <section id="tab-heizung" class="tab-panel">
       <div id="heat-banner" class="banner hidden"></div>
-      <p class="heat-dry hidden" id="heat-dry">Dry-Run: Änderungen werden nur geloggt, nicht an openHAB gesendet.</p>
-      <p class="heat-dry hidden" id="heat-sched-off">Zeitpläne sind nicht aktiv: Pläne werden gespeichert, aber nicht ausgeführt. Einschalten unter Settings → Heizung → „Zeitpläne aktiv“.</p>
-      <div class="card heat-chat" id="heat-chat">
-        <div class="heat-chat-head"><h2>💬 Chat</h2><span class="heat-chat-count" id="heat-chat-count"></span></div>
-        <div class="heat-chat-log" id="heat-chat-log" aria-live="polite"></div>
-        <div id="heat-chat-preview"></div>
-        <form class="heat-chat-form" id="heat-chat-form" autocomplete="off">
-          <input type="text" id="heat-chat-input" maxlength="500" disabled placeholder="z. B. „morgen Bad um 7 auf 21 Grad“ oder „Schlafzimmer jetzt auf 50 %“">
-          <button type="submit" class="btn primary" id="heat-chat-send" disabled>Senden</button>
-        </form>
-        <p class="note heat-chat-hint hidden" id="heat-chat-hint"></p>
-      </div>
-      <div id="heat-rooms"><div class="chart-empty">Lade…</div></div>
+      <div class="tab-head" id="heat-head"></div>
+      <div id="heat-rooms" class="room-grid"><div class="chart-empty">Lade…</div></div>
       <p class="note" id="heat-updated"></p>
+      <!-- Chat: eine Eingabezeile für Heizung + Rollläden, unten fixiert; wandert in den aktiven Tab -->
+      <div class="chatbar" id="heat-chat">
+        <div class="chat-pop hidden" id="heat-chat-pop" role="dialog" aria-label="Chat">
+          <div class="chat-pop-head"><span>💬 Chat</span><button type="button" class="sheet-x" data-chat-close="1" aria-label="Chat schließen">✕</button></div>
+          <div class="heat-chat-log" id="heat-chat-log" aria-live="polite"></div>
+          <div id="heat-chat-preview"></div>
+        </div>
+        <form class="heat-chat-form" id="heat-chat-form" autocomplete="off">
+          <button type="button" class="chat-ico" data-chat-toggle="1" aria-label="Chat-Verlauf ein-/ausblenden">💬</button>
+          <input type="text" id="heat-chat-input" maxlength="500" disabled placeholder="z. B. „morgen Bad um 7 auf 21 Grad“" aria-label="Nachricht an den Chat">
+          <button type="submit" class="btn primary" id="heat-chat-send" disabled>Senden</button>
+          <span class="heat-chat-count" id="heat-chat-count"></span>
+        </form>
+      </div>
     </section>
 
     <!-- ========= Rollläden ========= -->
     <section id="tab-rolllaeden" class="tab-panel">
       <div id="shut-banner" class="banner hidden"></div>
-      <p class="heat-dry hidden" id="shut-dry">Dry-Run: Befehle werden nur geloggt, kein Rollladen fährt.</p>
-      <p class="heat-dry hidden" id="shut-sched-off">Rollladen-Zeitpläne sind nicht aktiv: Pläne werden gespeichert, aber nicht ausgeführt. Einschalten unter Settings → Rollläden → „Rollladen-Zeitpläne aktiv“.</p>
+      <div class="tab-head" id="shut-head"></div>
       <p class="shut-toast hidden" id="shut-toast" role="status"></p>
       <div id="shut-groups"></div>
-      <div id="shut-rooms"><div class="chart-empty">Lade…</div></div>
+      <div id="shut-rooms" class="room-grid"><div class="chart-empty">Lade…</div></div>
       <p class="note" id="shut-updated"></p>
     </section>
 
@@ -1016,7 +1018,7 @@
   </div>
 
   <script src="/static/app.js?v=20261013j" defer></script>
-  <script src="/static/heating.js?v=20261013o" defer></script>
-  <script src="/static/shutters.js?v=20261013g" defer></script>
+  <script src="/static/heating.js?v=20261013q" defer></script>
+  <script src="/static/shutters.js?v=20261013i" defer></script>
 </body>
 </html>

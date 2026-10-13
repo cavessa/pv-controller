@@ -445,3 +445,56 @@ class WebChatTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RuleNextTest(unittest.TestCase):
+    """Tab-Anzeige: nächste openHAB-Regelzeit je Rollladen (Badge „openHAB ▼ 18:40“) und Sonnenzeiten für morgen."""
+    setUp_web = WebChatTest.setUp
+    tearDown = WebChatTest.tearDown
+
+    def setUp(self):
+        self.setUp_web()
+        web._RULE_FAIL["t"] = 0.0
+        self.scfg = shutters.parse_shutters({"shutters": raw_shutters()})
+
+    def test_next_rule_time_per_openhab_shutter(self):
+        nxt = web._rule_next(self.scfg, self.fake, NOW)                   # Dienstag 12:30
+        self.assertEqual((nxt["Wohnen links"]["at"], nxt["Wohnen links"]["target"]), ("2026-10-13T18:40+02:00", "▼ zu"))
+        self.assertIn("Rollladen Wohnen runter Automatik", nxt["Wohnen links"]["source"])
+        self.assertEqual(nxt["Wohnen rechts (Straße)"]["at"], "2026-10-13T18:40+02:00")
+        self.assertEqual(nxt["Hintereingang"]["at"], "2026-10-13T22:00+02:00")
+        self.assertIn("mit Bedingungen", nxt["Hintereingang"]["source"])
+        self.assertNotIn("Schlafzimmer", nxt)                             # PV-Controller-Rollladen, deaktivierte Regel
+        later = web._rule_next(self.scfg, self.fake, NOW.replace(hour=19))
+        self.assertEqual((later["Wohnen links"]["at"], later["Wohnen links"]["target"]), ("2026-10-14T06:50+02:00", "▲ auf"))
+        self.assertEqual(self.fake.rules_calls, 1)                        # 10-min-Cache der Chat-Abfrage, nur gelesen
+        self.assertEqual(self.fake.sent, [])
+
+    def test_unreadable_rules_never_break_the_status(self):
+        calls = []
+
+        def boom():
+            calls.append(1)
+            raise heating.OpenHabError("timeout")
+        self.fake.get_rules = boom
+        self.assertEqual(web._rule_next(self.scfg, self.fake, NOW), {})
+        self.assertEqual(web._rule_next(self.scfg, self.fake, NOW), {})   # erst nach 10 min erneut versuchen
+        self.assertEqual(len(calls), 1)
+        st = web.shutters_status(web.Response())
+        self.assertTrue(st["ok"])
+        self.assertTrue(all(r["rule_next"] is None for r in st["rooms"]))
+
+    def test_status_carries_rule_next_only_for_openhab_shutters(self):
+        st = web.shutters_status(web.Response())
+        by = {r["id"]: r for r in st["rooms"]}
+        self.assertIsNone(by["schlafzimmer"]["rule_next"])
+        self.assertRegex(by["wohnen_links"]["rule_next"]["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d")
+        self.assertIn(by["wohnen_links"]["rule_next"]["target"], ("▼ zu", "▲ auf"))
+
+    def test_schedules_deliver_sun_times_for_tomorrow(self):
+        tomorrow = datetime.now(TZ).date() + timedelta(days=1)
+        rise, sset = ss.sun_times(tomorrow, *LOC)
+        want = {"sunrise": f"{rise:%H:%M}", "sunset": f"{sset:%H:%M}"}
+        self.assertEqual(web.shutters_schedules(web.Response())["sun_tomorrow"], want)
+        self.assertEqual(web.heating_schedules(web.Response())["sun_tomorrow"], want)
+        self.assertNotEqual(web.shutters_schedules(web.Response())["sun_today"], {})

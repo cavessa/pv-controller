@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-10-13 – Redesign Heizung- und Rollladen-Tab
+
+Nur `web/heating.js`, `web/shutters.js`, `web/styles.css`, `web/index.html` (Abschnitte der beiden Tabs). Logik, Zeitplan-Ausführung und Sicherheitsregeln (Tür-Bestätigung, Duty Cycle, Dry-Run) unverändert; API nur um zwei Lese-Felder ergänzt (`rule_next`, `sun_tomorrow`); andere Tabs nicht angefasst.
+- **Grid:** Cards in `repeat(auto-fill, minmax(340px, 1fr))` – iPhone 1, iPad (1024 px) 2, Desktop (1440 px) 3 Spalten. Cards haben eine feste Struktur und klappen nicht mehr auf.
+- **Kopfzeile je Tab** statt Hinweiszeilen und Gruppen-Card: Heizung „Ø · n Räume heizen · nächste: …“, Rollläden „n offen · n zu · nächste: …“ mit [Alle ▲] [Alle ▼]; Dry-Run als Badge; **Zeitpläne-Schalter** (gleicher Endpoint wie Settings: `PUT /api/heating/config` bzw. `/api/shutters/config`, Einschalten mit Rückfrage). Benannte Gruppen (EG/OG) als schlanke Zeile darunter.
+- **Heizungs-Card:** Ist groß, Abweichung als Text („+4,4 über Soll“) statt eingefärbter Zahl (kalt blau-grau, warm gedecktes Amber); Sparkline 24 h (Ist, Soll gestrichelt, 40 px), Tippen öffnet den großen Verlauf im Sheet (echte Pixel, 200 px hoch, Schrift 11,5 px); Warnungen (Batterie, AUTO, Hinweis) als Badge in Warn-Orange – Soll-Linie ist jetzt blau. Nur-Anzeige-Räume (Waschküche) als halbe Card.
+- **Rollladen-Card:** Fenster-Symbol (SVG 56×64) mit Lamellen statt Balken, Slider kartenbreit, Buttons ▲ ■ ▼ 52×44 px, Automatik als Badge („openHAB“ / „Auto ☀↓ −15 ▼ 18:22“), 🚪-Badge, „fährt ▼ 47 %“ pulsiert, unsichere Position ausgegraut mit „≈“.
+- **Zeitpläne im Sheet** (Handy von unten, Desktop Modal 480 px): kompakte Liste (Tage · Zeit · Ziel · Schalter · ✎ · 🗑), „+ Zeitplan“ → Formular im selben Sheet: Segmented Control Uhrzeit | Sonnenaufgang | Sonnenuntergang, ±Minuten-Stepper (5er-Schritte), „Grenzen“ eingeklappt, Soll-Stepper bzw. Auf/Zu/Position, Werktags | Täglich | Einmalig + Wochentag-Chips (Datum nur bei Einmalig), Live-Vorschau-Zeile. Banner bei openHAB-Rollläden. Sheet bleibt beim Poll offen.
+- **Chat:** schlanke Eingabezeile unten fixiert (Safe-Area beachtet), Zähler klein rechts; Antwort/Vorschau als Sheet darüber (Handy Bottom-Sheet, Desktop Popover).
+- **openHAB-Badge mit nächster Regelzeit** („openHAB ▼ 18:40“): `/api/shutters/status` liefert je openHAB-Rollladen `rule_next` (`at`, `target`, `source`) aus den aktiven openHAB-Regeln – dieselben 10 min gecachten Regeldaten wie die Chat-Abfrage, nur lesend; nicht lesbar → kein Fehler, erneuter Versuch erst nach 10 min. Ohne aktive Regel mit Uhrzeit bleibt das Badge „openHAB“.
+- **Vorschau mit morgen** („→ heute 18:22, morgen 18:20“): beide Zeitplan-Endpunkte liefern zusätzlich `sun_tomorrow` (aus `suntime.py`).
+- Zeit-Inputs mit `lang="de"`.
+- Geprüft im Browser (1440 / 1024 / 390 px): keine JS-Fehler, kein horizontales Scrollen, Anlegen/Bearbeiten/Umschalten/Löschen im Sheet, Zeitpläne-Schalter an/aus, Tür-Bestätigung. Tests: `tests/test_shutter_chat.RuleNextTest` (4). Suite: 450 grün.
+- Neu gegenüber vorher: Für die Sparklines wird der 24-h-Verlauf jedes regelbaren Raums geladen (nacheinander, höchstens alle 5 min, nur bei sichtbarem Tab).
+
+## 2026-10-13 – CLAUDE.md: Abschnitt „Sicherheit“
+
+Verbindliche Regel des Users nach zwei Pannen (Türöffner-Zugangsdaten und Dropbox-Zugang landeten im Sitzungsprotokoll): Dateien mit möglichen Zugangsdaten nie anzeigen, nur Pfad, Größe, Rechte, Variablennamen. Zusätzlich in `~/.claude/settings.json` gesperrt (deny): Lesen von `~/.secrets/**`, `**/config.json`, `**/config*.json.bak*`, `~/.dropbox_uploader`.
+
 ## 2026-10-13 – Charts in echten Pixeln (alle Charts, zentral)
 
 **Ursache:** Alle Charts sind SVGs mit `viewBox` und `width: 100 %; height: auto` – sie wuchsen proportional mit der Card-Breite. In den breiten Cards (Hauptzähler im Dashboard und Verlauf, Heizungsverlauf 24 h, alle Verlauf-Unterseiten) wurden bei 1440 px aus 9 px Schrift 34 px und aus 150 Einheiten 564 px Höhe, bei 2000 px 48 px Schrift und 798 px Höhe.

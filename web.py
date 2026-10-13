@@ -2070,6 +2070,14 @@ class _HeatingSchedulePatch(BaseModel):
     enabled: bool
 
 
+def _sun_hm(day, loc) -> dict[str, Any]:
+    """Sonnenauf-/-untergang (HH:MM) für einen Tag aus suntime.py; {} ohne Standort."""
+    if not loc:
+        return {}
+    rise, sset = _ssched.sun_times(day, *loc)
+    return {"sunrise": f"{rise:%H:%M}" if rise else None, "sunset": f"{sset:%H:%M}" if sset else None}
+
+
 @app.get("/api/heating/schedules")
 def heating_schedules(response: Response) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
@@ -2088,6 +2096,7 @@ def heating_schedules(response: Response) -> dict[str, Any]:
         "now": now.isoformat(timespec="minutes"),
         "items": items,
         "sun_today": sun,
+        "sun_tomorrow": _sun_hm(now.date() + timedelta(days=1), loc),
         "next": _hsched.next_changes(items, now, loc=loc),
     }
 
@@ -2406,11 +2415,38 @@ def shutters_status(response: Response) -> dict[str, Any]:
     except Exception as e:  # Zeitplan-DB darf die Anzeige nicht blockieren
         log.warning("shutters: Zeitpläne nicht lesbar: %s", e)
         nxt, hints = {}, {}
+    rule_next = _rule_next(scfg, client, now)
     for r in st["rooms"]:
         auto = r["automation"] == "pvcontroller"
         r["next"] = nxt.get(r["id"]) if auto else None
         r["hint"] = hints.get(r["id"]) if auto else None
+        r["rule_next"] = None if auto else rule_next.get(r["name"])
     return st
+
+
+_RULE_FAIL = {"t": 0.0}
+
+
+def _rule_next(scfg, client, now: datetime) -> dict[str, dict[str, Any]]:
+    """Nächste Fahrt je openHAB-Rollladen (Name → {at, target, source}) aus den aktiven openHAB-Regeln.
+    Nur lesen; dieselben 10 min zwischengespeicherten Regeldaten wie die Chat-Abfrage. Nie fatal."""
+    if not any(sh.automation == "openhab" for sh in scfg.rooms):
+        return {}
+    if time.time() - _RULE_FAIL["t"] < _schat.RULES_TTL_S:      # nicht lesbar: erst nach 10 min erneut versuchen
+        return {}
+    try:
+        rules = _schat.cached_rules(client)
+        if rules is None:
+            _RULE_FAIL["t"] = time.time()
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        for ride in sorted(_schat.openhab_rule_rides(rules, scfg, now, now + timedelta(days=2)), key=lambda x: x["at"]):
+            out.setdefault(ride["shutter"], {"at": ride["at"].isoformat(timespec="minutes"), "target": ride["target"],
+                                             "source": ride["source"]})
+        return out
+    except Exception as e:  # noqa: BLE001 – Anzeige-Zusatz, darf den Status nie blockieren
+        log.warning("shutters: nächste openHAB-Regelzeit nicht bestimmbar: %s", e)
+        return {}
 
 
 class _ShutterCommand(BaseModel):
@@ -2582,6 +2618,7 @@ def shutters_schedules(response: Response) -> dict[str, Any]:
         today = {"sunrise": rise.strftime("%H:%M") if rise else None, "sunset": sset.strftime("%H:%M") if sset else None}
     return {"schedules_enabled": scfg.schedules_enabled, "dry_run": _heating_dry_run(raw),
             "now": now.isoformat(timespec="minutes"), "items": items, "sun_today": today,
+            "sun_tomorrow": _sun_hm(now.date() + timedelta(days=1), loc),
             "next": _ssched.next_rides(items, now, loc)}
 
 
