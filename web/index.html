@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=64">
+  <link rel="stylesheet" href="/static/styles.css?v=66">
 </head>
 <body>
   <div class="app-shell">
@@ -21,6 +21,7 @@
     <button class="tab active" data-tab="dashboard">Dashboard</button>
     <button class="tab" data-tab="verlauf">Verlauf</button>
     <button class="tab" data-tab="prioritaeten">Prioritäten</button>
+    <button class="tab" data-tab="heizung">Heizung</button>
     <button class="tab" data-tab="settings">Settings</button>
     <button class="tab" data-tab="logs">Logs</button>
   </nav>
@@ -642,6 +643,14 @@
 
     </section>
 
+    <!-- ========= Heizung ========= -->
+    <section id="tab-heizung" class="tab-panel">
+      <div id="heat-banner" class="banner hidden"></div>
+      <p class="heat-dry hidden" id="heat-dry">Dry-Run: Änderungen werden nur geloggt, nicht an openHAB gesendet.</p>
+      <div id="heat-rooms"><div class="chart-empty">Lade…</div></div>
+      <p class="note" id="heat-updated"></p>
+    </section>
+
     <!-- ========= Settings ========= -->
     <section id="tab-settings" class="tab-panel">
       <div class="card">
@@ -839,6 +848,22 @@
             <span id="cs-settings-msg" class="form-msg"></span>
           </div>
         </fieldset>
+
+        <fieldset class="heat-settings" style="margin-top:20px">
+          <legend>Heizung (openHAB-Thermostate)</legend>
+          <p class="note" id="hs-openhab"></p>
+          <label class="check"><input type="checkbox" id="hs-enabled"> Heizung-Tab aktiv</label>
+          <label>Sollwert min (°C)<input type="number" step="0.5" min="4.5" max="30.5" id="hs-min"></label>
+          <label>Sollwert max (°C)<input type="number" step="0.5" min="4.5" max="30.5" id="hs-max"></label>
+          <datalist id="hs-items"></datalist>
+          <div id="hs-rooms"></div>
+          <button type="button" class="btn" id="hs-add">+ Raum</button>
+          <small class="field-hint">Pflicht: ID, Name, Ist-Temperatur. Ohne Sollwert-Item ist der Raum nur Anzeige (kein − / +, kein Zeitplan). Modus nur eintragen, wenn das Item den echten Gerätemodus meldet (HM: CONTROL_MODE, HmIP: SET_POINT_MODE).</small>
+          <div class="form-actions">
+            <button type="button" id="hs-save" class="btn primary">Heizung speichern</button>
+            <span id="hs-msg" class="form-msg"></span>
+          </div>
+        </fieldset>
       </div>
     </section>
 
@@ -942,6 +967,7 @@
   </footer>
   </div>
 
-  <script src="/static/app.js?v=20261012i" defer></script>
+  <script src="/static/app.js?v=20261013b" defer></script>
+  <script src="/static/heating.js?v=20261013c" defer></script>
 </body>
 </html>

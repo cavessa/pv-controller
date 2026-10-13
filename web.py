@@ -15,6 +15,7 @@ import base64
 import copy
 import json
 import logging
+import re
 import secrets
 import shutil
 import threading
@@ -29,6 +30,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import heating as _heating
 from clients.goe_client import GoeClient, GoeError
 from config import Config, load_config
 from controller import ControllerMode, run_controller
@@ -645,10 +647,42 @@ def api_temp_history(response: Response) -> dict[str, Any]:
     return {"entries": fine}
 
 
+# Geheime Felder (Passwörter, Tokens, API-Keys) gehen nie im Klartext ans Frontend.
+# Maßgeblich ist der Feldname, egal in welchem Block: auth_password, solax.pwd,
+# openhab.token, assistant.api_key, … Gesetzte Werte kommen als _SECRET_MASK zurück,
+# leere bleiben leer (die UI sieht so, ob etwas gesetzt ist). Schickt die UI die Maske
+# zurück, bleibt der gespeicherte Wert erhalten (_drop_masked).
+_SECRET_MASK = "********"
+_SECRET_KEY_RE = re.compile(r"token|key|password|passwd|pwd|secret", re.IGNORECASE)
+
+
+def _is_secret_key(key: str) -> bool:
+    return bool(_SECRET_KEY_RE.search(key))
+
+
+def _masked(obj: Any) -> Any:
+    """Kopie mit maskierten Secrets (rekursiv durch Blöcke und Listen)."""
+    if isinstance(obj, dict):
+        return {k: (_SECRET_MASK if _is_secret_key(k) and isinstance(v, str) and v else _masked(v))
+                for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_masked(v) for v in obj]
+    return obj
+
+
+def _drop_masked(obj: Any) -> Any:
+    """Patch ohne Felder, deren Wert die Maske ist (= unverändert lassen)."""
+    if isinstance(obj, dict):
+        return {k: _drop_masked(v) for k, v in obj.items() if v != _SECRET_MASK}
+    if isinstance(obj, list):
+        return [_drop_masked(v) for v in obj]
+    return obj
+
+
 @app.get("/api/config")
 def api_config_get() -> dict[str, Any]:
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+        return _masked(json.load(f))
 
 
 # ---- Config update --------------------------------------------------------
@@ -717,6 +751,7 @@ class ConfigUpdate(BaseModel):
 
 
 def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str, Any]:
+    patch = ConfigUpdate(**_drop_masked(patch.model_dump()))
     new_cfg = copy.deepcopy(current)
 
     if patch.runtime:
@@ -966,7 +1001,13 @@ def api_config_put(patch: ConfigUpdate) -> dict[str, Any]:
         current = json.load(f)
 
     new_cfg = _validated_update(current, patch)
+    backup_name = _write_config(new_cfg)
+    _poll_wakeup.set()
+    return {"ok": True, "backup": backup_name, "config": _masked(new_cfg)}
 
+
+def _write_config(new_cfg: dict[str, Any]) -> str:
+    """Backup der aktuellen config.json, dann atomar ersetzen. Gibt den Backup-Namen zurück."""
     backup_name = f"config.backup-{datetime.now():%Y%m%d-%H%M%S}.json"
     backup_path = CONFIG_PATH.with_name(backup_name)
     shutil.copy2(CONFIG_PATH, backup_path)
@@ -978,8 +1019,7 @@ def api_config_put(patch: ConfigUpdate) -> dict[str, Any]:
     tmp_path.replace(CONFIG_PATH)
 
     log.info("config updated, backup written to %s", backup_path.name)
-    _poll_wakeup.set()
-    return {"ok": True, "backup": backup_path.name, "config": new_cfg}
+    return backup_path.name
 
 
 @app.get("/api/heizstab/phase-logs")
@@ -1094,8 +1134,15 @@ def api_solax2_test(req: Solax2TestRequest, response: Response) -> dict[str, Any
     if not req.pwd.strip():
         raise HTTPException(400, "pwd must not be empty")
     from clients.solax_client import SolaxClient
-    timeout = max(_load_cfg().runtime.request_timeout_seconds, 8)
-    d = SolaxClient(req.url, req.pwd, timeout).get_realtime_data()
+    cfg = _load_cfg()
+    pwd = req.pwd
+    if pwd == _SECRET_MASK:  # Formular zeigt das gespeicherte Passwort nur maskiert
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            pwd = (json.load(f).get("solax2") or {}).get("pwd") or ""
+        if not pwd:
+            raise HTTPException(400, "kein gespeichertes Passwort – bitte eintragen")
+    timeout = max(cfg.runtime.request_timeout_seconds, 8)
+    d = SolaxClient(req.url, pwd, timeout).get_realtime_data()
     if d is None:
         raise HTTPException(503, "Solax nicht erreichbar oder Passwort falsch")
     return {
@@ -1742,3 +1789,174 @@ def wallbox_set_mode(mode: str = Query(..., pattern="^(basic|eco)$")) -> dict[st
     except GoeError as e:
         raise HTTPException(502, f"go-e Fehler: {e}")
     return {"ok": True, "lmo": lmo, "psm": psm, "amp": amp, "mode": mode}
+
+
+# ── Heizung (openHAB-Thermostate) ────────────────────────────────────────────
+
+
+_HEATING_HISTORY_BUCKET_MS = 10 * 60 * 1000
+
+
+def _heating_ctx() -> tuple[dict[str, Any], "_heating.HeatingConfig", Any]:
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    try:
+        hcfg = _heating.parse_heating(raw)
+    except ValueError as e:
+        raise HTTPException(500, f"heating config ungültig: {e}")
+    return raw, hcfg, _heating.make_client(raw)
+
+
+def _heating_dry_run(raw: dict[str, Any]) -> bool:
+    return bool((raw.get("runtime") or {}).get("dry_run", False))
+
+
+def _app_log(msg: str, level: int = logging.INFO) -> None:
+    """Zeile ins Controller-Log (runtime.log_file), damit sie im Log-Tab erscheint."""
+    log.log(level, msg)
+    try:
+        path = Path(_load_cfg().runtime.log_file)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} [{logging.getLevelName(level)}] pv-controller.heating: {msg}\n")
+    except Exception as e:  # Log darf das Schalten nie verhindern
+        log.warning("heating: Log-Datei nicht beschreibbar: %s", e)
+
+
+@app.get("/api/heating/status")
+def heating_status(response: Response) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    raw, hcfg, client = _heating_ctx()
+    base = {
+        "enabled": hcfg.enabled,
+        "setpoint_min": hcfg.setpoint_min,
+        "setpoint_max": hcfg.setpoint_max,
+        "setpoint_step": _heating.SETPOINT_STEP,
+        "dry_run": _heating_dry_run(raw),
+        "openhab_configured": client is not None,
+    }
+    if not hcfg.enabled or client is None:
+        return {**base, "ok": True, "error": None, "rooms": []}
+    return {**base, **_heating.read_status(hcfg, client)}
+
+
+class _HeatingSetpoint(BaseModel):
+    room_id: str
+    setpoint: float
+
+
+def _heating_send(raw, hcfg, client, room, value: float, source: str) -> dict[str, Any]:
+    if _heating_dry_run(raw):
+        _app_log(f"DRY-RUN: {room.name} Soll → {value:g} °C ({source}, nicht gesendet)")
+        return {"room_id": room.id, "ok": True, "dry_run": True, "setpoint": value}
+    try:
+        _heating.set_setpoint(hcfg, client, room.id, value)
+    except _heating.OpenHabError as e:
+        _app_log(f"FEHLER: {room.name} Soll → {value:g} °C ({source}): {e}", logging.WARNING)
+        return {"room_id": room.id, "ok": False, "error": str(e)}
+    _app_log(f"{room.name} Soll → {value:g} °C ({source})")
+    return {"room_id": room.id, "ok": True, "dry_run": False, "setpoint": value}
+
+
+@app.post("/api/heating/setpoint")
+def heating_setpoint(body: _HeatingSetpoint) -> dict[str, Any]:
+    raw, hcfg, client = _heating_ctx()
+    if not hcfg.enabled or client is None:
+        raise HTTPException(409, "Heizung nicht aktiv oder openHAB nicht konfiguriert")
+    room = hcfg.room(body.room_id)
+    if room is None:
+        raise HTTPException(404, f"Raum {body.room_id!r} unbekannt")
+    if not room.controllable:
+        raise HTTPException(400, f"{room.name} hat keinen Sollwert (nur Anzeige)")
+    try:
+        value = _heating.validate_setpoint(hcfg, body.setpoint)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    res = _heating_send(raw, hcfg, client, room, value, "manuell")
+    if not res["ok"]:
+        raise HTTPException(502, res["error"])
+    return res
+
+
+@app.get("/api/heating/history/{room_id}")
+def heating_history(room_id: str, response: Response,
+                    hours: int = Query(default=24, ge=1, le=168)) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    raw, hcfg, client = _heating_ctx()
+    room = hcfg.room(room_id)
+    if room is None:
+        raise HTTPException(404, f"Raum {room_id!r} unbekannt")
+    if client is None:
+        raise HTTPException(409, "openHAB nicht konfiguriert")
+    start = datetime.now() - timedelta(hours=hours)
+    svc = (raw.get("openhab") or {}).get("persistence") or None
+    out: dict[str, Any] = {"room_id": room_id, "hours": hours}
+    for key, item in (("temp", room.temp_item), ("setpoint", room.setpoint_item)):
+        if not item:
+            out[key] = []
+            continue
+        try:
+            out[key] = _heating.downsample(client.get_history(item, start, service_id=svc),
+                                           _HEATING_HISTORY_BUCKET_MS)
+        except _heating.OpenHabError as e:
+            out[key] = []
+            out["error"] = str(e)
+    return out
+
+
+@app.get("/api/heating/items")
+def heating_items() -> dict[str, Any]:
+    """openHAB-Items für die Raum-Auswahl in den Settings (ohne Gruppen)."""
+    _raw, _hcfg, client = _heating_ctx()
+    if client is None:
+        raise HTTPException(409, "openHAB nicht konfiguriert")
+    try:
+        items = client.list_items()
+    except _heating.OpenHabError as e:
+        raise HTTPException(502, str(e))
+    items = [{"name": i["name"], "label": i.get("label") or "", "type": i.get("type", ""),
+              "state": i.get("state")} for i in items if i.get("type") != "Group"]
+    items.sort(key=lambda i: i["name"].lower())
+    return {"items": items}
+
+
+@app.get("/api/heating/config")
+def heating_config_get() -> dict[str, Any]:
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    oh = raw.get("openhab") or {}
+    return {
+        "heating": raw.get("heating") or {"enabled": False, "setpoint_min": 5, "setpoint_max": 26, "rooms": []},
+        "openhab": {"url": oh.get("url", ""), "token_set": bool(oh.get("token"))},
+    }
+
+
+class _HeatingConfigUpdate(BaseModel):
+    enabled: bool
+    setpoint_min: float
+    setpoint_max: float
+    rooms: list[dict[str, Any]]
+
+
+@app.put("/api/heating/config")
+def heating_config_put(body: _HeatingConfigUpdate) -> dict[str, Any]:
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        current = json.load(f)
+    block = {
+        "enabled": body.enabled,
+        "setpoint_min": body.setpoint_min,
+        "setpoint_max": body.setpoint_max,
+        "rooms": [
+            {k: v for k, v in r.items() if k in ("id", "name", *_heating.ITEM_KEYS) and v not in (None, "")}
+            for r in body.rooms
+        ],
+    }
+    new_cfg = copy.deepcopy(current)
+    new_cfg["heating"] = block
+    try:
+        _heating.parse_heating(new_cfg)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if block["enabled"] and not (new_cfg.get("openhab") or {}).get("url"):
+        raise HTTPException(400, "openhab.url fehlt in config.json")
+    backup = _write_config(new_cfg)
+    return {"ok": True, "backup": backup, "heating": block}

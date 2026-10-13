@@ -3247,7 +3247,8 @@ async function loadSettings() {
     setFormValue(f, "wallbox.auto_reset_on_unplug", lastConfig.wallbox?.auto_reset_on_unplug ?? true);
     setFormValue(f, "auth.enabled", lastConfig.auth_enabled ?? false);
     setFormValue(f, "auth.user", lastConfig.auth_user ?? "admin");
-    // Passwort-Feld bewusst leer lassen
+    // Gesetztes Passwort kommt maskiert ("********"); unverändert zurückgeschickt bleibt es erhalten
+    setFormValue(f, "auth.password", lastConfig.auth_password ?? "");
     setFormValue(f, "house.max_load_kw", lastConfig.house_max_load_kw ?? 11);
     const zc = lastConfig.zendure ?? {};
     setFormValue(f, "zendure.enabled", zc.enabled ?? false);
@@ -3445,7 +3446,8 @@ function activateTab(name) {
   $$(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === name));
   $$(".tab-panel").forEach(p => p.classList.toggle("active", p.id === "tab-" + name));
   if (name === "verlauf")      loadVerlauf();
-  if (name === "settings")     { loadSettings(); loadCascadeSettings(); }
+  if (name === "settings")     { loadSettings(); loadCascadeSettings(); loadHeatingSettings(); }
+  if (name === "heizung")      heatActivate();
   if (name === "logs")         refreshLogs();
   if (name === "prioritaeten") loadCascade();
 }

@@ -1584,3 +1584,55 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 .cascade-profile-tab.selected { color: var(--text); border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); font-weight: 600; }
 .cascade-profile-tab.is-active-profile:not(.selected) { color: var(--text); }
 .cascade-card.skipped-stage { opacity: .6; }
+
+/* -------- Heizung -------- */
+:root { --c-cold: #60a5fa; --c-warm: #fb923c; }
+.heat-set-label { color: var(--text-muted); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+.heat-set { display: flex; align-items: center; gap: 8px; }
+.heat-set-val { min-width: 74px; text-align: center; font-size: 16px; }
+.heat-set-val.pending { color: var(--accent); }
+.heat-step {
+  width: 44px; height: 44px; border-radius: 12px;
+  background: rgba(255,255,255,0.04); border: 1px solid var(--line); color: var(--text);
+  font-size: 20px; line-height: 1;
+}
+.heat-step:hover { background: rgba(255,255,255,0.08); }
+.heat-step:disabled { opacity: 0.35; cursor: default; }
+.heat-room-head { display: flex; align-items: baseline; justify-content: space-between; }
+.heat-room-head h2 { margin-bottom: 8px; }
+.heat-bat { font-size: 12px; color: var(--text-dim); }
+.heat-bat.low { color: var(--warn); }
+.heat-room-main { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.heat-temp { font-size: 30px; font-weight: 500; color: var(--text); }
+.heat-temp.cold { color: var(--c-cold); }
+.heat-temp.warm { color: var(--c-warm); }
+.heat-meta { margin-top: 8px; font-size: 12px; color: var(--text-dim); }
+.heat-meta .sep { margin: 0 8px; color: var(--text-muted); }
+.heat-mode { font-size: 11px; letter-spacing: 0.06em; color: var(--text-muted); border: 1px solid var(--line); border-radius: 8px; padding: 2px 7px; }
+.heat-mode.auto { color: var(--c-warm); border-color: rgba(251,146,60,0.45); }
+.heat-err { margin-top: 8px; font-size: 12px; color: var(--error); }
+.heat-room.has-error { border-color: rgba(248,113,113,0.35); }
+.heat-hist-toggle { margin-top: 10px; background: none; border: none; padding: 4px 0; color: var(--text-muted); font-size: 11px; letter-spacing: 0.06em; }
+.heat-hist-toggle:hover { color: var(--text); }
+.heat-svg { width: 100%; height: auto; display: block; margin-top: 6px; }
+.hc-grid { stroke: rgba(255,255,255,0.08); stroke-width: 1; }
+.hc-lbl { fill: rgba(255,255,255,0.45); font-size: 8px; }
+.hc-temp { fill: none; stroke: var(--text); stroke-width: 1.6; stroke-linejoin: round; }
+.hc-set { fill: none; stroke: var(--c-warm); stroke-width: 1.4; stroke-dasharray: 4 3; }
+.heat-legend { display: flex; gap: 14px; font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+.heat-legend i { display: inline-block; width: 14px; height: 0; vertical-align: middle; margin-right: 5px; }
+.hc-temp-k { border-top: 2px solid var(--text); }
+.hc-set-k { border-top: 2px dashed var(--c-warm); }
+#tab-heizung .hidden { display: none !important; }
+.hs-room { border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; margin: 8px 0; display: grid; gap: 8px; }
+.hs-room summary { cursor: pointer; font-size: 13px; }
+.hs-room summary small { color: var(--text-muted); margin-left: 6px; }
+.hs-room label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-dim); margin-top: 6px; }
+.hs-room input { background: rgba(255,255,255,0.04); border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 8px 10px; font-family: inherit; font-size: 13px; }
+.hs-room-actions { display: flex; gap: 8px; margin-top: 8px; }
+.hs-room-actions .btn { min-height: 36px; }
+.heat-dry { margin: 0 2px 12px; font-size: 11px; color: var(--warn); }
+.heat-settings { display: grid; gap: 10px; }
+.heat-settings > label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-dim); }
+.heat-settings > label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
+.heat-settings > label input[type="number"] { background: rgba(255,255,255,0.04); border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 8px 10px; font-family: inherit; font-size: 13px; }

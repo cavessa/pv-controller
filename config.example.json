@@ -97,5 +97,32 @@
   },
   "cascade": {
     "log_verbose": false
+  },
+  "openhab": {
+    "url": "http://192.168.x.x:8080",
+    "token": "",
+    "timeout_s": 3
+  },
+  "heating": {
+    "enabled": false,
+    "setpoint_min": 5,
+    "setpoint_max": 26,
+    "rooms": [
+      {
+        "id": "wohnen",
+        "name": "Wohnen",
+        "setpoint_item": "WandthermostatWohnen_SetTemperature",
+        "temp_item": "WandthermostatWohnen_Temperature",
+        "battery_item": "WandthermostatWohnen_NiedrigerBatteriestatus",
+        "humidity_item": "WandthermostatWohnen_Humidity",
+        "mode_item": "WandthermostatWohnen_ControlMode"
+      },
+      {
+        "id": "waschkueche",
+        "name": "Waschküche",
+        "temp_item": "LuftfeuchteWaschkuche_ActualTemperature",
+        "humidity_item": "LuftfeuchteWaschkuche_Humidity"
+      }
+    ]
   }
 }
