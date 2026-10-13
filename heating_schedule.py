@@ -32,7 +32,9 @@ from datetime import date as Date, datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 import db
+import decisions
 import heating
+import schedule_log
 import suntime
 from clients.openhab_client import OpenHabError
 from suntime import TZ, due_instant  # noqa: F401  (bisherige Namen bleiben: hs.TZ, hs.due_instant)
@@ -379,9 +381,16 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
     emit = app_log or (lambda msg, level=logging.INFO: log.log(level, msg))
     cfg = heating.parse_heating(raw)
     if not (cfg.enabled and cfg.schedules_enabled):
+        if cfg.enabled:
+            _note_schedules_off(cfg, raw, (now or datetime.now(TZ)).astimezone(TZ))
         return res
     res.active = True
     now = (now or datetime.now(TZ)).astimezone(TZ)
+
+    def note(e: dict, code: str, message: Optional[str] = None, once: bool = False, **data: Any) -> None:
+        schedule_log.record(schedule_log.HEATING, e.get("id"), e["room_id"], code, now,
+                            {"setpoint": e.get("setpoint"), "when": when(e) if e.get("time") or e.get("kind") else None,
+                             **data}, message, once_per_day=once)
     budget = _Budget(budget_s, clock)
 
     # 2. nur DB
@@ -392,6 +401,7 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
         emit(f"Zeitplan übersprungen: {cfg.room(e['room_id']).name} {when(e)} → {e['setpoint']:g} °C "
              f"(Sonnenzeit nicht berechenbar: latitude/longitude fehlen)", logging.WARNING)
         _mark([e["id"]], SKIPPED, now, disable_once=True)
+        note(e, "skipped_no_sun")
         res.skipped += 1
     due = [x for x in due if x[1] is not None]
     pending = [p for p in _pending_verifies() if cfg.room(p["room_id"]) and _verify_due(p, now)]
@@ -406,6 +416,7 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
         room = cfg.room(e["room_id"])
         emit(f"Zeitplan übersprungen: {room.name} {when(e)} → {e['setpoint']:g} °C "
              f"({int((_utc(now) - _utc(at)).total_seconds() // 60)} min verspätet, max. {CATCH_UP_MIN})", logging.WARNING)
+        note(e, "skipped_late", late_min=int((_utc(now) - _utc(at)).total_seconds() // 60), max_min=CATCH_UP_MIN)
     _mark([e["id"] for e, _ in late], SKIPPED, now, disable_once=True)
     res.skipped += len(late)
     late_ids = {e["id"] for e, _ in late}
@@ -417,6 +428,9 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
         latest[e["room_id"]] = (e, at)
     superseded = [e["id"] for e, _ in due if latest[e["room_id"]][0] is not e]
     _mark(superseded, SUPERSEDED, now, disable_once=True)
+    for e, _ in due:
+        if latest[e["room_id"]][0] is not e:
+            note(e, "superseded", by=latest[e["room_id"]][0]["id"])
 
     if not latest and not pending:
         res.duration_s = clock() - t0
@@ -447,12 +461,22 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
         current = {rid: heating.norm_temp(items.get(r.setpoint_item)) for rid, r in rooms.items()}
     except (OpenHabError, TimeoutError) as e:
         emit(f"Zeitpläne: openHAB nicht erreichbar ({e}) – fällige Einträge bleiben fällig", logging.WARNING)
+        if isinstance(e, OpenHabError):
+            decisions.note_health("openhab", False, now, str(e)[:200])
+        for due_e, _ in latest.values():
+            note(due_e, "openhab_unreachable", str(e)[:200], once=True)
         _give_up_stale_verifies(pending, cfg, now, emit)
         res.duration_s = clock() - t0
         return res
 
+    decisions.note_health("openhab", True, now)
+
     def send(room: heating.Room, value: float) -> None:
         request(lambda: client.send_command(room.setpoint_item, f"{value:g}"))
+
+    def note_verify(p: dict, code: str, got: Optional[float], message: str) -> None:
+        schedule_log.record(schedule_log.HEATING, None, p["room_id"], code, now,
+                            {"expected": p["setpoint"], "reported": got}, message)
 
     # 4. Rückprüfung: 5, 10 und 15 min nach dem Senden. Gesendeter Wert → weiter beobachten bzw. fertig;
     #    alter Wert (zurückgesprungen) → Warnung + einmal erneut senden; anderer Wert → nur Warnung.
@@ -480,14 +504,17 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
                 emit(f"{msg} (zurückgesprungen) – sende einmal erneut", logging.WARNING)
                 _verify_update(room.id, status="pending", reported=got, message=msg + " (erneut gesendet)",
                                attempts=p["attempts"] + 1, sent_at=now, checks=0)
+                note_verify(p, "readback_retry", got, msg)
             except (OpenHabError, TimeoutError) as e:
                 emit(f"{msg} – erneutes Senden fehlgeschlagen: {e}", logging.WARNING)
                 _verify_update(room.id, status="mismatch", reported=got, message=msg)
+                note_verify(p, "readback_mismatch", got, msg)
         else:
             if not jumped:
                 msg += " (am Gerät, Fenster-offen oder Wochenprofil geändert?)"
             emit(msg + " – kein erneutes Senden", logging.WARNING)
             _verify_update(room.id, status="mismatch", reported=got, message=msg)
+            note_verify(p, "readback_mismatch", got, msg)
 
     # 5. fällige Einträge ausführen
     for rid, (e, at) in latest.items():
@@ -497,15 +524,18 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
         if current.get(rid) is not None and abs(current[rid] - target) < 0.01:
             emit(f"{label}: bereits eingestellt, nichts gesendet")
             _mark([e["id"]], UNCHANGED, now, disable_once=True)
+            note(e, "already_set", current=current[rid])
             continue
         if dry_run:
             emit(f"DRY-RUN: {label}, nicht gesendet")
             _mark([e["id"]], DRY_RUN, now, disable_once=True)
+            note(e, "dry_run", current=current.get(rid))
             continue
         try:
             send(room, target)
         except TimeoutError:
             emit(f"{label}: Zeitbudget erschöpft, nächste Minute erneut", logging.WARNING)
+            note(e, "deferred_time_budget", once=True)
             continue                    # bleibt fällig (Nachhol-Fenster)
         except OpenHabError as e2:
             # Ob der Befehl angekommen ist, ist offen (z. B. Lese-Timeout): einmal nächste Minute erneut –
@@ -513,16 +543,33 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
             if e.get("last_result") != RETRY:
                 emit(f"FEHLER: {label}: {e2} – nächste Minute einmal erneut", logging.WARNING)
                 _set_result(e["id"], RETRY)
+                note(e, "openhab_retry", str(e2)[:200])
             else:
                 emit(f"FEHLER: {label}: {e2} – aufgegeben", logging.WARNING)
                 _mark([e["id"]], FAILED, now, disable_once=True)
+                note(e, "openhab_error", str(e2)[:200])
             continue
         emit(label)
         _mark_sent(e["id"], rid, target, now, previous=current.get(rid))
+        note(e, "sent", previous=current.get(rid))
         res.sent += 1
 
     res.duration_s = clock() - t0
     return res
+
+
+def _note_schedules_off(cfg: heating.HeatingConfig, raw: dict[str, Any], now: datetime) -> None:
+    """Schalter „Zeitpläne“ aus: fällige Einträge einmal je Eintrag und Tag im Verlauf vermerken
+    (reines Protokoll – nichts wird gesendet oder markiert; Fehler werden verschluckt)."""
+    try:
+        entries = [e for e in list_schedules() if cfg.room(e["room_id"]) and cfg.room(e["room_id"]).controllable]
+        for e, at in due_entries(entries, now, suntime.location(raw)):
+            if at is None or _utc(now) - _utc(at) > timedelta(minutes=CATCH_UP_MIN):
+                continue
+            schedule_log.record(schedule_log.HEATING, e["id"], e["room_id"], "skipped_schedules_off", now,
+                                {"setpoint": e["setpoint"], "when": when(e)}, once_per_day=True)
+    except Exception:
+        log.debug("Zeitplan-Verlauf (Schalter aus) nicht geschrieben", exc_info=True)
 
 
 def _set_result(sid: int, result: str) -> None:

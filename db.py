@@ -662,6 +662,9 @@ RETENTION_DAYS = {
     "minute_tables": 35,       # main_meter_min, zendure_min (Tagesverlauf-Ansicht reicht so weit zurück)
     "heater_budget_log": 14,
     "heating_schedule_once": 7,   # einmalige Heizungs-Zeitpläne: 7 Tage nach ihrem Datum
+    "decision_snapshot": 2,       # Entscheidungs-Schnappschuss je Minuten-Lauf (48 h)
+    "schedule_result": 14,        # Zeitplan-Verlauf (Heizung/Rollläden)
+    "device_health_event": 30,    # Geräte-Ereignislog (offline_ab / wieder_da)
 }
 PRUNE_BATCH = 5000
 PRUNE_AFTER_HOUR = 3
@@ -689,6 +692,11 @@ def _prune_rules(now: datetime) -> list[tuple[str, str, str, tuple]]:
         ("heater_budget_log", "heater_budget_log", "ts < ?", (cut(R["heater_budget_log"], "%Y-%m-%d %H:%M", now),)),
         ("heating_schedule (einmalig)", "heating_schedule", "date IS NOT NULL AND date < ?",
          (cut(R["heating_schedule_once"], "%Y-%m-%d", now),)),
+        # ISO-Zeitstempel (lokal, mit Offset): Vergleich über den Anfang der Zeichenkette
+        ("decision_snapshot", "decision_snapshot", "ts < ?", (cut(R["decision_snapshot"], "%Y-%m-%dT%H:%M:%S", now),)),
+        ("schedule_result", "schedule_result", "ts < ?", (cut(R["schedule_result"], "%Y-%m-%dT%H:%M:%S", now),)),
+        ("device_health_event", "device_health_event", "ts < ?",
+         (cut(R["device_health_event"], "%Y-%m-%dT%H:%M:%S", now),)),
     ]
 
 

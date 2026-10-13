@@ -23,7 +23,7 @@ solange der Zustand unbekannt bleibt.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Optional
 
@@ -55,6 +55,8 @@ class PhaseOut:
     action: PhaseAction
     reason: str
     blind: bool = False                 # AUS an eine Phase mit unbekanntem Zustand
+    code: str = ""                      # Grund-Code (reasons.py) – nur Protokoll, ohne Einfluss auf die Entscheidung
+    data: dict = field(default_factory=dict)
 
 
 def classify_temp(temp: float, p: HeaterParams) -> TempStatus:
@@ -99,44 +101,50 @@ def decide_phases(
     n_active = sum(1 for ph in phases if not ph.disabled)
     p = replace(p, n_phases=min(p.n_phases, n_active))
 
-    def all_reachable(action: PhaseAction, text: str) -> list[PhaseOut]:
+    def all_reachable(action: PhaseAction, text: str, code: str, data: Optional[dict] = None) -> list[PhaseOut]:
         out = []
+        d = dict(data or {})
         for ph in phases:
             if ph.disabled:
-                out.append(PhaseOut(PhaseAction.UNCHANGED, "deaktiviert"))
+                out.append(PhaseOut(PhaseAction.UNCHANGED, "deaktiviert", code="phase_disabled"))
             elif ph.state is None:
                 if action is PhaseAction.TURN_OFF:
                     out.append(PhaseOut(PhaseAction.TURN_OFF, f"{text}; Zustand unbekannt – AUS wird trotzdem gesendet",
-                                        blind=True))
+                                        blind=True, code=code, data={**d, "blind_off": True}))
                 else:
-                    out.append(PhaseOut(PhaseAction.UNCHANGED, "nicht erreichbar – AN nie ohne bekannten Zustand"))
+                    out.append(PhaseOut(PhaseAction.UNCHANGED, "nicht erreichbar – AN nie ohne bekannten Zustand",
+                                        code="failsafe_phase", data={"wanted": code}))
             elif action is PhaseAction.TURN_OFF:
-                out.append(PhaseOut(PhaseAction.TURN_OFF if ph.state else PhaseAction.UNCHANGED, text))
+                out.append(PhaseOut(PhaseAction.TURN_OFF if ph.state else PhaseAction.UNCHANGED, text,
+                                    code=code, data=dict(d)))
             else:
-                out.append(PhaseOut(PhaseAction.TURN_ON if not ph.state else PhaseAction.UNCHANGED, text))
+                out.append(PhaseOut(PhaseAction.TURN_ON if not ph.state else PhaseAction.UNCHANGED, text,
+                                    code=code, data=dict(d)))
         return out
 
     # ---- Vorrang: Sicherheit --------------------------------------------------
     if temp is None:
-        return all_reachable(PhaseAction.TURN_OFF, "Speichertemperatur unbekannt – Heizstab aus")
+        return all_reachable(PhaseAction.TURN_OFF, "Speichertemperatur unbekannt – Heizstab aus", "temp_unknown")
     status = classify_temp(temp, p)
     if status is TempStatus.AT_OR_ABOVE_MAX:
         return all_reachable(
             PhaseAction.TURN_OFF,
             f"storage_temp={temp:.1f} °C >= storage_max_temp={p.max_temp:.1f} °C – Heizstab aus",
+            "max_temp_reached", {"temp_c": round(temp, 1), "max_temp_c": p.max_temp},
         )
     if summer == "stop":
-        return all_reachable(PhaseAction.TURN_OFF, summer_reason)
+        return all_reachable(PhaseAction.TURN_OFF, summer_reason, "summer_mode_stop", {"temp_c": round(temp, 1)})
     if force == "off":
-        return all_reachable(PhaseAction.TURN_OFF, "Manuell AUS (Kaskade)")
+        return all_reachable(PhaseAction.TURN_OFF, "Manuell AUS (Kaskade)", "manual_override", {"mode": "aus"})
     if summer == "heat":
-        return all_reachable(PhaseAction.TURN_ON, summer_reason)
+        return all_reachable(PhaseAction.TURN_ON, summer_reason, "summer_mode_grid_heat", {"temp_c": round(temp, 1)})
 
     # ---- ab hier Budgetlogik --------------------------------------------------
     if surplus_fail_safe or budget_w is None:
         return [PhaseOut(PhaseAction.UNCHANGED,
                          "deaktiviert" if ph.disabled
-                         else "Hauptzähler/Wechselrichter nicht lesbar – Fail-safe, keine Änderung")
+                         else "Hauptzähler/Wechselrichter nicht lesbar – Fail-safe, keine Änderung",
+                         code="phase_disabled" if ph.disabled else "failsafe_global")
                 for ph in phases]
     if force == "on":
         budget_w = budget_down_w = p.n_phases * p.phase_w
@@ -166,37 +174,62 @@ def decide_phases(
     def elapsed(ph: PhaseIn) -> float:
         return (now - ph.last_change).total_seconds() if ph.last_change else 1e9
 
+    # Grund-Codes (nur Protokoll): gemeinsame Zahlen; Schwelle = Budget, ab dem eine weitere Phase dazukäme
+    base = {"budget_w": int(round(budget_w)), "target_phases": target, "running": n_cur,
+            "threshold_w": int(round((target + 1) * p.phase_w - p.grid_assist_w))}
+    if budget_down_w is not None and budget_down_w != budget_w:
+        base["budget_down_w"] = int(round(budget_down_w))
+    def tag(o: PhaseOut, code: str, **extra) -> PhaseOut:
+        o.code, o.data = code, {**base, **extra}
+        return o
+
+    def rest(ph: PhaseIn, limit: float) -> int:
+        return int(round(limit - elapsed(ph)))
+
+    on_code = "manual_override" if force == "on" else "budget_available"
+    off_code = "hysteresis_band" if band_note else "below_start_threshold"
+    if band_note:
+        base.update(temp_c=round(temp, 1), resume_temp_c=p.resume_temp)
+    if force == "on":
+        base["mode"] = "an"
+    base["rest_w"] = base["budget_w"]
     out: list[PhaseOut] = []
     turned_on = 0
     for i, ph in enumerate(phases):
         if ph.disabled:
-            out.append(PhaseOut(PhaseAction.UNCHANGED, "deaktiviert"))
+            out.append(PhaseOut(PhaseAction.UNCHANGED, "deaktiviert", code="phase_disabled"))
         elif ph.state is None and i in off_unknown:
             if elapsed(ph) < p.min_on_s:
-                out.append(PhaseOut(PhaseAction.UNCHANGED,
-                                    f"{head}; nicht erreichbar, Mindestlaufzeit {elapsed(ph):.0f}/{p.min_on_s:.0f} s"))
+                out.append(tag(PhaseOut(PhaseAction.UNCHANGED,
+                                        f"{head}; nicht erreichbar, Mindestlaufzeit {elapsed(ph):.0f}/{p.min_on_s:.0f} s"),
+                               "min_on_time", remaining_s=rest(ph, p.min_on_s), unreachable=True))
             else:
-                out.append(PhaseOut(PhaseAction.TURN_OFF,
-                                    f"{head}; Zustand unbekannt – AUS wird gesendet", blind=True))
+                out.append(tag(PhaseOut(PhaseAction.TURN_OFF,
+                                        f"{head}; Zustand unbekannt – AUS wird gesendet", blind=True),
+                               "phase_unknown_off_sent"))
         elif ph.state is None:
-            out.append(PhaseOut(PhaseAction.UNCHANGED,
-                                f"{head}; nicht erreichbar – wird als laufend gezählt"))
+            out.append(tag(PhaseOut(PhaseAction.UNCHANGED,
+                                    f"{head}; nicht erreichbar – wird als laufend gezählt"), "phase_unknown"))
         elif i in wanted and not ph.state:
             if turned_on >= 1:
-                out.append(PhaseOut(PhaseAction.UNCHANGED, f"{head}; nur 1 Phase pro Lauf zuschalten"))
+                out.append(tag(PhaseOut(PhaseAction.UNCHANGED, f"{head}; nur 1 Phase pro Lauf zuschalten"),
+                               "one_phase_per_run"))
             elif elapsed(ph) < p.min_off_s:
-                out.append(PhaseOut(PhaseAction.UNCHANGED,
-                                    f"{head}; Mindestpause {elapsed(ph):.0f}/{p.min_off_s:.0f} s"))
+                out.append(tag(PhaseOut(PhaseAction.UNCHANGED,
+                                        f"{head}; Mindestpause {elapsed(ph):.0f}/{p.min_off_s:.0f} s"),
+                               "min_off_time", remaining_s=rest(ph, p.min_off_s)))
             else:
                 turned_on += 1
-                out.append(PhaseOut(PhaseAction.TURN_ON, f"{head}; schalte EIN"))
+                out.append(tag(PhaseOut(PhaseAction.TURN_ON, f"{head}; schalte EIN"), on_code))
         elif i not in wanted and ph.state:
             if elapsed(ph) < p.min_on_s:
-                out.append(PhaseOut(PhaseAction.UNCHANGED,
-                                    f"{head}; Mindestlaufzeit {elapsed(ph):.0f}/{p.min_on_s:.0f} s"))
+                out.append(tag(PhaseOut(PhaseAction.UNCHANGED,
+                                        f"{head}; Mindestlaufzeit {elapsed(ph):.0f}/{p.min_on_s:.0f} s"),
+                               "min_on_time", remaining_s=rest(ph, p.min_on_s)))
             else:
-                out.append(PhaseOut(PhaseAction.TURN_OFF, f"{head}; schalte AUS"))
+                out.append(tag(PhaseOut(PhaseAction.TURN_OFF, f"{head}; schalte AUS"), "below_stop_threshold"))
         else:
-            out.append(PhaseOut(PhaseAction.UNCHANGED,
-                                f"{head}; " + ("bleibt EIN" if ph.state else "bleibt AUS")))
+            out.append(tag(PhaseOut(PhaseAction.UNCHANGED,
+                                    f"{head}; " + ("bleibt EIN" if ph.state else "bleibt AUS")),
+                           on_code if ph.state else off_code))
     return out

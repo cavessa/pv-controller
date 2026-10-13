@@ -141,6 +141,8 @@ class PhaseDecision:
     executed: bool = False
     execution_error: Optional[str] = None
     blind: bool = False          # AUS an eine Phase mit unbekanntem Zustand (kein Statuswechsel gesichert)
+    code: str = ""               # Grund-Code (reasons.py) – nur Protokoll
+    data: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -174,6 +176,8 @@ class WallboxDecision:
     target_psm: Optional[int] = None
     psm_executed: bool = False
     psm_execution_error: Optional[str] = None
+    code: str = ""                 # Grund-Code (reasons.py) – nur Protokoll
+    data: dict = field(default_factory=dict)
 
 
 @dataclass

@@ -67,6 +67,31 @@ SHELLY_READ_TIMEOUT_S = 1.5
 DEVICE_ALERT_MIN = 10
 
 
+def wallbox_reason_code(enabled: bool, status: Optional[WallboxStatus], action: WallboxAction) -> tuple[str, dict]:
+    """Grund-Code zur Wallbox (reasons.py) – nur Protokoll, die Entscheidung fällt in ``_decide_wallbox``.
+
+    go-e ``car``: 1 = kein Auto, 2 = lädt, 3 = wartet aufs Auto, 4 = Laden beendet.
+    """
+    if not enabled:
+        return "wallbox_disabled", {}
+    if status is None:
+        return "device_unreachable", {}
+    data = {"car_state": status.car_state, "eco_mode": bool(status.pv_surplus_active), "amp": status.amp,
+            "phases": {1: 1, 2: 3}.get(status.psm), "power_w": None if status.power_w is None else int(status.power_w)}
+    if status.car_state == 1:
+        return "not_connected", data
+    charging = status.car_state == 2 and (status.power_w or 0) > 100
+    if not status.pv_surplus_active:
+        return ("charging_manual" if charging else "wallbox_not_eco_mode"), data
+    if charging:
+        return "charging", data
+    if status.car_state == 4:
+        return "car_full", data
+    if action is WallboxAction.RELEASE:
+        return "wallbox_released", data
+    return "waiting_for_car", data
+
+
 class ControllerMode(str, Enum):
     NORMAL = "normal"
     DRY_RUN = "dry_run"
@@ -820,7 +845,8 @@ class Controller:
             surplus_fail_safe=bool(critical),
         )
         for i, out in enumerate(outs):
-            d = PhaseDecision(f"PH{i + 1}", states[i], out.action, out.reason, blind=out.blind)
+            d = PhaseDecision(f"PH{i + 1}", states[i], out.action, out.reason, blind=out.blind,
+                              code=out.code, data=out.data)
             self._execute(d, plugs[i])
             decisions.append(d)
             if d.executed and not d.blind and d.action in (PhaseAction.TURN_ON, PhaseAction.TURN_OFF):
@@ -881,6 +907,7 @@ class Controller:
             wallbox_status,
             wallbox_read_error,
         )
+        decision.code, decision.data = wallbox_reason_code(self.cfg.wallbox.enabled, status, decision.action)
 
         self._execute_wallbox(decision)
         self._execute_lmo(decision)

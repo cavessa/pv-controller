@@ -23,7 +23,7 @@ from typing import Optional
 
 from clients.goe_client import GoeClient, GoeError
 from clients.shelly_cascade_client import ShellyCascadeClient, ShellyCascadeError
-from cascade_plan import BATTERY, HEATER_MIN, HEATER_STAGES, HeaterCtx, walk
+from cascade_plan import BATTERY, HEATER_MAX, HEATER_MIN, HEATER_STAGES, HeaterCtx, walk
 from clients.shelly_client import Shelly3EMClient, ShellyPlugClient, ShellyStorageTempClient
 from clients.solax_client import SolaxClient
 from clients.zendure_client import ZendureClient
@@ -81,6 +81,9 @@ class CascadeService:
         if config.wallbox.enabled and config.wallbox.url:
             self.goe = GoeClient(config.wallbox.url, config.wallbox.request_timeout_seconds)
         # Batterie-Regelung (Phase 2): nur mit aktivem Gerät UND Master-Schalter
+        # Grund-Code der letzten Geräte-Entscheidung: (action, code, data) – nur Protokoll
+        self._last_code: tuple[str, str, dict] = ("", "", {})
+        self._last_plan = None
         self.zendure_ctl = None
         self.zendure_client: Optional[ZendureClient] = None
         if config.zendure_active and config.zendure.control_enabled:
@@ -208,7 +211,11 @@ class CascadeService:
                 battery_dev, avail_w, surplus, zd_status, -raw_feed_in, base_load_w,
                 self._active_override(battery_dev),
             )
-            results.append(self._result(battery_dev, reason))
+            p = self._last_plan
+            code = p.code
+            if code == "charging_surplus" and HEATER_MAX in order and order.index(BATTERY) < order.index(HEATER_MAX):
+                code = "priority_first"               # Batterie steht im Profil vor dem Heizstab
+            results.append(self._result(battery_dev, reason, p.action, code, {**p.data, "limit_w": p.limit_w}))
             battery_plan["charge_w"] = charge_w
             return charge_w
 
@@ -217,7 +224,7 @@ class CascadeService:
             new_remaining, reason = self._handle_device(
                 device, int(remaining), surplus, effective_surplus, actual_device_w
             )
-            results.append(self._result(device, reason))
+            results.append(self._result(device, reason, *self._last_code))
             return new_remaining
 
         def heater_fn(gross_w: int, battery_w: int, remaining_w: int) -> None:
@@ -225,13 +232,20 @@ class CascadeService:
                 heater_dev, gross_w, battery_w, remaining_w, surplus, season, temp, ctx,
                 actual_heater_w, self._active_override(heater_dev),
             )
-            results.append(self._result(heater_dev, reason))
+            results.append(self._result(heater_dev, reason, *self._last_code))
 
         res = walk(order, effective_surplus, ctx, battery_fn, device_fn,
                    heater_fn if heater_dev is not None else None)
 
         log.info("=== Kaskade Ende: remaining=%d W ===", res.remaining_w)
-        return {"surplus_watts": surplus, "devices": results, "profile": season}
+        return {
+            "surplus_watts": surplus, "devices": results, "profile": season,
+            # Zahlen für den Entscheidungs-Schnappschuss (decisions.py)
+            "effective_surplus_w": int(effective_surplus), "feed_in_w": int(raw_feed_in),
+            "feed_in_source": feed_in_source, "controlled_loads_w": int(controlled_loads_w),
+            "remaining_w": res.remaining_w, "order": list(order), "storage_temp_c": temp,
+            "min_surplus_w": int(settings["min_surplus_watts"]), "allow_grid_draw": bool(settings["allow_grid_draw"]),
+        }
 
     # ── Heizstab: Kaskade legt nur das Budget fest ───────────────────────────
 
@@ -286,6 +300,22 @@ class CascadeService:
             + (f"; Speicher {temp:.1f} °C{stage}" if temp is not None else "; Speichertemperatur unbekannt")
             + (f"; manuell {force.upper()}" if force else "")
         )
+        start_w = int(h.phase_power_w - h.grid_assist_w)
+        data = {"budget_w": budget, "budget_down_w": budget_down, "raw_w": gross_w, "battery_w": battery_w,
+                "rest_w": budget, "threshold_w": start_w, "target_phases": target, "actual_w": int(actual_w),
+                "smooth_min": h.budget_smooth_min, "grid_assist_w": int(h.grid_assist_w),
+                "temp_c": None if temp is None else round(temp, 1)}
+        if force:
+            code = "manual_override"
+            data["mode"] = "an" if force == "on" else "aus"
+        elif target >= 1:
+            code = "grid_assist" if budget < target * h.phase_power_w else "budget_available"
+        elif gross_w - battery_w >= start_w:
+            code = "smoothing_wait"                 # jetzt würde es reichen, das Mittel liegt noch darunter
+            data["raw_w"] = gross_w - battery_w
+        else:
+            code = "below_start_threshold"
+        self._last_code = (action, code, data)
         self._log(surplus, device["id"], action, reason, remaining_w)
         log.info("Kaskade: %s → %s, remaining=%d W", device["name"], reason, remaining_w)
         return reason
@@ -303,6 +333,9 @@ class CascadeService:
                 # Gemessene statt nominale Leistung abziehen (Phantom-Budget vermeiden)
                 remaining -= int(actual_device_w.get(device["id"], device["power_watts"]))
             reason = f"manual_override ({override})"
+            self._last_code = ("manual_override", "manual_override",
+                               {"mode": "an" if override == "on" else "aus",
+                                "until": device["manual_override_until"]})
             self._log(
                 surplus, device["id"], "manual_override",
                 f"Manuelle Übersteuerung: {override} aktiv bis {device['manual_override_until']}",
@@ -314,6 +347,7 @@ class CascadeService:
             return remaining, reason
 
         action, reason = self._decide(device, effective_surplus, remaining)
+        self._last_code = (action, *self._reason_code(device, action, remaining, effective_surplus))
 
         # Zustand in DB aktualisieren und remaining korrekt anpassen:
         # - Laufendes Gerät: gemessene Ist-Leistung abziehen (nicht Nominalwert).
@@ -420,6 +454,7 @@ class CascadeService:
             (st.charge_w if st.state == "charging" else st.discharge_w) if st is not None else 0.0,
             st is not None,
         )
+        self._last_plan = p
         self._log(surplus, device["id"], p.action, p.reason, int(avail_w - charge_w))
         log.info("Kaskade: %s → %s %d W, verfügbar %d W | %s", device["name"], p.mode, p.limit_w, avail_w, p.reason)
         return float(charge_w), p.reason
@@ -478,6 +513,32 @@ class CascadeService:
                     f"Zu wenig Überschuss: {remaining} W < {needed} W "
                     f"({power} W + {hyst} W Hysterese)",
                 )
+
+    def _reason_code(self, device: dict, action: str, remaining: int, surplus: int) -> tuple[str, dict]:
+        """Grund-Code (reasons.py) zur Entscheidung aus ``_decide`` – nur Protokoll, entscheidet nichts."""
+        power, hyst = device["power_watts"], device["hysteresis_watts"]
+        if device["is_on"]:
+            # läuft: Budget nach Abzug der eigenen Leistung; abgeschaltet wird erst unter −Hysterese
+            data = {"rest_w": int(remaining - power), "power_w": power, "hysteresis_w": hyst}
+            if action == "turn_off":
+                return "budget_exhausted", data
+            if action == "skip_min_on":
+                on_min = self._minutes_since(device["turned_on_at"])
+                data["remaining_s"] = int(round((device["min_on_minutes"] - on_min) * 60))
+                return "min_on_time", data
+            return "keep_running", data
+        data = {"rest_w": int(remaining), "power_w": power, "threshold_w": power + hyst}
+        if action == "skip_min_off":
+            off_min = self._minutes_since(device["turned_off_at"])
+            data["remaining_s"] = int(round((device["min_off_minutes"] - off_min) * 60))
+            return "min_off_time", data
+        if action == "turn_on":
+            return "surplus_sufficient", data
+        if surplus <= 0:
+            return "no_surplus", data
+        if remaining <= 0:
+            return "not_reached", data
+        return "below_start_threshold", data
 
     # ── Shelly-Polling ───────────────────────────────────────────────────────
 
@@ -715,10 +776,14 @@ class CascadeService:
             return 9999.0
 
     @staticmethod
-    def _result(device: dict, reason: str) -> dict:
+    def _result(device: dict, reason: str, action: str = "", code: str = "", data: Optional[dict] = None) -> dict:
         return {
             "id": device["id"],
             "name": device["name"],
+            "type": device["type"],
             "is_on": device["is_on"],
             "reason": reason,
+            "action": action,
+            "code": code,            # Grund-Code (reasons.py) für den Entscheidungs-Schnappschuss
+            "data": data or {},
         }

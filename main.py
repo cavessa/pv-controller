@@ -110,12 +110,14 @@ def main(argv: list[str] | None = None) -> int:
     log = logging.getLogger("pv-controller.main")
 
     # Kaskade zuerst: setzt is_on-Flags, die der Controller danach liest.
+    cascade_res = None
     try:
-        CascadeService(config).run_cascade()
+        cascade_res = CascadeService(config).run_cascade()
     except Exception:
         log.exception("Unerwarteter Fehler im Kaskaden-Durchlauf")
 
     rc = 0
+    result = None
     try:
         result = Controller(config).run()
         from pv_logger import maybe_log
@@ -131,6 +133,15 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         log.exception("Unerwarteter Fehler im Controller-Lauf")
         rc = 1
+
+    # Entscheidungs-Schnappschuss + Geräte-Ereignislog (reines Protokoll, Fehler werden dort abgefangen)
+    try:
+        import decisions
+        with open(args.config, "r", encoding="utf-8") as f:
+            raw_cfg = json.load(f)
+        decisions.record_run(config, raw_cfg, cascade_res, result)
+    except Exception:
+        log.warning("Entscheidungs-Schnappschuss fehlgeschlagen", exc_info=True)
 
     # Erst nach PV/Heizstab/Wallbox: Heizungs-, dann Rollladen-Zeitpläne (je eigenes Zeitlimit, Fehler isoliert)
     run_heating_schedules(args.config, config.runtime.dry_run)

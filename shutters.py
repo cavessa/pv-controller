@@ -425,6 +425,14 @@ def resolve_position(sh: Shutter, items: dict[str, dict], cmd: Optional[dict[str
     return Position(v, reliable and fallback_note is None, "item", None, note)
 
 
+def _note_mismatch(cmd: dict[str, Any], position: Optional[int], msg: str, now: datetime) -> None:
+    """Abweichung nach einer Zeitplan-Fahrt in den Zeitplan-Verlauf (reines Protokoll)."""
+    if str(cmd.get("source") or "").startswith("Zeitplan"):
+        import schedule_log
+        schedule_log.record(schedule_log.SHUTTER, None, cmd["shutter_id"], "readback_mismatch", now,
+                            {"expected": cmd.get("target"), "reported": position}, msg)
+
+
 def verify(cmd: dict[str, Any], position: Optional[int], reachable: bool, now: datetime) -> dict[str, Any]:
     """Rückprüfung eines Befehls (nur wenn fällig); gibt den ggf. aktualisierten Datensatz zurück."""
     if cmd["status"] == "mismatch" and position is not None and cmd["target"] is not None \
@@ -438,12 +446,14 @@ def verify(cmd: dict[str, Any], position: Optional[int], reachable: bool, now: d
             return cmd                                      # openHAB gerade weg: später noch einmal
         msg = f"Rückmeldung fehlt (Befehl {_hm(cmd['sent_at'])}{'' if reachable else ', openHAB nicht erreichbar'})"
         _update(cmd["id"], "mismatch", None, msg)
+        _note_mismatch(cmd, None, msg, now)
         return {**cmd, "status": "mismatch", "message": msg}
     if abs(position - cmd["target"]) <= VERIFY_TOLERANCE:
         _update(cmd["id"], "ok", position, None)
         return {**cmd, "status": "ok", "reported": position, "message": None}
     msg = f"Rückmeldung {position} % statt {cmd['target']} % (Befehl {_hm(cmd['sent_at'])})"
     _update(cmd["id"], "mismatch", position, msg)
+    _note_mismatch(cmd, position, msg, now)
     log.warning("Rollladen %s: %s", cmd["shutter_id"], msg)
     return {**cmd, "status": "mismatch", "reported": position, "message": msg}
 

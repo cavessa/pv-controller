@@ -45,6 +45,8 @@ from datetime import date as Date, datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 import db
+import decisions
+import schedule_log
 import shutters
 from clients.openhab_client import OpenHabError
 import heating
@@ -419,6 +421,8 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
     emit = app_log or (lambda msg, level=logging.INFO: log.log(level, msg))
     cfg = shutters.parse_shutters(raw)
     if not (cfg.enabled and cfg.schedules_enabled):
+        if cfg.enabled:
+            _note_not_run(cfg, raw, (now or datetime.now(TZ)).astimezone(TZ), "skipped_schedules_off", lambda sh: True)
         return res
     res.active = True
     now = (now or datetime.now(TZ)).astimezone(TZ)
@@ -429,6 +433,15 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
         sh = cfg.shutter(sid)
         return sh if sh and sh.automation == "pvcontroller" else None
 
+    def note(e: dict, code: str, message: Optional[str] = None, once: bool = False, **data: Any) -> None:
+        if e.get("shutter_id") is None:
+            return
+        schedule_log.record(schedule_log.SHUTTER, e.get("id"), e["shutter_id"], code, now,
+                            {"target": target_label(e["action"], e.get("position")) if e.get("action") else None,
+                             "when": describe(e) if e.get("kind") else None, **data}, message, once_per_day=once)
+
+    _note_not_run(cfg, raw, now, "skipped_automation_openhab", lambda sh: sh.automation != "pvcontroller")
+
     # 2. nur DB
     entries = [e for e in list_schedules() if auto(e["shutter_id"])]
     due = due_entries(entries, now, loc)
@@ -437,6 +450,8 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
         if _elapsed(now, datetime.fromisoformat(w["since"])) > timedelta(hours=DOOR_WAIT_H):
             emit(f"{auto(sid).name}: Warten auf geschlossene Tür nach {DOOR_WAIT_H} h beendet – nicht geschlossen",
                  logging.WARNING)
+            schedule_log.record(schedule_log.SHUTTER, w["schedule_id"], sid, "door_wait_expired", now,
+                                {"hours": DOOR_WAIT_H})
             clear_wait(sid)
             del waits[sid]
     try:
@@ -456,6 +471,7 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
         msg = f"{auto(e['shutter_id']).name}: {describe(e)} nicht berechenbar (latitude/longitude fehlen)"
         emit("Rollladen-Zeitplan übersprungen: " + msg, logging.WARNING)
         _mark([e["id"]], NO_SUN, now, msg)
+        note(e, "skipped_no_sun", msg)
     due = [(e, at) for e, at in due if at is not None]
 
     # 3. > 15 min verspätet → übersprungen; mehrere je Rollladen → nur der späteste
@@ -465,6 +481,7 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
                f"{int(_elapsed(now, at).total_seconds() // 60)} min verspätet (max. {CATCH_UP_MIN})")
         emit("Rollladen-Zeitplan übersprungen: " + msg, logging.WARNING)
         _mark([e["id"]], SKIPPED, now, msg)
+        note(e, "skipped_late", msg, late_min=int(_elapsed(now, at).total_seconds() // 60), max_min=CATCH_UP_MIN)
     res.skipped += len(late) + len(nosun)
     late_ids = {e["id"] for e, _ in late}
     due = [(e, at) for e, at in due if e["id"] not in late_ids]
@@ -472,6 +489,9 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
     for e, at in sorted(due, key=lambda x: (_utc(x[1]), x[0]["id"])):
         latest[e["shutter_id"]] = (e, at)
     _mark([e["id"] for e, _ in due if latest[e["shutter_id"]][0] is not e], SUPERSEDED, now)
+    for e, _ in due:
+        if latest[e["shutter_id"]][0] is not e:
+            note(e, "superseded", by=latest[e["shutter_id"]][0]["id"])
     for sid in latest:                          # neuer Eintrag ersetzt das Warten auf die Tür
         if sid in waits:
             clear_wait(sid)
@@ -506,8 +526,13 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
         items = request(lambda: client.get_items(names))
     except (OpenHabError, TimeoutError) as e:
         emit(f"Rollladen-Zeitpläne: openHAB nicht erreichbar ({e}) – fällige Einträge bleiben fällig", logging.WARNING)
+        if isinstance(e, OpenHabError):
+            decisions.note_health("openhab", False, now, str(e)[:200])
+        for due_e, _ in latest.values():
+            note(due_e, "openhab_unreachable", str(e)[:200], once=True)
         res.duration_s = clock() - t0
         return res
+    decisions.note_health("openhab", True, now)
     contact = {sid: shutters.norm_contact(items.get(sh.contact_item)) if sh.contact_item else None
                for sid, sh in involved.items()}
     # Ist-Position aus der konfigurierten Quelle (Shelly direkt, Lese-Item) – Fallback Steuer-Item
@@ -540,6 +565,8 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
     if dc is not None and dc > cfg.duty_cycle_max and (latest or waits):
         emit(f"Rollladen-Zeitpläne pausiert: Duty Cycle {dc:g} % über {cfg.duty_cycle_max:g} % "
              f"– fällige Einträge bleiben fällig", logging.WARNING)
+        for due_e, _ in latest.values():
+            note(due_e, "skipped_duty_cycle", once=True, duty_cycle=dc, max=cfg.duty_cycle_max)
         res.duration_s = clock() - t0
         return res
 
@@ -559,13 +586,18 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
         label = f"{sh.name} → {_pos_label(target)} ({why})"
         if p.moving:
             emit(f"{label}: Rollladen fährt gerade ({'▼' if p.moving == 'down' else '▲'}) – nächste Minute erneut")
+            note({**e, "shutter_id": sh.id}, "deferred_moving", once=True)
             continue                                            # bleibt fällig (Nachhol-Fenster)
+        e_log = {**e, "shutter_id": sh.id}                      # Verlauf: auch für „Tür jetzt zu“ (ohne Eintrag)
+        gap: dict[str, Any] = {}
 
-        def skip(result: str, msg: str, level: int = logging.WARNING) -> None:
+        def skip(result: str, msg: str, level: int = logging.WARNING, code: Optional[str] = None,
+                 e_log: dict = e_log, **data: Any) -> None:
             emit(f"Rollladen-Zeitplan übersprungen: {msg}", level)
             if not from_wait:
                 _mark([e["id"]], result, now, msg)
             res.skipped += 1
+            note(e_log, code or f"skipped_{result}", msg, position=cur, **data)
 
         # Position unbekannt → in beide Richtungen prüfen (im Zweifel: nicht fahren)
         closing = target > 0 if cur is None else target > cur
@@ -576,6 +608,7 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
                 clear_wait(sh.id)
             else:
                 _mark([e["id"]], UNCHANGED, now)
+            note(e_log, "already_set", position=cur)
             continue
 
         # Aussperrschutz
@@ -588,24 +621,27 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
                     if sh.retry_when_closed:
                         _set_wait(sh.id, e["id"], target, now)
                         skip(WAITING_DOOR, f"{sh.name}: Tür {state} – Schließen ({describe(e)}) wartet, "
-                                           f"bis die Tür zu ist")
+                                           f"bis die Tür zu ist", code="waiting_door", door=state)
                     else:
                         skip(DOOR_OPEN, f"{sh.name}: Tür {state} – automatisches Schließen ({describe(e)}) "
-                                        f"übersprungen, wird nicht nachgeholt")
+                                        f"übersprungen, wird nicht nachgeholt", door=state)
                     continue
             elif target > sh.auto_close_max:
                 emit(f"{sh.name}: Tür ohne Kontakt – automatisch nur bis {sh.auto_close_max} % statt {target} %")
+                gap = {"limited_from": target, "limited_to": sh.auto_close_max, "limit": "limited_door_gap"}
                 target = sh.auto_close_max
                 label = f"{sh.name} → {target} % ({why}, Spalt)"
                 if cur is not None and abs(cur - target) <= 2:
                     emit(f"{label}: steht schon dort, nichts gesendet")
                     _mark([e["id"]], UNCHANGED, now)
+                    note(e_log, "already_set", position=cur, **gap)
                     continue
         # Frost
         if opening and (outdoor is None or outdoor < cfg.frost_temp_c):
             t = "unbekannt" if outdoor is None else f"{outdoor:g} °C".replace(".", ",")
             skip(FROST, f"{sh.name}: Außentemperatur {t} ({outdoor_src}) – automatisches Öffnen ({describe(e)}) "
-                        f"übersprungen (Festfrieren)")
+                        f"übersprungen (Festfrieren)", outdoor_c=outdoor, frost_c=cfg.frost_temp_c,
+                 source=outdoor_src)
             if from_wait:
                 clear_wait(sh.id)
             continue
@@ -622,15 +658,17 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
             except (OpenHabError, TimeoutError, sqlite3.Error) as ex:
                 if isinstance(ex, TimeoutError):
                     emit(f"{label}: Zeitbudget erschöpft, nächste Minute erneut", logging.WARNING)
+                    note(e_log, "deferred_time_budget", once=True)
                     continue
                 skip(MANUAL_HOLD, f"{sh.name}: Verlauf nicht lesbar ({ex}) – manuelle Bedienung nicht prüfbar, "
-                                  f"{describe(e)} übersprungen")
+                                  f"{describe(e)} übersprungen", code="history_unreadable")
                 if from_wait:
                     clear_wait(sh.id)
                 continue
             if manual is not None:
                 skip(MANUAL_HOLD, f"{sh.name}: um {manual:%H:%M} von Hand bewegt – {describe(e)} übersprungen "
-                                  f"(Vorrang {cfg.manual_hold_min} min)", logging.INFO)
+                                  f"(Vorrang {cfg.manual_hold_min} min)", logging.INFO,
+                     manual_at=f"{manual:%H:%M}", hold_min=cfg.manual_hold_min)
                 if from_wait:
                     clear_wait(sh.id)
                 continue
@@ -641,12 +679,14 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
                 clear_wait(sh.id)
             else:
                 _mark([e["id"]], DRY_RUN, now)
+            note(e_log, "dry_run", position=cur, target_pct=target, **gap)
             continue
         # gestaffelt senden
         if sent_any:
             if budget.left() < cfg.command_spacing_s + MIN_REQUEST_S:
                 res.timed_out = True
                 emit(f"{label}: Zeitbudget erschöpft, nächste Minute erneut", logging.WARNING)
+                note(e_log, "deferred_time_budget", once=True)
                 continue
             sleep(cfg.command_spacing_s)
         cmd = "position" if target not in (0, 100) else ("up" if target == 0 else "down")
@@ -654,17 +694,21 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
             request(lambda: client.send_command(sh.item, shutters.to_openhab(cmd, target)))
         except TimeoutError:
             emit(f"{label}: Zeitbudget erschöpft, nächste Minute erneut", logging.WARNING)
+            note(e_log, "deferred_time_budget", once=True)
             continue
         except OpenHabError as ex:
             if from_wait:
                 emit(f"FEHLER: {label}: {ex} – nächste Minute erneut", logging.WARNING)
+                note(e_log, "openhab_retry", str(ex)[:200], once=True)
             elif e.get("last_result") != RETRY:
                 emit(f"FEHLER: {label}: {ex} – nächste Minute einmal erneut", logging.WARNING)
                 _set_result(e["id"], RETRY)
+                note(e_log, "openhab_retry", str(ex)[:200])
             else:
                 msg = f"{sh.name}: {describe(e)} – Senden fehlgeschlagen ({ex})"
                 emit(f"FEHLER: {label}: {ex} – aufgegeben", logging.WARNING)
                 _mark([e["id"]], FAILED, now, msg)
+                note(e_log, "openhab_error", str(ex)[:200])
             continue
         sent_any = True
         emit(label)
@@ -673,10 +717,28 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
             clear_wait(sh.id)
         else:
             _mark([e["id"]], SENT, now)
+        note(e_log, "sent", position=cur, target_pct=target, door_closed=True if from_wait else None, **gap)
         res.sent += 1
 
     res.duration_s = clock() - t0
     return res
+
+
+def _note_not_run(cfg: shutters.ShutterConfig, raw: dict[str, Any], now: datetime, code: str,
+                  applies: Callable[[shutters.Shutter], bool]) -> None:
+    """Fällige Einträge, die gar nicht ausgeführt werden (Schalter „Zeitpläne“ aus bzw. Rollladen mit
+    Automatik openHAB): einmal je Eintrag und Tag in den Verlauf. Reines Protokoll – nichts wird gesendet
+    oder markiert; Fehler werden verschluckt."""
+    try:
+        entries = [e for e in list_schedules() if cfg.shutter(e["shutter_id"]) and applies(cfg.shutter(e["shutter_id"]))]
+        for e, at in due_entries(entries, now, location(raw)):
+            if at is None or _elapsed(now, at) > timedelta(minutes=CATCH_UP_MIN):
+                continue
+            schedule_log.record(schedule_log.SHUTTER, e["id"], e["shutter_id"], code, now,
+                                {"target": target_label(e["action"], e["position"]), "when": describe(e)},
+                                once_per_day=True)
+    except Exception:
+        log.debug("Zeitplan-Verlauf (%s) nicht geschrieben", code, exc_info=True)
 
 
 def own_commands(shutter_id: str, since: datetime) -> list[dict[str, Any]]:

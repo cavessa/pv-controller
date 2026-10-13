@@ -21,7 +21,7 @@ Regeln:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
@@ -53,6 +53,16 @@ class Plan:
     reason: str
     action: str                # charge | discharge | idle | hold | blocked | override
     hard: bool = False         # Sicherheits-/Override-Fall, ignoriert Wechselsperre
+    code: str = ""             # Grund-Code (reasons.py) – nur Protokoll, ohne Einfluss auf die Regelung
+    data: dict = field(default_factory=dict)
+
+
+def _w(v: Optional[float]) -> Optional[int]:
+    """Zahl fürs Protokoll (Grund-Code); unbekannt/unbegrenzt → None, nie ein Fehler."""
+    try:
+        return int(round(v))
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _round10(w: float) -> int:
@@ -79,39 +89,49 @@ def plan(
     soc = st.soc if st.soc is not None else 0.0
 
     blocked_reason = None
+    blocked_code = ""
     if override == "off":
-        blocked_reason = "Entladen gesperrt (manuell, 30 min)"
+        blocked_reason, blocked_code = "Entladen gesperrt (manuell, 30 min)", "manual_override"
     elif zc.block_discharge_while_wallbox_charging and wallbox_charging:
-        blocked_reason = "Batterie-Entladung gesperrt: Wallbox lädt"
+        blocked_reason, blocked_code = "Batterie-Entladung gesperrt: Wallbox lädt", "wallbox_lock"
+    nums = {"soc": _w(soc), "avail_w": _w(avail_w), "import_w": _w(import_w)}
 
     # --- Laden --------------------------------------------------------------
     target_c = 0
     reason_c = ""
+    code_c, data_c = "", {}
     if override == "on" and soc < 100:
         target_c, reason_c = max_c, "Laden erzwungen (manuell, 30 min)"
+        code_c, data_c = "manual_override", {"mode": "Laden"}
     elif soc >= zc.target_soc:
         reason_c = f"SoC {soc:.0f} % ≥ Ziel {zc.target_soc:.0f} % – kein Laden"
+        code_c, data_c = "soc_target_reached", {"target_soc": zc.target_soc}
     else:
         need = MIN_START_CHARGE_W + (0 if ctl_mode == "charge" else hysteresis_w)
         if avail_w >= need:
             target_c = max(0, min(_round10(avail_w), max_c))
             reason_c = f"Batterie lädt mit {target_c / 1000:.2f} kW aus PV-Überschuss"
+            code_c, data_c = "charging_surplus", {"watts": target_c}
         else:
             reason_c = f"Überschuss {avail_w:.0f} W < {need} W – kein Laden"
+            code_c, data_c = "below_start_threshold", {"rest_w": _w(avail_w), "threshold_w": need}
 
     if target_c > 0:
         desired = Plan("charge", target_c, False, reason_c, "override" if override == "on" else "charge",
-                       hard=override == "on")
+                       hard=override == "on", code=code_c, data={**nums, **data_c})
     else:
         # --- Entladen -------------------------------------------------------
         if blocked_reason:
-            desired = Plan("idle", 0, False, blocked_reason, "blocked", hard=True)
+            desired = Plan("idle", 0, False, blocked_reason, "blocked", hard=True, code=blocked_code,
+                           data={**nums, "mode": "Entladen gesperrt"})
         elif soc <= zc.min_soc:
             desired = Plan("idle", 0, False,
                            f"Batterie leer (SoC {soc:.0f} % ≤ Mindest-SoC {zc.min_soc:.0f} %)"
-                           + (", Netzbezug" if import_w > DISCHARGE_START_IMPORT_W else ""), "idle")
+                           + (", Netzbezug" if import_w > DISCHARGE_START_IMPORT_W else ""), "idle",
+                           code="battery_empty", data={**nums, "min_soc": zc.min_soc})
         elif base_load_w is None:
-            desired = Plan("idle", 0, False, "Grundlast unbekannt (PV/Hauszähler nicht lesbar) – kein Entladen", "idle")
+            desired = Plan("idle", 0, False, "Grundlast unbekannt (PV/Hauszähler nicht lesbar) – kein Entladen", "idle",
+                           code="base_load_unknown", data=dict(nums))
         elif import_w > DISCHARGE_START_IMPORT_W or ctl_mode == "discharge":
             # Entladen nur für die Grundlast (Haus ohne Heizstab/Wallbox), nie in den Heizstab
             cap_w = min(max_d, base_load_w)
@@ -121,15 +141,20 @@ def plan(
             if target_d >= DISCHARGE_START_IMPORT_W:
                 limited = " (auf Grundlast begrenzt)" if base_load_w < min(max_d, import_w + st.home_out_w) else ""
                 desired = Plan("discharge", target_d, False,
-                               f"Batterie deckt Grundlast ({target_d} W{limited}), SoC {soc:.0f} %", "discharge")
+                               f"Batterie deckt Grundlast ({target_d} W{limited}), SoC {soc:.0f} %", "discharge",
+                               code="discharging_base_load",
+                               data={**nums, "watts": target_d, "base_load_w": _w(base_load_w)})
             elif import_w > DISCHARGE_START_IMPORT_W and base_load_w < DISCHARGE_START_IMPORT_W:
                 desired = Plan("idle", 0, False,
                                f"Netzbezug {import_w:.0f} W gehört zu Heizstab/Wallbox (Grundlast {base_load_w:.0f} W) – kein Entladen",
-                               "idle")
+                               "idle", code="no_discharge_controlled_load",
+                               data={**nums, "base_load_w": _w(base_load_w)})
             else:
-                desired = Plan("idle", 0, False, "Kein Netzbezug – Batterie im Standby", "idle")
+                desired = Plan("idle", 0, False, "Kein Netzbezug – Batterie im Standby", "idle",
+                               code="standby_no_import", data=dict(nums))
         else:
-            desired = Plan("idle", 0, False, reason_c or "Kein Netzbezug – Batterie im Standby", "idle")
+            desired = Plan("idle", 0, False, reason_c or "Kein Netzbezug – Batterie im Standby", "idle",
+                           code=code_c or "standby_no_import", data={**nums, **data_c})
 
     # --- Wechsel-/Schreibsperren ---------------------------------------------
     # Ein neuer Lade-/Entlademodus startet frühestens MIN_DIRECTION_S nach dem letzten
@@ -139,7 +164,9 @@ def plan(
             and not desired.hard and seconds_since_change < MIN_DIRECTION_S):
         desired = Plan("idle", 0, False,
                        f"Pause nach Moduswechsel ({seconds_since_change:.0f}/{MIN_DIRECTION_S} s) – "
-                       f"{desired.mode} danach", "hold")
+                       f"{desired.mode} danach", "hold", code="mode_change_pause",
+                       data={**nums, "remaining_s": int(round(MIN_DIRECTION_S - seconds_since_change)),
+                             "next_mode": "Laden" if desired.mode == "charge" else "Entladen"})
 
     changed = desired.mode != ctl_mode or abs(desired.limit_w - ctl_limit_w) > WRITE_DELTA_W
     if desired.mode == "idle" and ctl_limit_w != 0:
@@ -181,7 +208,8 @@ class ZendureControl:
                     db.set_zendure_ctl(mode="idle", limit_w=0, changed_at=now.isoformat(timespec="seconds"))
                     text += " – neutral gestellt (Limits 0)"
             db.set_zendure_ctl(decision=text, decided_at=now.isoformat(timespec="seconds"))
-            return Plan(ctl["mode"], ctl["limit_w"], False, text, "unreachable")
+            return Plan(ctl["mode"], ctl["limit_w"], False, text, "unreachable", code="device_unreachable",
+                        data={"fails": fails})
 
         if ctl["fail_count"]:
             db.set_zendure_ctl(fail_count=0)
@@ -214,6 +242,7 @@ class ZendureControl:
                 else:
                     reason = f"Schreiben fehlgeschlagen ({p.mode} {p.limit_w} W) – neuer Versuch im nächsten Lauf"
                     p.write = False
+                    p.code, p.data = "write_failed", {**p.data, "wanted": p.code}
         db.set_zendure_ctl(decision=reason, decided_at=now.isoformat(timespec="seconds"))
         p.reason = reason
         return p
