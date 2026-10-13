@@ -214,6 +214,31 @@ class ApiErrorTest(unittest.TestCase):
         e, _ = self.run_with(self.A.BadRequestError("model: invalid model name", response=self.resp(400, ""), body=None))
         self.assertEqual(e.kind, "model")
 
+    def test_credit_balance_too_low(self):
+        body = {"type": "error", "error": {"type": "invalid_request_error", "message":
+                "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing "
+                "to upgrade or purchase credits."}}
+        e, _ = self.run_with(self.A.BadRequestError("Error code: 400", response=self.resp(400, ""), body=body))
+        self.assertEqual(e.kind, "billing")
+        self.assertIn("Plans & Billing", str(e))
+
+    def test_key_without_workspace(self):
+        body = {"type": "error", "error": {"type": "invalid_request_error", "message":
+                "This API key is not scoped to a workspace, so this request must include the "
+                "anthropic-workspace-id header with the ID of the workspace to use."}}
+        e, out = self.run_with(self.A.BadRequestError("Error code: 400", response=self.resp(400, ""), body=body))
+        self.assertEqual(e.kind, "auth")
+        self.assertIn("assistant.workspace_id", str(e))
+        self.assertIn("not scoped to a workspace", out)                      # Grund steht im Log
+
+    def test_bad_request_shows_api_reason_without_key(self):
+        body = {"type": "error", "error": {"type": "invalid_request_error",
+                                           "message": f"tools.0.custom.input_schema: type list not supported ({KEY})"}}
+        e, out = self.run_with(self.A.BadRequestError("Error code: 400", response=self.resp(400, ""), body=body))
+        self.assertEqual(str(e), "Die API hat die Anfrage abgelehnt (400): "
+                                 "tools.0.custom.input_schema: type list not supported (***)")
+        self.assertIn("type list not supported (***)", out)
+
 
 class WebChatTest(unittest.TestCase):
     """Endpunkte gegen temporäre config.json + DB, API gemockt."""
@@ -366,7 +391,8 @@ class WebChatTest(unittest.TestCase):
         web.heating_config_put(web._HeatingConfigUpdate(**body, assistant={"enabled": False, "model": "claude-opus-5-5",
                                                                            "max_requests_per_day": 20, "api_key": "HACK"}))
         saved = json.loads(self.cfg_path.read_text(encoding="utf-8"))["assistant"]
-        self.assertEqual(saved, {"enabled": False, "api_key": KEY, "model": "claude-opus-5-5", "max_requests_per_day": 20})
+        self.assertEqual(saved, {"enabled": False, "api_key": KEY, "model": "claude-opus-5-5", "max_requests_per_day": 20,
+                                 "workspace_id": ""})
         self.assertIn("Chat deaktiviert (Settings)", self.log_text())
         with self.assertRaises(web.HTTPException):
             web.heating_config_put(web._HeatingConfigUpdate(**body, assistant={"model": "kein modell!"}))
@@ -374,6 +400,12 @@ class WebChatTest(unittest.TestCase):
 
 @unittest.skipUnless(hc.sdk_available(), "anthropic nicht installiert")
 class ClientConfigTest(unittest.TestCase):
+    def test_workspace_header_only_when_set(self):
+        c = hc._default_client(hc.AssistantConfig(enabled=True, api_key=KEY, workspace_id="wrkspc_abc123"))
+        self.assertEqual(c.default_headers.get("anthropic-workspace-id"), "wrkspc_abc123")
+        c = hc._default_client(hc.AssistantConfig(enabled=True, api_key=KEY))
+        self.assertNotIn("anthropic-workspace-id", c.default_headers)
+
     def test_timeout_20s_no_retry(self):
         c = hc._default_client(hc.AssistantConfig(enabled=True, api_key=KEY))
         self.assertEqual(c.max_retries, 0)
@@ -390,7 +422,9 @@ class ParseTest(unittest.TestCase):
     def test_defaults_and_invalid(self):
         a = hc.parse_assistant({})
         self.assertEqual((a.enabled, a.model, a.max_requests_per_day, a.key_set), (False, "claude-haiku-5-5", 100, False))
-        for bad in ({"enabled": "ja"}, {"model": "x y"}, {"max_requests_per_day": 0}, {"api_key": 5}):
+        self.assertEqual(hc.parse_assistant({"assistant": {"workspace_id": " wrkspc_01ABC "}}).workspace_id, "wrkspc_01ABC")
+        for bad in ({"enabled": "ja"}, {"model": "x y"}, {"max_requests_per_day": 0}, {"api_key": 5},
+                    {"workspace_id": "wrkspc 1"}, {"workspace_id": 7}):
             with self.assertRaises(ValueError):
                 hc.parse_assistant({"assistant": bad})
 

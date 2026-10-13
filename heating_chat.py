@@ -9,7 +9,8 @@ Config (config.json):
   "assistant": {"enabled": false,              # Settings-Schalter „Chat aktiv“ (Default aus)
                 "api_key": "…",                 # nur in config.json, nie ins Git/Frontend/Log
                 "model": "claude-haiku-5-5",
-                "max_requests_per_day": 100}
+                "max_requests_per_day": 100,
+                "workspace_id": "wrkspc_…"}             # optional: nur für Keys ohne Workspace-Zuordnung
 
 Abfragen wie „was ist für morgen geplant?“ beantwortet ``local_answer`` aus der DB, ohne API.
 Das SDK (``anthropic``) wird erst beim Aufruf importiert: ohne Paket ist nur der Chat aus.
@@ -42,6 +43,7 @@ MAX_TEXT = 500                        # Zeichen je Nachricht
 PROPOSAL_TTL_S = 15 * 60
 HORIZON_DAYS = 7
 _MODEL_RE = re.compile(r"^[a-z0-9][a-z0-9.\-]{2,63}$")
+_WORKSPACE_RE = re.compile(r"^[A-Za-z0-9_\-]{4,80}$")
 WD = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
 WD_LONG = ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag")
 
@@ -63,6 +65,7 @@ class AssistantConfig:
     api_key: str = ""
     model: str = DEFAULT_MODEL
     max_requests_per_day: int = DEFAULT_LIMIT
+    workspace_id: str = ""            # Header anthropic-workspace-id (Key ohne Workspace-Zuordnung)
 
     @property
     def key_set(self) -> bool:
@@ -85,7 +88,11 @@ def parse_assistant(raw: dict) -> AssistantConfig:
     limit = a.get("max_requests_per_day", DEFAULT_LIMIT)
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 10000:
         raise ValueError("assistant.max_requests_per_day must be 1…10000")
-    return AssistantConfig(enabled=enabled, api_key=key.strip(), model=model, max_requests_per_day=limit)
+    ws = a.get("workspace_id") or ""
+    if not isinstance(ws, str) or (ws and not _WORKSPACE_RE.match(ws.strip())):
+        raise ValueError("assistant.workspace_id must look like 'wrkspc_…'")
+    return AssistantConfig(enabled=enabled, api_key=key.strip(), model=model, max_requests_per_day=limit,
+                           workspace_id=ws.strip())
 
 
 def _usage_conn() -> sqlite3.Connection:
@@ -293,7 +300,8 @@ def _default_client(acfg: AssistantConfig) -> Any:
         raise ChatError("Python-Paket „anthropic“ fehlt – Chat nicht verfügbar.", "unavailable")
     # Kein automatischer Retry: sonst bis zu (1 + max_retries) × Timeout Wartezeit im Chat.
     # Der Endpunkt ist synchron (FastAPI-Threadpool) – ein hängender Aufruf blockiert keine anderen Requests.
-    return anthropic.Anthropic(api_key=acfg.api_key, max_retries=0,
+    headers = {"anthropic-workspace-id": acfg.workspace_id} if acfg.workspace_id else None
+    return anthropic.Anthropic(api_key=acfg.api_key, max_retries=0, default_headers=headers,
                                timeout=anthropic.Timeout(API_TIMEOUT_S, connect=API_CONNECT_TIMEOUT_S))
 
 
@@ -310,10 +318,16 @@ def _translate(e: Exception, acfg: AssistantConfig) -> ChatError:
     if isinstance(e, anthropic.RateLimitError):
         return ChatError("Die API ist gerade ausgelastet (Rate-Limit). Bitte gleich noch einmal.", "busy")
     if isinstance(e, anthropic.BadRequestError):
-        msg = _scrub(getattr(e, "message", "") or "", acfg.api_key)
-        if "model" in msg.lower():
+        msg = _api_message(e, acfg)
+        if "credit balance" in msg.lower():
+            return ChatError("Kein Guthaben auf dem API-Konto – in der Anthropic Console unter "
+                             "„Plans & Billing“ Guthaben aufladen.", "billing")
+        if "workspace" in msg.lower():
+            return ChatError("API-Key ist keinem Workspace zugeordnet: in der Console einen Key in einem "
+                             "Workspace anlegen oder assistant.workspace_id in config.json eintragen.", "auth")
+        if re.search(r"\bmodel\b", msg, re.IGNORECASE) and not re.search(r"tool|schema", msg, re.IGNORECASE):
             return ChatError(f"Modell „{acfg.model}“ nicht verfügbar – in Settings ändern.", "model")
-        return ChatError("Die API hat die Anfrage abgelehnt (400).")
+        return ChatError("Die API hat die Anfrage abgelehnt (400)" + (f": {msg}" if msg else "."))
     if isinstance(e, anthropic.APIStatusError):
         return ChatError(f"API-Fehler ({e.status_code}). Bitte später noch einmal.", "busy")
     if isinstance(e, anthropic.APITimeoutError):
@@ -363,12 +377,25 @@ def call_model(acfg: AssistantConfig, context: str, history: list[dict[str, str]
             "question": text[:400] or "Das habe ich nicht verstanden. Bitte anders formulieren."}
 
 
+def _api_message(e: Exception, acfg: AssistantConfig, limit: int = 300) -> str:
+    """Fehlertext der API (aus dem JSON-Body), ohne API-Key, gekürzt."""
+    body = getattr(e, "body", None)
+    msg = ""
+    if isinstance(body, dict):
+        err = body.get("error")
+        msg = err.get("message", "") if isinstance(err, dict) else str(body.get("message", ""))
+    msg = msg or getattr(e, "message", "") or ""
+    return _scrub(str(msg), acfg.api_key)[:limit]
+
+
 def _log_api_error(e: Exception, acfg: AssistantConfig) -> None:
     status = getattr(e, "status_code", None)
     rid = getattr(getattr(e, "response", None), "headers", {}) or {}
     rid = rid.get("request-id") if hasattr(rid, "get") else None
-    log.warning("Chat: API-Fehler %s%s (Modell %s)%s", type(e).__name__,
-                f" {status}" if status else "", acfg.model, f", request-id {rid}" if rid else "")
+    msg = _api_message(e, acfg) if status else ""
+    log.warning("Chat: API-Fehler %s%s (Modell %s)%s%s", type(e).__name__,
+                f" {status}" if status else "", acfg.model, f", request-id {rid}" if rid else "",
+                f": {msg}" if msg else "")
 
 
 # ── Vorschlag prüfen ────────────────────────────────────────────────────────

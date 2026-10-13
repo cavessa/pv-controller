@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-13 – Chat: API-Key ohne Workspace (400) – optionales assistant.workspace_id, API-Fehlertext sichtbar
+
+**Befund (Prod, erster echter Aufruf):** „Die API hat die Anfrage abgelehnt (400)“. Diagnose mit einem vom User ausgeführten Skript (Key nur aus config.json gelesen, maskiert): „This API key is not scoped to a workspace, so this request must include the anthropic-workspace-id header …“ – unabhängig vom Tool-Schema (beide Varianten gleich).
+**Danach** (User hat einen Key im Default-Workspace angelegt): „Your credit balance is too low …“ – Konto ohne Guthaben, kein Code-Problem; dafür jetzt eine eigene Chat-Meldung („Kein Guthaben … Plans & Billing“).
+**Fix:** optionales Feld `assistant.workspace_id` (z. B. `wrkspc_…`, nur in config.json); gesetzt → Header `anthropic-workspace-id` bei jedem Aufruf. Alternativ einen Key innerhalb eines Workspaces anlegen (dann bleibt das Feld leer). Dieser Fehler hat eine eigene Meldung im Chat. Bei 400 steht der Fehlertext der API jetzt im Chat und im Log (Key maskiert, gekürzt), damit die Ursache ohne Nachstellen sichtbar ist.
+**Tests:** Workspace-Header nur wenn gesetzt, Validierung, Workspace- und Guthaben-Meldung, 400-Grund ohne Key; gesamt 247.
+
 ## 2026-10-13 – Tab „Heizung“ direkt nach „Dashboard“
 
 Reihenfolge der Haupt-Tabs: Dashboard, Heizung, Verlauf, Prioritäten, Settings, Logs (nur `web/index.html`).

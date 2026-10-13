@@ -130,6 +130,7 @@
     "enabled": false,
     "api_key": "",
     "model": "claude-haiku-5-5",
-    "max_requests_per_day": 100
+    "max_requests_per_day": 100,
+    "workspace_id": ""
   }
 }
