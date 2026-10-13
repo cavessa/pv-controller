@@ -50,7 +50,8 @@ git log --oneline "$OLD..$NEW" 2>/dev/null | head -15 | sed 's/^/    /' | tee -a
 
 # 1) Vorabprüfung im Wegwerf-Worktree (Prod bleibt unberührt)
 TMP="$(mktemp -d /tmp/pvc-deploy.XXXXXX)"
-trap 'git worktree remove --force "$TMP" >/dev/null 2>&1 || true; rm -rf "$TMP"' EXIT
+# Bei jedem Ende (ok, Rollback, Abbruch): Worktree entfernen und verwaiste Verweise aufräumen
+trap 'git -C "$PROD" worktree remove --force "$TMP/wt" >/dev/null 2>&1 || true; rm -rf "$TMP"; git -C "$PROD" worktree prune >/dev/null 2>&1 || true' EXIT
 git worktree add --quiet --detach "$TMP/wt" "$NEW"
 ( cd "$TMP/wt"
   log "Tests …"

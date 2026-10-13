@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-13 – deploy.sh: Wegwerf-Worktree wirklich entfernen, verwaiste Verweise aufräumen
+
+Der EXIT-Trap rief `git worktree remove "$TMP"` auf, der Worktree lag aber unter `$TMP/wt` – das Entfernen schlug still fehl, `rm -rf` löschte nur das Verzeichnis, und je Deploy blieb ein verwaister Verweis in `.git/worktrees` (Prod: 11 Stück). Jetzt entfernt der Trap `$TMP/wt` und ruft danach `git worktree prune` auf – bei jedem Ende (ok, Rollback, Abbruch). Einmalig in `~/pvcontroller-prod` ausgeführt.
+
 ## 2026-10-13 – Chat: 20-s-Timeout ohne Retry (Dev)
 
 Der API-Aufruf hatte 45 s Timeout mit 1 automatischem Retry (bis ≈ 90 s Wartezeit im Chat). Jetzt `anthropic.Timeout(20 s, connect 5 s)` und `max_retries=0`; eine Zeitüberschreitung meldet der Chat als „Die API antwortet nicht (Zeitüberschreitung nach 20 s)“ (eigene Meldung statt „keine Verbindung“). Die Chat-Endpunkte sind synchron und laufen im FastAPI-Threadpool – geprüft mit einer hängenden Mock-API in Dev: Chat-Antwort nach 21,5 s, währenddessen Dashboard, `/api/status` und `/api/heating/status` normal in 3–540 ms. Tests: Timeout-Konfiguration, Timeout-Meldung, Endpunkte nicht `async`; gesamt 243.
