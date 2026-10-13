@@ -4,6 +4,9 @@ Tabelle heating_schedule (in pvcontroller.db):
   wiederkehrend: days = "mo,di,mi,do,fr", date = NULL
   einmalig:      days = NULL, date = "YYYY-MM-DD" (nach Ausführung enabled=0, nach 7 Tagen gelöscht)
 Uhrzeiten sind Europe/Berlin-Wanduhrzeit.
+Zeittyp je Eintrag (``kind``): "time" (feste Uhrzeit, Default – alle Einträge vor dieser Erweiterung) oder
+"sunrise"/"sunset" mit ``offset_min`` (±) und optional ``not_before``/``not_after``; Sonnenzeiten lokal aus
+latitude/longitude (``suntime``, dieselbe Berechnung wie bei den Rollläden). Bei Sonnen-Einträgen ist ``time`` "".
 
 Ablauf je Minute (``run``), alles nach der PV-/Heizstab-/Wallbox-Steuerung:
 1. Heizung oder Schalter „Zeitpläne aktiv“ (heating.schedules_enabled) aus → nichts, auch kein DB-Zugriff.
@@ -27,15 +30,15 @@ import time as _time
 from dataclasses import dataclass
 from datetime import date as Date, datetime, timedelta, timezone
 from typing import Any, Callable, Optional
-from zoneinfo import ZoneInfo
 
 import db
 import heating
+import suntime
 from clients.openhab_client import OpenHabError
+from suntime import TZ, due_instant  # noqa: F401  (bisherige Namen bleiben: hs.TZ, hs.due_instant)
 
 log = logging.getLogger("pv-controller.heating")
 
-TZ = ZoneInfo("Europe/Berlin")
 DAYS = ("mo", "di", "mi", "do", "fr", "sa", "so")       # Index = datetime.weekday()
 CATCH_UP_MIN = 15                                       # Nachholen nur bis 15 min Verspätung
 BUDGET_S = 5.0                                          # Gesamtzeit Heizungsteil im Cron
@@ -89,6 +92,12 @@ def init_tables() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_heating_schedule_enabled ON heating_schedule(enabled)")
+        # Zeittyp (Sonnenauf-/-untergang ± Offset): bestehende Einträge bleiben kind = 'time'
+        scols = {r[1] for r in conn.execute("PRAGMA table_info(heating_schedule)")}
+        for col, ddl in (("kind", "TEXT NOT NULL DEFAULT 'time'"), ("offset_min", "INTEGER NOT NULL DEFAULT 0"),
+                         ("not_before", "TEXT"), ("not_after", "TEXT")):
+            if col not in scols:
+                conn.execute(f"ALTER TABLE heating_schedule ADD COLUMN {col} {ddl}")
         # Rückprüfung je Raum: pending = wird 5/10/15 min nach sent_at gelesen; mismatch = Gerät meldet
         # anderen Wert (Meldung auf der Card). previous = Sollwert vor dem Senden (Zurückspringen erkennen).
         conn.execute(
@@ -117,7 +126,21 @@ def _row(r: sqlite3.Row) -> dict[str, Any]:
     d = dict(r)
     d["days"] = d["days"].split(",") if d.get("days") else []
     d["enabled"] = bool(d["enabled"])
+    d["kind"] = d.get("kind") or "time"
+    d["when"] = when(d)
     return d
+
+
+def when(entry: dict[str, Any]) -> str:
+    """'07:00' bzw. 'Sonnenuntergang −15 min (nicht nach 22:00)'."""
+    return entry["time"] if (entry.get("kind") or "time") == "time" else suntime.describe(entry)
+
+
+def instant(entry: dict[str, Any], day: Date, loc: Optional[tuple[float, float]] = None) -> Optional[datetime]:
+    """Schaltzeitpunkt an ``day``; None, wenn eine Sonnenzeit ohne Koordinaten nicht berechenbar ist."""
+    if (entry.get("kind") or "time") == "time":
+        return due_instant(day, entry["time"])
+    return suntime.instant(entry, day, loc)
 
 
 def list_schedules(room_id: Optional[str] = None) -> list[dict[str, Any]]:
@@ -137,9 +160,11 @@ def get_schedule(sid: int) -> Optional[dict[str, Any]]:
     return _row(r) if r else None
 
 
-def validate_entry(cfg: heating.HeatingConfig, room_id: str, setpoint: Any, time: str,
+def validate_entry(cfg: heating.HeatingConfig, room_id: str, setpoint: Any, time: Any = None,
                    days: Optional[list[str]] = None, date: Optional[str] = None,
-                   now: Optional[datetime] = None) -> dict[str, Any]:
+                   now: Optional[datetime] = None, kind: Optional[str] = None, offset_min: Any = 0,
+                   not_before: Any = None, not_after: Any = None,
+                   loc: Optional[tuple[float, float]] = None) -> dict[str, Any]:
     """Prüft einen Eintrag; ValueError mit Klartext bei Fehlern. Liefert die DB-Felder."""
     room = cfg.room(room_id)
     if room is None:
@@ -147,8 +172,10 @@ def validate_entry(cfg: heating.HeatingConfig, room_id: str, setpoint: Any, time
     if not room.controllable:
         raise ValueError(f"{room.name} hat keinen Sollwert (nur Anzeige)")
     sp = heating.validate_setpoint(cfg, setpoint)
-    if not isinstance(time, str) or not _TIME_RE.match(time):
-        raise ValueError("Uhrzeit muss HH:MM sein")
+    w = suntime.validate_when(kind or "time", time, offset_min, not_before, not_after, loc)
+    time = w["time"] or ""                              # Spalte time ist NOT NULL: "" bei Sonnenzeiten
+    extra = {"kind": w["kind"], "offset_min": w["offset_min"], "not_before": w["not_before"],
+             "not_after": w["not_after"]}
     days = [d.strip().lower() for d in (days or []) if d and d.strip()]
     if days and date:
         raise ValueError("Entweder Wochentage oder ein Datum, nicht beides")
@@ -157,7 +184,7 @@ def validate_entry(cfg: heating.HeatingConfig, room_id: str, setpoint: Any, time
         if bad:
             raise ValueError(f"Unbekannte Wochentage: {', '.join(bad)}")
         days = [d for d in DAYS if d in days]                     # sortiert, ohne Doppelte
-        return {"room_id": room_id, "setpoint": sp, "time": time, "days": ",".join(days), "date": None}
+        return {"room_id": room_id, "setpoint": sp, "time": time, "days": ",".join(days), "date": None, **extra}
     if not date:
         raise ValueError("Wochentage oder Datum angeben")
     try:
@@ -165,9 +192,10 @@ def validate_entry(cfg: heating.HeatingConfig, room_id: str, setpoint: Any, time
     except (TypeError, ValueError):
         raise ValueError("Datum muss YYYY-MM-DD sein")
     now = (now or datetime.now(TZ)).astimezone(TZ)
-    if _utc(due_instant(d, time)) <= _utc(now):
+    at = instant({"time": time, **extra}, d, loc)
+    if at is None or _utc(at) <= _utc(now):
         raise ValueError("Zeitpunkt liegt in der Vergangenheit")
-    return {"room_id": room_id, "setpoint": sp, "time": time, "days": None, "date": d.isoformat()}
+    return {"room_id": room_id, "setpoint": sp, "time": time, "days": None, "date": d.isoformat(), **extra}
 
 
 def create_schedule(fields: dict[str, Any], source: str = "ui", note: str = "",
@@ -175,13 +203,28 @@ def create_schedule(fields: dict[str, Any], source: str = "ui", note: str = "",
     created = (now or datetime.now(TZ)).astimezone(TZ).isoformat(timespec="seconds")
     with _conn() as conn:
         cur = conn.execute(
-            "INSERT INTO heating_schedule (room_id, setpoint, time, days, date, enabled, source, note, created_at) "
-            "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)",
+            "INSERT INTO heating_schedule (room_id, setpoint, time, days, date, enabled, source, note, created_at, "
+            "kind, offset_min, not_before, not_after) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)",
             (fields["room_id"], fields["setpoint"], fields["time"], fields["days"], fields["date"],
-             source, note or None, created),
+             source, note or None, created, fields.get("kind") or "time", fields.get("offset_min") or 0,
+             fields.get("not_before"), fields.get("not_after")),
         )
         sid = cur.lastrowid
     return get_schedule(sid)
+
+
+def update_schedule(sid: int, fields: dict[str, Any], now: Optional[datetime] = None) -> Optional[dict[str, Any]]:
+    """Eintrag bearbeiten. Gilt wie neu angelegt: heute nicht nachholen, wenn der neue Zeitpunkt schon vorbei ist."""
+    stamp = (now or datetime.now(TZ)).astimezone(TZ).isoformat(timespec="seconds")
+    with _conn() as conn:
+        n = conn.execute(
+            "UPDATE heating_schedule SET room_id = ?, setpoint = ?, time = ?, days = ?, date = ?, kind = ?, "
+            "offset_min = ?, not_before = ?, not_after = ?, enabled = 1, created_at = ?, last_run = NULL, "
+            "last_result = NULL WHERE id = ?",
+            (fields["room_id"], fields["setpoint"], fields["time"], fields["days"], fields["date"],
+             fields.get("kind") or "time", fields.get("offset_min") or 0, fields.get("not_before"),
+             fields.get("not_after"), stamp, sid)).rowcount
+    return get_schedule(sid) if n else None
 
 
 def set_enabled(sid: int, enabled: bool) -> Optional[dict[str, Any]]:
@@ -228,27 +271,6 @@ def _c(v: float) -> str:
 # ── Zeit ────────────────────────────────────────────────────────────────────
 
 
-def due_instant(day: Date, hhmm: str) -> datetime:
-    """Zeitpunkt (aware, Europe/Berlin) von HH:MM an ``day``.
-
-    Zeitumstellung: doppelte Stunde im Oktober → erstes Auftreten (fold=0);
-    fehlende Stunde im März (02:00–02:59) → Moment der Umstellung (03:00 Sommerzeit).
-    """
-    h, m = map(int, hhmm.split(":"))
-    wall = datetime(day.year, day.month, day.day, h, m, tzinfo=TZ)
-    back = wall.astimezone(timezone.utc).astimezone(TZ)
-    if (back.hour, back.minute) == (h, m):
-        return wall
-    # Lücke: ab dem Instant vor der Lücke minutenweise vor bis die Wanduhr HH:MM erreicht
-    t = wall.replace(fold=1).astimezone(timezone.utc)
-    for _ in range(180):
-        local = t.astimezone(TZ)
-        if (local.hour, local.minute) >= (h, m) or local.date() > day:
-            return local
-        t += timedelta(minutes=1)
-    return wall
-
-
 def _ran_on(entry: dict[str, Any], day: Date) -> bool:
     lr = entry.get("last_run")
     if not lr:
@@ -265,15 +287,20 @@ def applies_on(entry: dict[str, Any], day: Date) -> bool:
     return DAYS[day.weekday()] in (entry.get("days") or [])
 
 
-def due_entries(entries: list[dict[str, Any]], now: datetime) -> list[tuple[dict[str, Any], datetime]]:
-    """Heute fällige, noch nicht gelaufene Einträge → [(Eintrag, Fälligkeit)]."""
+def due_entries(entries: list[dict[str, Any]], now: datetime,
+                loc: Optional[tuple[float, float]] = None) -> list[tuple[dict[str, Any], Optional[datetime]]]:
+    """Heute fällige, noch nicht gelaufene Einträge → [(Eintrag, Fälligkeit)].
+    Fälligkeit None = Sonnenzeit ohne Koordinaten nicht berechenbar (der Lauf überspringt und meldet das)."""
     now = now.astimezone(TZ)
     today = now.date()
     out = []
     for e in entries:
         if not e["enabled"] or not applies_on(e, today) or _ran_on(e, today):
             continue
-        at = due_instant(today, e["time"])
+        at = instant(e, today, loc)
+        if at is None:
+            out.append((e, None))
+            continue
         if _utc(at) > _utc(now):
             continue
         created = e.get("created_at")
@@ -287,8 +314,9 @@ def due_entries(entries: list[dict[str, Any]], now: datetime) -> list[tuple[dict
     return out
 
 
-def next_changes(entries: list[dict[str, Any]], now: datetime, horizon_days: int = 7) -> dict[str, dict]:
-    """Nächster Schaltpunkt je Raum (für die Card): {room_id: {"at": iso, "setpoint": x}}."""
+def next_changes(entries: list[dict[str, Any]], now: datetime, horizon_days: int = 7,
+                 loc: Optional[tuple[float, float]] = None) -> dict[str, dict]:
+    """Nächster Schaltpunkt je Raum (für die Card): {room_id: {"at": iso, "setpoint": x, "when": …}}."""
     now = now.astimezone(TZ)
     out: dict[str, dict] = {}
     for offset in range(horizon_days + 1):
@@ -296,13 +324,13 @@ def next_changes(entries: list[dict[str, Any]], now: datetime, horizon_days: int
         for e in entries:
             if not e["enabled"] or not applies_on(e, day) or (offset == 0 and _ran_on(e, day)):
                 continue
-            at = due_instant(day, e["time"])
-            if _utc(at) <= _utc(now):
+            at = instant(e, day, loc)
+            if at is None or _utc(at) <= _utc(now):
                 continue
             cur = out.get(e["room_id"])
             if cur is None or _utc(at) < _utc(cur["_at"]):
                 out[e["room_id"]] = {"_at": at, "at": at.isoformat(timespec="minutes"),
-                                     "setpoint": e["setpoint"], "id": e["id"]}
+                                     "setpoint": e["setpoint"], "id": e["id"], "when": when(e)}
     for v in out.values():
         v.pop("_at")
     return out
@@ -358,7 +386,14 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
 
     # 2. nur DB
     entries = [e for e in list_schedules() if cfg.room(e["room_id"]) and cfg.room(e["room_id"]).controllable]
-    due = due_entries(entries, now)
+    loc = suntime.location(raw)
+    due = due_entries(entries, now, loc)
+    for e, _at in [x for x in due if x[1] is None]:      # Sonnenzeit ohne latitude/longitude
+        emit(f"Zeitplan übersprungen: {cfg.room(e['room_id']).name} {when(e)} → {e['setpoint']:g} °C "
+             f"(Sonnenzeit nicht berechenbar: latitude/longitude fehlen)", logging.WARNING)
+        _mark([e["id"]], SKIPPED, now, disable_once=True)
+        res.skipped += 1
+    due = [x for x in due if x[1] is not None]
     pending = [p for p in _pending_verifies() if cfg.room(p["room_id"]) and _verify_due(p, now)]
     res.due = len(due)
     if not due and not pending:
@@ -369,10 +404,10 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
     late = [(e, at) for e, at in due if _utc(now) - _utc(at) > timedelta(minutes=CATCH_UP_MIN)]
     for e, at in late:
         room = cfg.room(e["room_id"])
-        emit(f"Zeitplan übersprungen: {room.name} {e['time']} → {e['setpoint']:g} °C "
+        emit(f"Zeitplan übersprungen: {room.name} {when(e)} → {e['setpoint']:g} °C "
              f"({int((_utc(now) - _utc(at)).total_seconds() // 60)} min verspätet, max. {CATCH_UP_MIN})", logging.WARNING)
     _mark([e["id"] for e, _ in late], SKIPPED, now, disable_once=True)
-    res.skipped = len(late)
+    res.skipped += len(late)
     late_ids = {e["id"] for e, _ in late}
     due = [(e, at) for e, at in due if e["id"] not in late_ids]
 
@@ -458,7 +493,7 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
     for rid, (e, at) in latest.items():
         room = rooms[rid]
         target = float(e["setpoint"])
-        label = f"{room.name} Soll → {target:g} °C (Zeitplan {e['time']}" + (", einmalig" if e["date"] else "") + ")"
+        label = f"{room.name} Soll → {target:g} °C (Zeitplan {when(e)}" + (", einmalig" if e["date"] else "") + ")"
         if current.get(rid) is not None and abs(current[rid] - target) < 0.01:
             emit(f"{label}: bereits eingestellt, nichts gesendet")
             _mark([e["id"]], UNCHANGED, now, disable_once=True)

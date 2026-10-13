@@ -1850,7 +1850,7 @@ def heating_status(response: Response) -> dict[str, Any]:
         return {**base, "ok": True, "error": None, "rooms": []}
     st = {**base, **_heating.read_status(hcfg, client)}
     try:
-        nxt = _hsched.next_changes(_hsched.list_schedules(), datetime.now(_hsched.TZ))
+        nxt = _hsched.next_changes(_hsched.list_schedules(), datetime.now(_hsched.TZ), loc=_ssched.location(raw))
         alerts = _hsched.alerts()
     except Exception as e:  # Zeitplan-DB darf die Anzeige nicht blockieren
         log.warning("heating: Zeitpläne nicht lesbar: %s", e)
@@ -2023,11 +2023,33 @@ def heating_config_put(body: _HeatingConfigUpdate) -> dict[str, Any]:
 
 class _HeatingScheduleCreate(BaseModel):
     room_id: str
-    time: str
+    time: Optional[str] = None           # HH:MM bei kind = "time"
     setpoint: float
     days: Optional[list[str]] = None
     date: Optional[str] = None
     note: Optional[str] = None
+    kind: str = "time"                   # time | sunrise | sunset
+    offset_min: int = 0
+    not_before: Optional[str] = None
+    not_after: Optional[str] = None
+
+
+def _with_today(items: list[dict[str, Any]], inst, now: datetime, loc) -> list[dict[str, Any]]:
+    """Berechnete Uhrzeit für heute je Eintrag („Sonnenuntergang −15 min (18:22)“ in der Liste)."""
+    for e in items:
+        at = inst(e, now.date(), loc) if (e.get("kind") or "time") != "time" else None
+        e["at_today"] = f"{at:%H:%M}" if at else None
+    return items
+
+
+def _heating_sched_fields(hcfg, body: "_HeatingScheduleCreate", raw: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return _hsched.validate_entry(hcfg, body.room_id, body.setpoint, body.time, days=body.days,
+                                      date=body.date or None, kind=body.kind, offset_min=body.offset_min,
+                                      not_before=body.not_before, not_after=body.not_after,
+                                      loc=_ssched.location(raw))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 class _HeatingSchedulePatch(BaseModel):
@@ -2039,29 +2061,43 @@ def heating_schedules(response: Response) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
     raw, hcfg, _client = _heating_ctx()
     now = datetime.now(_hsched.TZ)
-    items = _hsched.list_schedules()
+    loc = _ssched.location(raw)
+    items = _with_today(_hsched.list_schedules(), _hsched.instant, now, loc)
+    sun = {}
+    if loc:
+        rise, sset = _ssched.sun_times(now.date(), *loc)
+        sun = {"sunrise": f"{rise:%H:%M}" if rise else None, "sunset": f"{sset:%H:%M}" if sset else None}
     return {
         "schedules_enabled": hcfg.schedules_enabled,
         "heating_enabled": hcfg.enabled,
         "dry_run": _heating_dry_run(raw),
         "now": now.isoformat(timespec="minutes"),
         "items": items,
-        "next": _hsched.next_changes(items, now),
+        "sun_today": sun,
+        "next": _hsched.next_changes(items, now, loc=loc),
     }
 
 
 @app.post("/api/heating/schedules")
 def heating_schedule_create(body: _HeatingScheduleCreate) -> dict[str, Any]:
-    _raw, hcfg, _client = _heating_ctx()
-    try:
-        fields = _hsched.validate_entry(hcfg, body.room_id, body.setpoint, body.time,
-                                        days=body.days, date=body.date or None)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
+    raw, hcfg, _client = _heating_ctx()
+    fields = _heating_sched_fields(hcfg, body, raw)
     entry = _hsched.create_schedule(fields, source="ui", note=(body.note or "").strip()[:200])
     room = hcfg.room(body.room_id)
     when = entry["date"] or ",".join(entry["days"])
-    _app_log(f"Zeitplan angelegt: {room.name} {entry['time']} → {entry['setpoint']:g} °C ({when})")
+    _app_log(f"Zeitplan angelegt: {room.name} {entry['when']} → {entry['setpoint']:g} °C ({when})")
+    return entry
+
+
+@app.put("/api/heating/schedules/{sid}")
+def heating_schedule_update(sid: int, body: _HeatingScheduleCreate) -> dict[str, Any]:
+    """Zeitplan bearbeiten (gleiche Prüfung wie beim Anlegen)."""
+    raw, hcfg, _client = _heating_ctx()
+    if _hsched.get_schedule(sid) is None:
+        raise HTTPException(404, f"Zeitplan {sid} unbekannt")
+    entry = _hsched.update_schedule(sid, _heating_sched_fields(hcfg, body, raw))
+    when = entry["date"] or ",".join(entry["days"])
+    _app_log(f"Zeitplan geändert: {hcfg.room(body.room_id).name} {entry['when']} → {entry['setpoint']:g} °C ({when})")
     return entry
 
 
@@ -2080,7 +2116,7 @@ def heating_schedule_delete(sid: int) -> dict[str, Any]:
         raise HTTPException(404, f"Zeitplan {sid} unbekannt")
     _raw, hcfg, _client = _heating_ctx()
     room = hcfg.room(entry["room_id"])
-    _app_log(f"Zeitplan gelöscht: {room.name if room else entry['room_id']} {entry['time']} → {entry['setpoint']:g} °C")
+    _app_log(f"Zeitplan gelöscht: {room.name if room else entry['room_id']} {entry['when']} → {entry['setpoint']:g} °C")
     return {"ok": True, "id": sid}
 
 
@@ -2160,7 +2196,7 @@ def heating_chat(body: _ChatRequest) -> dict[str, Any]:
         answer = _schat.local_answer(text, scfg, _ssched.list_schedules(), now, loc, rules, scfg.schedules_enabled)
         if answer is not None:
             return {**base, "type": "answer", "text": answer, "chat": st_now()}
-    answer = _hchat.local_answer(text, hcfg, entries, now) if hcfg.enabled else None
+    answer = _hchat.local_answer(text, hcfg, entries, now, loc) if hcfg.enabled else None
     if answer is not None:
         return {**base, "type": "answer", "text": answer, "chat": st_now()}
     st = st_now()
@@ -2171,7 +2207,7 @@ def heating_chat(body: _ChatRequest) -> dict[str, Any]:
         st = st_now()
         return {**base, "type": "limit", "text": st["hint"], "chat": st}
     rooms = _heating.read_status(hcfg, client).get("rooms", []) if hcfg.enabled else []
-    context = _hchat.build_context(hcfg, rooms, entries, now)
+    context = _hchat.build_context(hcfg, rooms, entries, now, loc)
     sh_status: list[dict[str, Any]] = []
     if scfg.enabled:
         sh_status = _shutters.read_status(scfg, client, now).get("rooms", [])
@@ -2186,7 +2222,7 @@ def heating_chat(body: _ChatRequest) -> dict[str, Any]:
                                         "shutter_immediate", "shutter_delete_ids"))
     if isinstance(q, str) and q.strip() and not has_work:
         return {**base, "type": "question", "text": q.strip()[:400], "chat": st}
-    proposal, errors = _hchat.validate_proposal(hcfg, inp, now)
+    proposal, errors = _hchat.validate_proposal(hcfg, inp, now, loc)
     errors += _schat.validate(scfg, proposal, inp, now, loc)
     amb = _schat.ambiguity(text, scfg, _schat.touched(proposal, inp)) if scfg.enabled else None
     if amb:                                                      # Rückfrage statt raten
@@ -2202,7 +2238,7 @@ def heating_chat(body: _ChatRequest) -> dict[str, Any]:
                 "chat": st}
     proposal.note = text[:200]
     _hchat.store(proposal)
-    pv = _hchat.preview(hcfg, proposal, now)
+    pv = _hchat.preview(hcfg, proposal, now, loc)
     pv["shutters"] = _schat.preview(scfg, proposal, now, loc, sh_status) if scfg.enabled else None
     return {**base, "type": "proposal", "proposal": pv, "schedules_enabled": hcfg.schedules_enabled,
             "shutter_schedules_enabled": scfg.schedules_enabled, "dry_run": _heating_dry_run(raw), "chat": st}
@@ -2232,8 +2268,10 @@ def heating_chat_apply(body: _ChatApply) -> dict[str, Any]:
         raise HTTPException(410, "Vorschlag abgelaufen – bitte neu fragen.")
     try:                                                  # Zeit kann seit der Vorschau vergangen sein
         for e in p.entries:
-            _hsched.validate_entry(hcfg, e["room_id"], e["setpoint"], e["time"],
-                                   days=e["days"].split(",") if e["days"] else None, date=e["date"], now=now)
+            _hsched.validate_entry(hcfg, e["room_id"], e["setpoint"], e["time"] or None,
+                                   days=e["days"].split(",") if e["days"] else None, date=e["date"], now=now,
+                                   kind=e.get("kind") or "time", offset_min=e.get("offset_min") or 0,
+                                   not_before=e.get("not_before"), not_after=e.get("not_after"), loc=loc)
         for e in p.shutter_entries:
             _ssched.validate_entry(scfg, e["shutter_id"], e["action"], e["kind"], position=e["position"],
                                    time=e["time"], offset_min=e["offset_min"], not_before=e["not_before"],
@@ -2244,14 +2282,14 @@ def heating_chat_apply(body: _ChatApply) -> dict[str, Any]:
     created = [_hsched.create_schedule(e, source="chat", note=p.note) for e in p.entries]
     for e in created:
         room = hcfg.room(e["room_id"])
-        _app_log(f"Zeitplan angelegt (Chat): {room.name} {e['time']} → {e['setpoint']:g} °C "
+        _app_log(f"Zeitplan angelegt (Chat): {room.name} {e['when']} → {e['setpoint']:g} °C "
                  f"({e['date'] or ','.join(e['days'])})")
     deleted = []
     for d in p.deletes:
         if _hsched.delete_schedule(d["id"]):
             deleted.append(d["id"])
             room = hcfg.room(d["room_id"])
-            _app_log(f"Zeitplan gelöscht (Chat): {room.name if room else d['room_id']} {d['time']} → "
+            _app_log(f"Zeitplan gelöscht (Chat): {room.name if room else d['room_id']} {d['when']} → "
                      f"{d['setpoint']:g} °C")
     sent = [_heating_send(raw, hcfg, client, hcfg.room(i["room_id"]), i["setpoint"], "Chat") for i in p.immediate]
     out = {"ok": all(r["ok"] for r in sent), "created": [e["id"] for e in created], "deleted": deleted,
@@ -2523,7 +2561,7 @@ def shutters_schedules(response: Response) -> dict[str, Any]:
     raw, scfg, _client = _shutters_ctx()
     now = datetime.now(_ssched.TZ)
     loc = _ssched.location(raw)
-    items = _ssched.list_schedules()
+    items = _with_today(_ssched.list_schedules(), _ssched.instant, now, loc)
     today = {}
     if loc:
         rise, sset = _ssched.sun_times(now.date(), *loc)
@@ -2536,18 +2574,34 @@ def shutters_schedules(response: Response) -> dict[str, Any]:
 @app.post("/api/shutters/schedules")
 def shutters_schedule_create(body: _ShutterScheduleCreate) -> dict[str, Any]:
     raw, scfg, _client = _shutters_ctx()
+    entry = _ssched.create_schedule(_shutter_sched_fields(scfg, body, raw), source="ui",
+                                    note=(body.note or "").strip()[:200])
+    _app_log("Rollladen-Zeitplan angelegt: " + _sched_text(scfg.shutter(body.shutter_id).name, entry), area="shutters")
+    return entry
+
+
+def _shutter_sched_fields(scfg, body: "_ShutterScheduleCreate", raw: dict[str, Any]) -> dict[str, Any]:
+    """Formular im Tab: an jedem Rollladen erlaubt; bei „Automatik: openHAB-Regel“ ruht der Eintrag."""
     pos = body.position
     if isinstance(pos, float) and pos.is_integer():
         pos = int(pos)
     try:
-        fields = _ssched.validate_entry(scfg, body.shutter_id, body.action, body.kind, position=pos,
-                                        time=body.time, offset_min=body.offset_min, not_before=body.not_before,
-                                        not_after=body.not_after, days=body.days, date=body.date or None,
-                                        loc=_ssched.location(raw))
+        return _ssched.validate_entry(scfg, body.shutter_id, body.action, body.kind, position=pos,
+                                      time=body.time, offset_min=body.offset_min, not_before=body.not_before,
+                                      not_after=body.not_after, days=body.days, date=body.date or None,
+                                      loc=_ssched.location(raw), any_automation=True)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    entry = _ssched.create_schedule(fields, source="ui", note=(body.note or "").strip()[:200])
-    _app_log("Rollladen-Zeitplan angelegt: " + _sched_text(scfg.shutter(body.shutter_id).name, entry), area="shutters")
+
+
+@app.put("/api/shutters/schedules/{sid}")
+def shutters_schedule_update(sid: int, body: _ShutterScheduleCreate) -> dict[str, Any]:
+    """Rollladen-Zeitplan bearbeiten (gleiche Prüfung wie beim Anlegen)."""
+    raw, scfg, _client = _shutters_ctx()
+    if _ssched.get_schedule(sid) is None:
+        raise HTTPException(404, f"Zeitplan {sid} unbekannt")
+    entry = _ssched.update_schedule(sid, _shutter_sched_fields(scfg, body, raw))
+    _app_log("Rollladen-Zeitplan geändert: " + _sched_text(scfg.shutter(body.shutter_id).name, entry), area="shutters")
     return entry
 
 

@@ -204,8 +204,10 @@ def _days_label(days: list[str]) -> str:
     return "Jeden " + ", ".join(WD[hs.DAYS.index(d)] for d in days)
 
 
-def upcoming(entries: list[dict[str, Any]], now: datetime, days: int = HORIZON_DAYS) -> list[dict[str, Any]]:
-    """Schaltpunkte ab jetzt für ``days`` Tage: [{date, time, room_id, setpoint, id, kind}]."""
+def upcoming(entries: list[dict[str, Any]], now: datetime, days: int = HORIZON_DAYS,
+             loc: Optional[tuple[float, float]] = None) -> list[dict[str, Any]]:
+    """Schaltpunkte ab jetzt für ``days`` Tage: [{date, time, room_id, setpoint, id, kind}].
+    ``time`` ist bei Sonnen-Einträgen die berechnete Uhrzeit, ``when`` der Zeittyp („Sonnenuntergang −15 min“)."""
     now = now.astimezone(hs.TZ)
     out = []
     for off in range(days + 1):
@@ -213,16 +215,19 @@ def upcoming(entries: list[dict[str, Any]], now: datetime, days: int = HORIZON_D
         for e in entries:
             if not e["enabled"] or not hs.applies_on(e, d):
                 continue
-            if hs.due_instant(d, e["time"]) <= now:
+            at = hs.instant(e, d, loc)
+            if at is None or hs._utc(at) <= hs._utc(now):
                 continue
-            out.append({"date": d, "time": e["time"], "room_id": e["room_id"], "setpoint": e["setpoint"],
-                        "id": e["id"], "kind": "einmalig" if e["date"] else "wiederkehrend"})
+            sun = (e.get("kind") or "time") != "time"
+            out.append({"date": d, "time": f"{at:%H:%M}" if sun else e["time"], "room_id": e["room_id"],
+                        "setpoint": e["setpoint"], "id": e["id"], "when": hs.when(e) if sun else None,
+                        "kind": "einmalig" if e["date"] else "wiederkehrend"})
     out.sort(key=lambda x: (x["date"], x["time"], x["room_id"]))
     return out
 
 
 def build_context(hcfg: heating.HeatingConfig, rooms: list[dict[str, Any]], entries: list[dict[str, Any]],
-                  now: datetime) -> str:
+                  now: datetime, loc: Optional[tuple[float, float]] = None) -> str:
     now = now.astimezone(hs.TZ)
     today = now.date()
     lines = [f"Jetzt: {WD_LONG[today.weekday()]}, {today:%d.%m.%Y} {now:%H:%M} (Europe/Berlin)",
@@ -245,15 +250,16 @@ def build_context(hcfg: heating.HeatingConfig, rooms: list[dict[str, Any]], entr
         lines.append("- keine")
     for e in sorted(entries, key=lambda x: (x["room_id"], x["time"])):
         when = f"einmalig {e['date']}" if e["date"] else "wiederkehrend " + ",".join(e["days"])
-        lines.append(f"- #{e['id']} {e['room_id']} {e['time']} {_fmt_c(e['setpoint'])} {when}"
+        lines.append(f"- #{e['id']} {e['room_id']} {hs.when(e)} {_fmt_c(e['setpoint'])} {when}"
                      f"{'' if e['enabled'] else ' (aus)'}")
     lines += ["", f"Schaltpunkte der nächsten {HORIZON_DAYS} Tage:"]
-    up = upcoming(entries, now)
+    up = upcoming(entries, now, loc=loc)
     if not up:
         lines.append("- keine")
     for u in up:
         lines.append(f"- {u['date'].isoformat()} {WD[u['date'].weekday()]} {u['time']} {u['room_id']} → "
-                     f"{_fmt_c(u['setpoint'])} (#{u['id']}, {u['kind']})")
+                     f"{_fmt_c(u['setpoint'])} (#{u['id']}, {u['kind']}"
+                     + (f", {u['when']}" if u.get("when") else "") + ")")
     return "\n".join(lines)
 
 
@@ -264,6 +270,10 @@ Regeln für propose_schedule:
 - entries: neue Schaltpunkte. Einmalig: date (YYYY-MM-DD) setzen und days null lassen. Wiederkehrend: days
   setzen (mo, di, mi, do, fr, sa, so; „werktags“ = mo bis fr, „am Wochenende“ = sa, so) und date null lassen.
 - Uhrzeiten als HH:MM im 24-Stunden-Format. „um 7“ ohne weitere Angabe heißt 07:00, „um 7 abends“ heißt 19:00.
+- Zeittyp je Eintrag: kind = "time" (time HH:MM; offset_min 0, not_before/not_after null) oder
+  "sunrise"/"sunset" (time null; offset_min = Minuten danach, negativ = davor: „30 min vor Sonnenaufgang“ =
+  sunrise, -30; „bei Sonnenuntergang“ = sunset, 0). not_before / not_after (HH:MM oder null) für
+  „aber nicht vor 6 Uhr“ / „spätestens 22 Uhr“.
 - Wochentage wie „Freitag“ meinen den nächsten solchen Tag laut Kalender.
 - immediate: Änderungen, die sofort gelten sollen („jetzt“, „sofort“).
 - delete_ids: IDs bestehender Zeitpläne aus der Liste, die der Nutzer löschen will. Meint der Nutzer nur einen
@@ -307,11 +317,16 @@ TOOL = {
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["room_id", "setpoint", "time", "date", "days"],
+                    "required": ["room_id", "setpoint", "kind", "time", "offset_min", "not_before", "not_after",
+                                 "date", "days"],
                     "properties": {
                         "room_id": {"type": "string"},
                         "setpoint": {"type": "number"},
-                        "time": {"type": "string", "description": "HH:MM, 24 h, Europe/Berlin"},
+                        "kind": {"type": "string", "enum": ["time", "sunrise", "sunset"]},
+                        "time": {"type": ["string", "null"], "description": "HH:MM, 24 h, Europe/Berlin; null bei Sonnenzeit"},
+                        "offset_min": {"type": ["integer", "null"], "description": "Minuten nach (−: vor) der Sonnenzeit"},
+                        "not_before": {"type": ["string", "null"], "description": "HH:MM oder null"},
+                        "not_after": {"type": ["string", "null"], "description": "HH:MM oder null"},
                         "date": {"type": ["string", "null"], "description": "YYYY-MM-DD bei einmalig, sonst null"},
                         "days": {"type": ["array", "null"], "items": {"type": "string", "enum": _DAY_ENUM},
                                  "description": "Wochentage bei wiederkehrend, sonst null"},
@@ -562,15 +577,18 @@ class Proposal:
 _PROPOSALS: dict[str, Proposal] = {}
 
 
-def validate_proposal(hcfg: heating.HeatingConfig, inp: dict[str, Any], now: datetime) -> tuple[Proposal, list[str]]:
+def validate_proposal(hcfg: heating.HeatingConfig, inp: dict[str, Any], now: datetime,
+                      loc: Optional[tuple[float, float]] = None) -> tuple[Proposal, list[str]]:
     """Alles prüfen; Fehlerliste leer = gültig. Nichts wird gespeichert."""
     errors: list[str] = []
     p = Proposal(id=uuid.uuid4().hex, created=_time.time())
     for i, e in enumerate(inp.get("entries") or []):
         try:
             days = e.get("days") or None
-            p.entries.append(hs.validate_entry(hcfg, e.get("room_id"), e.get("setpoint"), e.get("time"),
-                                               days=days, date=e.get("date") or None, now=now))
+            p.entries.append(hs.validate_entry(
+                hcfg, e.get("room_id"), e.get("setpoint"), e.get("time"), days=days, date=e.get("date") or None,
+                now=now, kind=e.get("kind") or "time", offset_min=e.get("offset_min") or 0,
+                not_before=e.get("not_before"), not_after=e.get("not_after"), loc=loc))
         except (ValueError, TypeError, AttributeError) as ex:
             errors.append(f"Eintrag {i + 1}: {ex}")
     for i, im in enumerate(inp.get("immediate") or []):
@@ -616,7 +634,27 @@ def take(pid: str) -> Optional[Proposal]:
     return p
 
 
-def preview(hcfg: heating.HeatingConfig, p: Proposal, now: datetime) -> dict[str, Any]:
+def _sun_row(e: dict[str, Any], today: Date, now: datetime, loc: Optional[tuple[float, float]]) -> dict[str, Any]:
+    """Zusatzfelder einer Vorschau-Zeile mit Sonnenzeit: Zeittyp und berechnete Uhrzeit(en)."""
+    ee = {**e, "days": e["days"].split(",") if e["days"] else []}
+    if e["date"]:
+        at = hs.instant(ee, Date.fromisoformat(e["date"]), loc)
+        times = f"{at:%H:%M}" if at else "–"
+        first = times
+    else:
+        parts = []
+        for off, lbl in ((0, "heute"), (1, "morgen")):
+            d = today + timedelta(days=off)
+            at = hs.instant(ee, d, loc) if hs.applies_on(ee, d) else None
+            if at is not None and not (off == 0 and hs._utc(at) <= hs._utc(now)):
+                parts.append(f"{lbl} {at:%H:%M}")
+        times = ", ".join(parts)
+        first = parts[0].split(" ")[1] if parts else "☀"
+    return {"time": first, "when": hs.when(ee), "at": times}
+
+
+def preview(hcfg: heating.HeatingConfig, p: Proposal, now: datetime,
+            loc: Optional[tuple[float, float]] = None) -> dict[str, Any]:
     """Für die UI: Gruppen (Datum bzw. Wochentage) mit Zeilen, Sofort-Änderungen, Löschungen."""
     today = now.astimezone(hs.TZ).date()
     name = lambda rid: (hcfg.room(rid).name if hcfg.room(rid) else rid)  # noqa: E731
@@ -626,14 +664,16 @@ def preview(hcfg: heating.HeatingConfig, p: Proposal, now: datetime) -> dict[str
             key, label = e["date"], _day_label(Date.fromisoformat(e["date"]), today)
         else:
             key, label = "w:" + e["days"], _days_label(e["days"].split(","))
-        groups.setdefault(key, {"label": label, "rows": []})["rows"].append(
-            {"time": e["time"], "room": name(e["room_id"]), "setpoint": e["setpoint"]})
+        row = {"time": e["time"], "room": name(e["room_id"]), "setpoint": e["setpoint"]}
+        if (e.get("kind") or "time") != "time":          # Sonnenzeit: berechnete Uhrzeit + Zeittyp
+            row.update(_sun_row(e, today, now.astimezone(hs.TZ), loc))
+        groups.setdefault(key, {"label": label, "rows": []})["rows"].append(row)
     return {
         "id": p.id,
         "summary": p.summary,
         "groups": list(groups.values()),
         "immediate": [{"room": name(i["room_id"]), "setpoint": i["setpoint"]} for i in p.immediate],
-        "deletes": [{"id": d["id"], "room": name(d["room_id"]), "time": d["time"], "setpoint": d["setpoint"],
+        "deletes": [{"id": d["id"], "room": name(d["room_id"]), "time": hs.when(d), "setpoint": d["setpoint"],
                      "when": (_day_label(Date.fromisoformat(d["date"]), today) if d["date"]
                               else _days_label(d["days"]) + " (ganzer Plan)")} for d in p.deletes],
     }
@@ -646,7 +686,7 @@ _QUERY_RE = re.compile(r"\b(was|welche|wann)\b.*\b(geplant|plan|pläne|zeitplän
 
 
 def local_answer(text: str, hcfg: heating.HeatingConfig, entries: list[dict[str, Any]],
-                 now: datetime) -> Optional[str]:
+                 now: datetime, loc: Optional[tuple[float, float]] = None) -> Optional[str]:
     """„Was ist für morgen geplant?“ → Antwort aus der DB (kein API-Aufruf). None = keine Abfrage."""
     t = text.strip().lower()
     if not _QUERY_RE.search(t) or re.search(r"\b(lösch|entfern|stell|setz|mach|auf \d)", t):
@@ -662,7 +702,7 @@ def local_answer(text: str, hcfg: heating.HeatingConfig, entries: list[dict[str,
     elif "heute" in t:
         days = 0
     rooms = [r for r in hcfg.rooms if r.controllable and (r.name.lower() in t or r.id in t)]
-    up = [u for u in upcoming(entries, now, (first - today).days + days)
+    up = [u for u in upcoming(entries, now, (first - today).days + days, loc)
           if u["date"] >= first and (not rooms or u["room_id"] in {r.id for r in rooms})]
     single = days == 0
     scope = (_day_label(first, today) if single else f"Nächste {HORIZON_DAYS} Tage") + \
@@ -675,5 +715,6 @@ def local_answer(text: str, hcfg: heating.HeatingConfig, entries: list[dict[str,
             cur = u["date"]
             out.append(_day_label(cur, today))
         room = hcfg.room(u["room_id"])
-        out.append(f"  {u['time']}  {room.name if room else u['room_id']} → {_fmt_c(u['setpoint'])}")
+        out.append(f"  {u['time']}  {room.name if room else u['room_id']} → {_fmt_c(u['setpoint'])}"
+                   + (f" · {u['when']}" if u.get("when") else ""))
     return "\n".join(out)

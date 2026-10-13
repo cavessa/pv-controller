@@ -761,12 +761,40 @@ class WebScheduleTest(DbCase):
         with self.assertRaises(web.HTTPException):
             web.shutters_schedule_delete(e["id"])
 
-    def test_create_rejected_for_openhab_rule(self):
+    def test_openhab_rule_shutter_schedule_is_saved_but_dormant(self):
+        """Formular an jedem Rollladen: bei „Automatik: openHAB-Regel“ gespeichert, aber nicht ausgeführt."""
+        e = web.shutters_schedule_create(web._ShutterScheduleCreate(
+            shutter_id="wohnen", action="down", kind="sunset", offset_min=-15, days=list(ss.DAYS)))
+        self.assertEqual(e["when"], "Sonnenuntergang −15 min")
+        st = web.shutters_status(web.Response())
+        self.assertIsNone(next(r for r in st["rooms"] if r["id"] == "wohnen")["next"])      # keine „Nächste Fahrt“
+        c = json.loads(self.cfg_path.read_text()); c["shutters"]["schedules_enabled"] = True
+        res = ss.run(c, dry_run=False, now=datetime(2026, 10, 13, 23, 0, tzinfo=TZ), client=self.c)
+        self.assertEqual((res.due, self.c.sends), (0, []))                                  # Cron fährt ihn nie
+        with self.assertRaises(ValueError):                                                 # Chat/Standard: weiter abgelehnt
+            ss.validate_entry(shutters.parse_shutters(c), "wohnen", "down", "time", time="21:00", days=["mo"])
+
+    def test_edit_and_list_with_time_today(self):
+        e = web.shutters_schedule_create(web._ShutterScheduleCreate(
+            shutter_id="schlafen", action="down", kind="sunset", offset_min=-15, not_after="22:00", days=["mo"]))
+        lst = web.shutters_schedules(web.Response())["items"]
+        self.assertRegex(lst[0]["at_today"], r"^\d\d:\d\d$")
+        self.assertEqual(lst[0]["when"], "Sonnenuntergang −15 min (nicht nach 22:00)")
+        ss._mark([e["id"]], ss.SENT, datetime.now(TZ))
+        u = web.shutters_schedule_update(e["id"], web._ShutterScheduleCreate(
+            shutter_id="schlafen", action="position", position=40, kind="time", time="23:59", days=["mo", "di"]))
+        self.assertEqual((u["id"], u["kind"], u["time"], u["position"], u["days"], u["last_run"]),
+                         (e["id"], "time", "23:59", 40, ["mo", "di"], None))
+        self.assertIsNone(web.shutters_schedules(web.Response())["items"][0]["at_today"])
+        self.assertIn("Rollladen-Zeitplan geändert: Schlafzimmer 23:59 → 40 %", (self.dir / "app.log").read_text(encoding="utf-8"))
         with self.assertRaises(web.HTTPException) as cm:
-            web.shutters_schedule_create(web._ShutterScheduleCreate(
-                shutter_id="wohnen", action="down", kind="time", time="21:00", days=["mo"]))
+            web.shutters_schedule_update(999, web._ShutterScheduleCreate(shutter_id="schlafen", action="up", kind="time",
+                                                                         time="07:00", days=["mo"]))
+        self.assertEqual(cm.exception.status_code, 404)
+        with self.assertRaises(web.HTTPException) as cm:
+            web.shutters_schedule_update(e["id"], web._ShutterScheduleCreate(shutter_id="schlafen", action="up",
+                                                                             kind="sunrise", offset_min=999, days=["mo"]))
         self.assertEqual(cm.exception.status_code, 400)
-        self.assertIn("openHAB-Regel", cm.exception.detail)
 
     def test_status_next_and_hint(self):
         web.shutters_schedule_create(web._ShutterScheduleCreate(

@@ -37,7 +37,6 @@ Ein Zeitbudget (Default 20 s) begrenzt den Teil; was nicht mehr passt, bleibt f�
 from __future__ import annotations
 
 import logging
-import math
 import re
 import sqlite3
 import time as _time
@@ -49,7 +48,9 @@ import db
 import shutters
 from clients.openhab_client import OpenHabError
 import heating
-from heating_schedule import DAYS, TZ, _Budget, applies_on, due_instant
+from heating_schedule import DAYS, _Budget, applies_on
+from suntime import (KINDS, OFFSET_MAX, TZ, describe, due_instant, instant, location,  # noqa: F401
+                     sun_times, validate_when)
 
 log = logging.getLogger("pv-controller.shutters")
 
@@ -59,72 +60,13 @@ MIN_REQUEST_S = 0.5
 DOOR_WAIT_H = 12                     # retry_when_closed: so lange auf die geschlossene Tür warten
 MOVE_THRESHOLD = 5                   # Positionsänderung ab 5 % zählt als Bewegung (HmIP meldet 98/99/100)
 OWN_SLACK_S = 180                    # eigene Befehle: Änderungen bis verify_after + 3 min gehören dazu
-KINDS = ("time", "sunrise", "sunset")
 ACTIONS = ("up", "down", "position")
-OFFSET_MAX = 180
-_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 SENT, UNCHANGED, DRY_RUN, SKIPPED, SUPERSEDED, FAILED = (
     "sent", "unchanged", "dry_run", "skipped", "superseded", "failed")
 RETRY = "retry"
 DOOR_OPEN, WAITING_DOOR, FROST, MANUAL_HOLD, NO_SUN = "door_open", "waiting_door", "frost", "manual_hold", "no_sun"
 HINT_RESULTS = (DOOR_OPEN, WAITING_DOOR, FROST, MANUAL_HOLD, NO_SUN, SKIPPED, FAILED)
-
-
-# ── Sonnenzeiten (NOAA) ─────────────────────────────────────────────────────
-
-
-def sun_times(day: Date, lat: float, lon: float) -> tuple[Optional[datetime], Optional[datetime]]:
-    """Sonnenauf- und -untergang (Zenit 90,833°) an ``day`` als aware datetime in Europe/Berlin.
-
-    None bei Polartag/-nacht. Genauigkeit etwa ±1 min.
-    """
-    out = []
-    for rising in (True, False):
-        # Iteration über die Sonnenposition zum Ereigniszeitpunkt (2 Durchläufe reichen für ±1 min)
-        t_utc_min = 720 - 4 * lon            # Startwert: Sonnenmittag UTC in Minuten
-        ok = True
-        for _ in range(3):
-            jd = _julian(day) + t_utc_min / 1440.0
-            decl, eqtime = _sun_decl_eqtime(jd)
-            cos_ha = (math.cos(math.radians(90.833)) / (math.cos(math.radians(lat)) * math.cos(decl))
-                      - math.tan(math.radians(lat)) * math.tan(decl))
-            if not -1 <= cos_ha <= 1:
-                ok = False
-                break
-            ha = math.degrees(math.acos(cos_ha))
-            t_utc_min = 720 - 4 * (lon + (ha if rising else -ha)) - eqtime
-        if not ok:
-            out.append(None)
-            continue
-        base = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
-        out.append((base + timedelta(minutes=t_utc_min)).astimezone(TZ))
-    return out[0], out[1]
-
-
-def _julian(day: Date) -> float:
-    """Julianisches Datum um 0:00 UTC."""
-    return datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp() / 86400.0 + 2440587.5
-
-
-def _sun_decl_eqtime(jd: float) -> tuple[float, float]:
-    """Deklination (rad) und Zeitgleichung (min) nach NOAA."""
-    t = (jd - 2451545.0) / 36525.0
-    l0 = math.radians((280.46646 + t * (36000.76983 + 0.0003032 * t)) % 360)
-    m = math.radians(357.52911 + t * (35999.05029 - 0.0001537 * t))
-    e = 0.016708634 - t * (0.000042037 + 0.0000001267 * t)
-    c = (math.sin(m) * (1.914602 - t * (0.004817 + 0.000014 * t)) + math.sin(2 * m) * (0.019993 - 0.000101 * t)
-         + math.sin(3 * m) * 0.000289)
-    true_long = l0 + math.radians(c)
-    omega = math.radians(125.04 - 1934.136 * t)
-    app_long = true_long - math.radians(0.00569 + 0.00478 * math.sin(omega))
-    eps0 = 23 + (26 + (21.448 - t * (46.815 + t * (0.00059 - t * 0.001813))) / 60) / 60
-    eps = math.radians(eps0 + 0.00256 * math.cos(omega))
-    decl = math.asin(math.sin(eps) * math.sin(app_long))
-    y = math.tan(eps / 2) ** 2
-    eqtime = 4 * math.degrees(y * math.sin(2 * l0) - 2 * e * math.sin(m) + 4 * e * y * math.sin(m) * math.cos(2 * l0)
-                              - 0.5 * y * y * math.sin(4 * l0) - 1.25 * e * e * math.sin(2 * m))
-    return decl, eqtime
 
 
 def _utc(dt: datetime) -> datetime:
@@ -136,45 +78,6 @@ def _utc(dt: datetime) -> datetime:
 def _elapsed(later: datetime, earlier: datetime) -> timedelta:
     """Echte Dauer (über UTC, siehe ``_utc``)."""
     return _utc(later) - _utc(earlier)
-
-
-def location(raw: dict) -> Optional[tuple[float, float]]:
-    lat, lon = raw.get("latitude"), raw.get("longitude")
-    if isinstance(lat, (int, float)) and isinstance(lon, (int, float)) and -90 <= lat <= 90 and -180 <= lon <= 180:
-        return float(lat), float(lon)
-    return None
-
-
-def instant(entry: dict[str, Any], day: Date, loc: Optional[tuple[float, float]]) -> Optional[datetime]:
-    """Schaltzeitpunkt des Eintrags an ``day`` (auf die Minute), None wenn nicht berechenbar."""
-    if entry["kind"] == "time":
-        return due_instant(day, entry["time"])
-    if loc is None:
-        return None
-    rise, sset = sun_times(day, *loc)
-    base = rise if entry["kind"] == "sunrise" else sset
-    if base is None:
-        return None
-    at = (base + timedelta(minutes=int(entry.get("offset_min") or 0))).replace(second=0, microsecond=0)
-    if entry.get("not_before"):
-        at = max(at, due_instant(day, entry["not_before"]))
-    if entry.get("not_after"):
-        at = min(at, due_instant(day, entry["not_after"]))
-    return at
-
-
-def describe(entry: dict[str, Any]) -> str:
-    """'07:00' / 'Sonnenuntergang +15 min (nicht nach 22:00)'."""
-    if entry["kind"] == "time":
-        return entry["time"]
-    off = int(entry.get("offset_min") or 0)
-    s = "Sonnenaufgang" if entry["kind"] == "sunrise" else "Sonnenuntergang"
-    if off:
-        s += f" {'+' if off > 0 else '−'}{abs(off)} min"
-    lim = [f"nicht vor {entry['not_before']}" if entry.get("not_before") else "",
-           f"nicht nach {entry['not_after']}" if entry.get("not_after") else ""]
-    lim = [x for x in lim if x]
-    return s + (f" ({', '.join(lim)})" if lim else "")
 
 
 def target_label(action: str, position: Optional[int]) -> str:
@@ -261,48 +164,29 @@ def get_schedule(sid: int) -> Optional[dict[str, Any]]:
     return _row(r) if r else None
 
 
-def _hhmm(v: Any, what: str) -> Optional[str]:
-    if v in (None, ""):
-        return None
-    if not isinstance(v, str) or not _TIME_RE.match(v):
-        raise ValueError(f"{what} muss HH:MM sein")
-    return v
-
-
 def validate_entry(cfg: shutters.ShutterConfig, shutter_id: str, action: str, kind: str,
                    position: Any = None, time: Any = None, offset_min: Any = 0,
                    not_before: Any = None, not_after: Any = None,
                    days: Optional[list[str]] = None, date: Optional[str] = None,
-                   loc: Optional[tuple[float, float]] = None, now: Optional[datetime] = None) -> dict[str, Any]:
-    """Prüft einen Eintrag; ValueError mit Klartext. Liefert die DB-Felder."""
+                   loc: Optional[tuple[float, float]] = None, now: Optional[datetime] = None,
+                   any_automation: bool = False) -> dict[str, Any]:
+    """Prüft einen Eintrag; ValueError mit Klartext. Liefert die DB-Felder.
+
+    ``any_automation``: auch für Rollläden mit „Automatik: openHAB-Regel“ zulassen (Formular im Tab) – solche
+    Einträge werden gespeichert, aber erst nach der Umstellung auf „PV Controller“ ausgeführt.
+    """
     sh = cfg.shutter(shutter_id)
     if sh is None:
         raise ValueError(f"Rollladen {shutter_id!r} unbekannt")
-    if sh.automation != "pvcontroller":
+    if sh.automation != "pvcontroller" and not any_automation:
         raise ValueError(f"{sh.name} wird von einer openHAB-Regel gefahren (Automatik in den Settings umstellen)")
     if action not in ACTIONS:
         raise ValueError("Ziel muss auf, zu oder eine Position sein")
     pos = None
     if action == "position":
         pos = shutters.validate_command(sh, "position", position)
-    if kind not in KINDS:
-        raise ValueError("Zeitart muss Uhrzeit, Sonnenaufgang oder Sonnenuntergang sein")
-    fields: dict[str, Any] = {"shutter_id": shutter_id, "action": action, "position": pos, "kind": kind,
-                              "time": None, "offset_min": 0, "not_before": None, "not_after": None}
-    if kind == "time":
-        fields["time"] = _hhmm(time, "Uhrzeit")
-        if not fields["time"]:
-            raise ValueError("Uhrzeit fehlt")
-    else:
-        if loc is None:
-            raise ValueError("Sonnenzeiten brauchen latitude/longitude in der Config")
-        if not isinstance(offset_min, int) or isinstance(offset_min, bool) or abs(offset_min) > OFFSET_MAX:
-            raise ValueError(f"Offset muss eine ganze Zahl zwischen −{OFFSET_MAX} und {OFFSET_MAX} min sein")
-        fields["offset_min"] = offset_min
-        fields["not_before"] = _hhmm(not_before, "„nicht vor“")
-        fields["not_after"] = _hhmm(not_after, "„nicht nach“")
-        if fields["not_before"] and fields["not_after"] and fields["not_before"] >= fields["not_after"]:
-            raise ValueError("„nicht vor“ muss vor „nicht nach“ liegen")
+    fields: dict[str, Any] = {"shutter_id": shutter_id, "action": action, "position": pos,
+                              **validate_when(kind, time, offset_min, not_before, not_after, loc)}
     days = [d.strip().lower() for d in (days or []) if d and d.strip()]
     if days and date:
         raise ValueError("Entweder Wochentage oder ein Datum, nicht beides")
@@ -338,6 +222,21 @@ def create_schedule(fields: dict[str, Any], source: str = "ui", note: str = "",
              source, note or None, created))
         sid = cur.lastrowid
     return get_schedule(sid)
+
+
+def update_schedule(sid: int, fields: dict[str, Any], now: Optional[datetime] = None) -> Optional[dict[str, Any]]:
+    """Eintrag bearbeiten. Gilt wie neu angelegt: heute nicht nachholen, wenn der neue Zeitpunkt schon vorbei ist."""
+    stamp = (now or datetime.now(TZ)).astimezone(TZ).isoformat(timespec="seconds")
+    with _conn() as conn:
+        n = conn.execute(
+            "UPDATE shutter_schedule SET shutter_id = ?, action = ?, position = ?, kind = ?, time = ?, offset_min = ?, "
+            "not_before = ?, not_after = ?, days = ?, date = ?, enabled = 1, created_at = ?, last_run = NULL, "
+            "last_result = NULL, last_message = NULL WHERE id = ?",
+            (fields["shutter_id"], fields["action"], fields["position"], fields["kind"], fields["time"],
+             fields["offset_min"], fields["not_before"], fields["not_after"], fields["days"], fields["date"],
+             stamp, sid)).rowcount
+        conn.execute("DELETE FROM shutter_door_wait WHERE schedule_id = ?", (sid,))
+    return get_schedule(sid) if n else None
 
 
 def set_enabled(sid: int, enabled: bool) -> Optional[dict[str, Any]]:

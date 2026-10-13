@@ -7,6 +7,7 @@ const HEAT = {
   history: {},          // room_id → {temp, setpoint, t}
   open: {},             // room_id → Verlauf aufgeklappt
   sched: [],            // alle Zeitpläne (GET /api/heating/schedules)
+  sun: {},              // heute: {sunrise, sunset}
   schedOpen: {},        // room_id → Zeitpläne aufgeklappt
   form: {},             // room_id → Eingaben „+ Zeitplan“ (überleben das 30-s-Neuzeichnen)
   timer: null,
@@ -58,7 +59,7 @@ async function loadHeating() {
     ]);
     if (seq !== HEAT.loadSeq) return;                // inzwischen neuer geladen (z. B. nach Löschen) → verwerfen
     HEAT.status = s;
-    if (sch) HEAT.sched = sch.items;
+    if (sch) { HEAT.sched = sch.items; HEAT.sun = sch.sun_today || {}; }
     renderChatStatus(s.chat, s.enabled && s.openhab_configured);
     banner.classList.add("hidden");
     if (!s.enabled || !s.openhab_configured) {
@@ -128,7 +129,7 @@ function _roomSkeleton(r) {
 
 function _typingIn(el) {
   const a = document.activeElement;
-  return !!a && el.contains(a) && a.matches(".heat-sched-form input:not([type=checkbox]), .heat-sched-form select, .heat-sched-form textarea");
+  return !!a && el.contains(a) && a.matches(".heat-sched-form input:not([type=checkbox]):not([type=radio]), .heat-sched-form select, .heat-sched-form textarea");
 }
 
 function _setSlot(el, html) {
@@ -164,7 +165,7 @@ function updateHeatRoom(roomId, force = false) {
   _setSlot(slot("mode"), r.mode == null ? "" : `<div class="heat-meta">${r.mode === "AUTO"
     ? `<span class="heat-mode auto" title="Gerät folgt eigenem Wochenprofil">AUTO · Gerät folgt eigenem Wochenprofil</span>`
     : `<span class="heat-mode">${_hq(r.mode)}</span>`}</div>`);
-  _setSlot(slot("next"), r.next ? `<div class="heat-meta heat-next">Nächste Änderung: ${_fmtWhen(r.next.at)} → ${fmtC(r.next.setpoint)}${s.schedules_enabled ? "" : ` <span class="heat-off">(Zeitpläne aus)</span>`}</div>` : "");
+  _setSlot(slot("next"), r.next ? `<div class="heat-meta heat-next">Nächste Änderung: ${_fmtNext(r.next)} → ${fmtC(r.next.setpoint)}${s.schedules_enabled ? "" : ` <span class="heat-off">(Zeitpläne aus)</span>`}</div>` : "");
   _setSlot(slot("alert"), r.alert ? `<div class="heat-alert">⚠️ ${escapeHtml(r.alert)}</div>` : "");
   _setSlot(slot("err"), r.error ? `<div class="heat-err">${escapeHtml(r.error)}</div>` : "");
   _setSlot(slot("toggles"), `<button type="button" class="heat-hist-toggle" data-hist="${_hq(r.id)}">${HEAT.open[r.id] ? "▾" : "▸"} Verlauf 24 h</button>`
@@ -342,8 +343,65 @@ function _fmtDate(ymd) {
 const _RESULT = { sent: "gesendet", unchanged: "war schon eingestellt", dry_run: "Dry-Run", skipped: "verpasst",
   superseded: "durch späteren ersetzt", failed: "Fehler" };
 
+// "heute 18:22" bzw. mit Zeittyp: "heute Sonnenuntergang −15 min (18:22)"
+function _fmtNext(n) {
+  const at = _fmtWhen(n.at);
+  if (!n.when || /^\d\d:\d\d$/.test(n.when)) return at;
+  const i = at.lastIndexOf(" ");
+  return `${escapeHtml(at.slice(0, i))} ${escapeHtml(n.when)} (${at.slice(i + 1)})`;
+}
+
+// Zeittyp + berechnete Uhrzeit für heute: "Sonnenuntergang −15 min (18:22)"
+function _whenToday(e) {
+  return escapeHtml(e.when) + (e.at_today ? ` <span class="sched-at">(${_hq(e.at_today)})</span>` : "");
+}
+
+// Gemeinsamer Formularteil „Wann“ (Heizung + Rollläden): ( ) Uhrzeit ( ) Sonnenaufgang ( ) Sonnenuntergang,
+// Offset ± Minuten, optional nicht vor / nicht nach. attr = data-Attribut der Felder ("f" bzw. "sf").
+const SCHED_KINDS = [["time", "Uhrzeit"], ["sunrise", "Sonnenaufgang"], ["sunset", "Sonnenuntergang"]];
+function _whenFields(f, attr, name, sun) {
+  const isSun = f.kind !== "time";
+  const base = isSun && sun[f.kind] ? sun[f.kind] : null;
+  let calc = "";
+  if (base) {                                        // Vorschau der Uhrzeit für heute (ohne Grenzen: Server rechnet genau)
+    const [h, m] = base.split(":").map(Number);
+    let t = h * 60 + m + (Math.round(Number(f.offset)) || 0);
+    const lim = v => { const [a, b] = v.split(":").map(Number); return a * 60 + b; };
+    if (f.not_before) t = Math.max(t, lim(f.not_before));
+    if (f.not_after) t = Math.min(t, lim(f.not_after));
+    t = ((t % 1440) + 1440) % 1440;
+    calc = `heute ${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")} (${f.kind === "sunrise" ? "Aufgang" : "Untergang"} ${base})`;
+  }
+  return `<div class="sched-kind" role="radiogroup" aria-label="Zeitart">
+      ${SCHED_KINDS.map(([v, l]) => `<label class="sched-radio"><input type="radio" name="${_hq(name)}" data-${attr}="kind" value="${v}"${f.kind === v ? " checked" : ""}> ${l}</label>`).join("")}
+    </div>
+    <div class="heat-form-row">
+      ${isSun ? `<label>± Minuten (z. B. 30 oder −15)<input type="number" data-${attr}="offset" step="5" min="-180" max="180" value="${_hq(f.offset)}"></label>
+        <label>nicht vor<input type="time" data-${attr}="not_before" value="${_hq(f.not_before)}"></label>
+        <label>nicht nach<input type="time" data-${attr}="not_after" value="${_hq(f.not_after)}"></label>
+        <small class="note" data-calc="1">${_hq(calc)}</small>`
+      : `<label>Uhrzeit<input type="time" data-${attr}="time" value="${_hq(f.time)}"></label>`}
+    </div>`;
+}
+
+// Formularwerte → Felder für die API
+function _whenBody(f) {
+  if (f.kind === "time") return { kind: "time", time: f.time };
+  const b = { kind: f.kind, offset_min: Math.round(Number(f.offset) || 0) };
+  if (f.not_before) b.not_before = f.not_before;
+  if (f.not_after) b.not_after = f.not_after;
+  return b;
+}
+
+// Eintrag → Formularwerte (Bearbeiten)
+function _whenFromEntry(e) {
+  return { kind: e.kind || "time", time: e.time || "", offset: e.offset_min || 0, not_before: e.not_before || "",
+           not_after: e.not_after || "", days: [...(e.days || [])], date: e.date || "", editId: e.id };
+}
+
 function _schedForm(roomId, r) {
-  const f = HEAT.form[roomId] ||= { time: "", setpoint: r.setpoint ?? 20, days: [], date: "" };
+  const f = HEAT.form[roomId] ||= { kind: "time", time: "", offset: 0, not_before: "", not_after: "",
+                                    setpoint: r.setpoint ?? 20, days: [], date: "", editId: null };
   return f;
 }
 
@@ -355,11 +413,13 @@ function _schedPanel(r, s) {
     const when = e.date ? `<span class="heat-chip once">${_fmtDate(e.date)}</span>`
       : HEAT_DAYS.map(([k, l]) => `<span class="heat-chip${e.days.includes(k) ? " on" : ""}">${l}</span>`).join("");
     const last = e.last_run ? `<small class="heat-last" title="${_hq(e.last_run)}">zuletzt ${_hq(e.last_run.slice(5, 16).replace("T", " "))} · ${_RESULT[e.last_result] || _hq(e.last_result || "")}</small>` : "";
-    return `<div class="heat-sched-row${e.enabled ? "" : " off"}">
-        <span class="heat-sched-time">${_hq(e.time)}</span>
+    const sun = e.kind && e.kind !== "time";
+    return `<div class="heat-sched-row${sun ? " sun" : ""}${e.enabled ? "" : " off"}${f.editId === e.id ? " editing" : ""}">
+        <span class="heat-sched-time">${sun ? _whenToday(e) : _hq(e.time)}</span>
         <span class="heat-sched-sp">${fmtC(e.setpoint)}</span>
         <span class="heat-chips">${when}</span>
         <label class="heat-switch" title="${e.enabled ? "aktiv" : "inaktiv"}"><input type="checkbox" data-sched-toggle="${e.id}" ${e.enabled ? "checked" : ""}><span></span></label>
+        <button type="button" class="heat-del" data-sched-edit="${e.id}" aria-label="Zeitplan bearbeiten" title="bearbeiten">✎</button>
         <button type="button" class="heat-del" data-sched-del="${e.id}" aria-label="Zeitplan löschen">✕</button>
         ${last}
       </div>`;
@@ -367,8 +427,9 @@ function _schedPanel(r, s) {
   return `<div class="heat-sched" data-room="${_hq(r.id)}">
       ${rows}
       <div class="heat-sched-form" data-room="${_hq(r.id)}">
+        ${f.editId ? `<div class="sched-editing">Zeitplan bearbeiten</div>` : ""}
+        ${_whenFields(f, "f", "hkind-" + r.id, HEAT.sun)}
         <div class="heat-form-row">
-          <label>Uhrzeit<input type="time" data-f="time" value="${_hq(f.time)}" required></label>
           <label>Soll (°C)<input type="number" data-f="setpoint" step="${s.setpoint_step}" min="${s.setpoint_min}" max="${s.setpoint_max}" value="${_hq(f.setpoint)}"></label>
         </div>
         <div class="heat-chips pick">${HEAT_DAYS.map(([k, l]) => `<button type="button" class="heat-chip${f.days.includes(k) ? " on" : ""}" data-day="${k}" aria-pressed="${f.days.includes(k)}">${l}</button>`).join("")}
@@ -376,7 +437,8 @@ function _schedPanel(r, s) {
           <button type="button" class="heat-chip quick" data-days="mo,di,mi,do,fr,sa,so">Täglich</button></div>
         <div class="heat-form-row">
           <label>oder einmalig am<input type="date" data-f="date" value="${_hq(f.date)}"></label>
-          <button type="button" class="btn primary" data-sched-add="${_hq(r.id)}">+ Zeitplan</button>
+          <button type="button" class="btn primary" data-sched-add="${_hq(r.id)}">${f.editId ? "Speichern" : "+ Zeitplan"}</button>
+          ${f.editId ? `<button type="button" class="btn" data-sched-cancel="${_hq(r.id)}">Abbrechen</button>` : ""}
         </div>
         <span class="form-msg" id="heat-sched-msg-${_hq(r.id)}"></span>
       </div>
@@ -386,15 +448,16 @@ function _schedPanel(r, s) {
 async function _schedAdd(roomId) {
   const f = HEAT.form[roomId];
   const msg = document.getElementById("heat-sched-msg-" + roomId);
-  const body = { room_id: roomId, time: f.time, setpoint: Number(f.setpoint) };
+  const body = { room_id: roomId, setpoint: Number(f.setpoint), ..._whenBody(f) };
   if (f.date) body.date = f.date; else body.days = f.days;
   try {
-    await api("/api/heating/schedules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    HEAT.form[roomId] = { time: "", setpoint: f.setpoint, days: f.days, date: "" };
+    await api(f.editId ? `/api/heating/schedules/${f.editId}` : "/api/heating/schedules",
+      { method: f.editId ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    HEAT.form[roomId] = { ...f, time: "", date: "", offset: 0, not_before: "", not_after: "", editId: null };
     document.activeElement?.blur();
     await loadHeating();
   } catch (e) {
-    if (msg) { msg.textContent = e.message; msg.className = "form-msg error"; }
+    if (msg) { msg.textContent = _chatErr(e); msg.className = "form-msg error"; }
   }
 }
 
@@ -407,7 +470,7 @@ async function _schedToggle(id, enabled) {
 
 async function _schedDelete(id) {
   const e = HEAT.sched.find(x => x.id === id);
-  if (!confirm(`Zeitplan ${e ? e.time + " → " + fmtC(e.setpoint) : id} löschen?`)) return;
+  if (!confirm(`Zeitplan ${e ? e.when + " → " + fmtC(e.setpoint) : id} löschen?`)) return;
   try { await api(`/api/heating/schedules/${id}`, { method: "DELETE" }); } catch (err) { alert("Zeitplan: " + err.message); }
   loadHeating();
 }
@@ -598,6 +661,15 @@ async function saveHeatingSettings() {
   }
 }
 
+// berechnete Uhrzeit neben dem Offset aktualisieren, ohne das Formular neu zu zeichnen (Fokus bleibt)
+function _refreshCalc(form, f, sun) {
+  const el = form.querySelector("[data-calc]");
+  if (!el) return;
+  const tmp = document.createElement("div");
+  tmp.innerHTML = _whenFields(f, "x", "x", sun);
+  el.textContent = tmp.querySelector("[data-calc]")?.textContent || "";
+}
+
 function bootHeating() {
   $("#heat-rooms")?.addEventListener("click", e => {
     const b = e.target.closest("[data-step]");
@@ -624,18 +696,33 @@ function bootHeating() {
     }
     const add = e.target.closest("[data-sched-add]");
     if (add) { _schedAdd(add.dataset.schedAdd); return; }
+    const ed = e.target.closest("[data-sched-edit]");
+    if (ed) {                                          // Eintrag ins Formular laden
+      const en = HEAT.sched.find(x => x.id === Number(ed.dataset.schedEdit));
+      if (en) { HEAT.form[en.room_id] = { ..._whenFromEntry(en), setpoint: en.setpoint }; updateHeatRoom(en.room_id, true); }
+      return;
+    }
+    const ca = e.target.closest("[data-sched-cancel]");
+    if (ca) { const f = HEAT.form[ca.dataset.schedCancel]; HEAT.form[ca.dataset.schedCancel] = { ...f, editId: null, time: "", date: "" }; updateHeatRoom(ca.dataset.schedCancel, true); return; }
     const del = e.target.closest("[data-sched-del]");
     if (del) { _schedDelete(Number(del.dataset.schedDel)); return; }
   });
   $("#heat-rooms")?.addEventListener("change", e => {
     const t = e.target.closest("[data-sched-toggle]");
-    if (t) _schedToggle(Number(t.dataset.schedToggle), t.checked);
+    if (t) { _schedToggle(Number(t.dataset.schedToggle), t.checked); return; }
+    const k = e.target.closest('.heat-sched-form input[type="radio"][data-f="kind"]');
+    if (k) {                                           // Zeitart gewechselt → andere Felder
+      const room = k.closest(".heat-sched-form").dataset.room;
+      HEAT.form[room].kind = k.value;
+      updateHeatRoom(room, true);
+    }
   });
   $("#heat-rooms")?.addEventListener("input", e => {
     const inp = e.target.closest(".heat-sched-form [data-f]");
-    if (!inp) return;
+    if (!inp || inp.type === "radio") return;
     const f = HEAT.form[inp.closest(".heat-sched-form").dataset.room];
     f[inp.dataset.f] = inp.value;
+    _refreshCalc(inp.closest(".heat-sched-form"), f, HEAT.sun);
     if (inp.dataset.f === "date" && inp.value) {
       f.days = [];
       inp.closest(".heat-sched-form").querySelectorAll("[data-day]").forEach(b => { b.classList.remove("on"); b.setAttribute("aria-pressed", "false"); });
