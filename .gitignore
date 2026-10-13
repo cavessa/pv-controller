@@ -1,6 +1,6 @@
-# Config mit echten Daten
-config.json
-config.backup-*.json
+# Config mit echten Daten: alle config*.json (Arbeitskopien, Backups) außer dem Beispiel
+config*.json
+!config.example.json
 config.json.bak-*
 
 # Datenbanken

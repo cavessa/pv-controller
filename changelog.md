@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-13 – .gitignore: alle config*.json außer config.example.json
+
+`config*.json` + `!config.example.json` statt einzelner Muster (`config.json`, `config.backup-*.json`): auch Arbeitskopien wie `config.edit.json` können nicht mehr versehentlich committet werden. `config.json.bak-*` bleibt. Geprüft mit `git check-ignore`: config.json, config.edit.json, config.backup-*.json ignoriert; config.example.json nicht ignoriert und weiter versioniert.
+
 ## 2026-10-13 – deploy.sh: Wegwerf-Worktree wirklich entfernen, verwaiste Verweise aufräumen
 
 Der EXIT-Trap rief `git worktree remove "$TMP"` auf, der Worktree lag aber unter `$TMP/wt` – das Entfernen schlug still fehl, `rm -rf` löschte nur das Verzeichnis, und je Deploy blieb ein verwaister Verweis in `.git/worktrees` (Prod: 11 Stück). Jetzt entfernt der Trap `$TMP/wt` und ruft danach `git worktree prune` auf – bei jedem Ende (ok, Rollback, Abbruch). Einmalig in `~/pvcontroller-prod` ausgeführt.
