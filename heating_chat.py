@@ -15,6 +15,7 @@ Config (config.json):
                 "openai_api_key": "sk-…",       # Keys nur in config.json, nie ins Git/Frontend/Log
                 "api_key": "sk-ant-…",          # Anthropic-Key
                 "model": "gpt-4.1-mini",        # Default je Anbieter, s. DEFAULT_MODELS
+                "explain_model": "gpt-4.1",     # optional, nur für Warum-Fragen (Default: model)
                 "max_requests_per_day": 100,
                 "workspace_id": "wrkspc_…"}     # optional, nur Anthropic-Keys ohne Workspace-Zuordnung
 
@@ -30,7 +31,7 @@ import re
 import sqlite3
 import time as _time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date as Date, datetime, timedelta
 from typing import Any, Callable, Optional
 
@@ -78,6 +79,7 @@ class AssistantConfig:
     enabled: bool = False
     api_key: str = ""                 # Anthropic
     model: str = DEFAULT_MODEL
+    explain_model: str = ""           # nur Warum-Fragen; leer = model
     max_requests_per_day: int = DEFAULT_LIMIT
     workspace_id: str = ""            # Header anthropic-workspace-id (Key ohne Workspace-Zuordnung)
     provider: str = ANTHROPIC
@@ -116,6 +118,9 @@ def parse_assistant(raw: dict) -> AssistantConfig:
     model = a.get("model") or DEFAULT_MODELS[provider]
     if not isinstance(model, str) or not _MODEL_RE.match(model):
         raise ValueError("assistant.model must look like 'gpt-4.1-mini' or 'claude-haiku-5-5'")
+    explain_model = a.get("explain_model") or ""
+    if not isinstance(explain_model, str) or (explain_model and not _MODEL_RE.match(explain_model)):
+        raise ValueError("assistant.explain_model must look like 'gpt-4.1' or 'claude-sonnet-5-5'")
     limit = a.get("max_requests_per_day", DEFAULT_LIMIT)
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 10000:
         raise ValueError("assistant.max_requests_per_day must be 1…10000")
@@ -123,7 +128,8 @@ def parse_assistant(raw: dict) -> AssistantConfig:
     if not isinstance(ws, str) or (ws and not _WORKSPACE_RE.match(ws.strip())):
         raise ValueError("assistant.workspace_id must look like 'wrkspc_…'")
     return AssistantConfig(enabled=enabled, api_key=keys["api_key"], openai_api_key=keys["openai_api_key"],
-                           provider=provider, model=model, max_requests_per_day=limit, workspace_id=ws.strip())
+                           provider=provider, model=model, max_requests_per_day=limit, workspace_id=ws.strip(),
+                           explain_model=explain_model)
 
 
 def _usage_conn() -> sqlite3.Connection:
@@ -172,6 +178,7 @@ def status(hcfg: heating.HeatingConfig, acfg: AssistantConfig, now: Optional[dat
     elif used >= acfg.max_requests_per_day:
         hint = f"Tageslimit erreicht ({used}/{acfg.max_requests_per_day}). Morgen geht es weiter."
     return {"enabled": acfg.enabled, "key_set": acfg.key_set, "model": acfg.model,
+            "explain_model": acfg.explain_model or acfg.model,
             "provider": acfg.provider, "provider_name": PROVIDERS[acfg.provider],
             "used_today": used, "limit": acfg.max_requests_per_day,
             "ready": hint is None, "hint": hint}
@@ -307,6 +314,14 @@ Warum- und Statusfragen („warum heizt der Heizstab nicht?“, „wieso ging Ph
 - Beantworte sie im Feld explanation. Verwende NUR Fakten aus dem Abschnitt ERKLÄR-KONTEXT weiter unten.
   Erfinde nichts und schließe nicht aus Allgemeinwissen. Steht etwas dort als „unbekannt“ oder fehlt die
   nötige Angabe (Zeitraum, Gerät, Raum), sage klar „Das kann ich nicht sehen“ und nenne, was fehlt.
+- Nenne den Hauptgrund zuerst. Beim Auto: Ist kein Auto angesteckt oder die Wallbox nicht im Eco-Modus,
+  ist das der Grund – nicht der Überschuss.
+- Ob etwas gerade läuft, steht in der Zeile „Läuft gerade“ (und in den Messwerten, z. B. Heizstab in W).
+  Die Zeile „Wasserspeicher (Heizstab): Budget …“ ist nur das Budget, kein Schaltzustand – an/aus steht
+  bei den Phasen. Läuft ein Gerät
+  trotz fehlendem Überschuss (z. B. Mindestlaufzeit), sage genau das – nicht, dass es aus ist.
+- Werte, die nicht im ERKLÄR-KONTEXT stehen (z. B. eine Raumtemperatur zu einer früheren Uhrzeit), sind
+  unbekannt: nicht schätzen und nicht aus anderen Werten folgern, sondern sagen, dass sie fehlen.
 - Kurz: 2 bis 5 Sätze, Deutsch, Alltagssprache. Zahlen mit Einheit (W, kW, °C, %, min). Beginne mit
   „Stand HH:MM:“ bzw. der Uhrzeit, auf die sich die Antwort bezieht.
 - Die Codes in eckigen Klammern (z. B. [below_start_threshold]) sind die Gründe der Steuerung; der Text
@@ -561,10 +576,12 @@ def call_model(acfg: AssistantConfig, context: str, history: list[dict[str, str]
     """Ein API-Aufruf beim gewählten Anbieter → Eingabe des Tools ``propose_schedule`` (dict).
 
     ``explain``: Warum-Frage – Prompt und Tool tragen zusätzlich das Textfeld ``explanation`` (der Kontext
-    enthält dann den Erklär-Kontext). Ohne ``explain`` ist die Anfrage unverändert wie bisher.
+    enthält dann den Erklär-Kontext); Modell ist ``explain_model``, falls gesetzt. Ohne ``explain`` ist die Anfrage unverändert wie bisher.
     Fehler werden zu ChatError mit verständlichem Text; der API-Key erscheint nie (auch nicht im Log).
     """
     messages = [{"role": m["role"], "content": m["content"]} for m in history]
+    if explain and acfg.explain_model:
+        acfg = replace(acfg, model=acfg.explain_model)     # Fehlermeldungen nennen dann dieses Modell
     system = SYSTEM_PROMPT + (EXPLAIN_PROMPT if explain else "") + "\n\n" + context
     client = (client_factory or _default_client)(acfg)
     request = _request_openai if acfg.provider == OPENAI else _request_anthropic

@@ -525,3 +525,159 @@ class WebExplainTest(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RunningLineTest(Base):
+    """Nachbesserung nach den echten Beispielen: was läuft, steht ausdrücklich da; die Budget-Zeile schaltet nie."""
+
+    def held_by_min_on(self, t):
+        return snap(t, surplus=0, heater_w=1522, heater=("turn_off", "below_start_threshold"),
+                    wallbox=("turn_off", "budget_exhausted"),
+                    phases=[("keep_on", "min_on_time", {"remaining_s": 183}), ("keep_off", "below_start_threshold"),
+                            ("keep_off", "below_start_threshold")])
+
+    def test_phase_held_by_min_on_time_is_running(self):
+        line = explain.running_line(self.held_by_min_on(NOW))
+        self.assertTrue(line.startswith("Läuft gerade (nach diesem Lauf): Heizstab AN mit Phase 1 (zu Beginn des "
+                                        "Laufs gemessen 1522 W) – Phase 1: Mindestlaufzeit läuft noch (183 s)"), line)
+        self.assertIn("eBike AN", line)
+        self.assertIn("Auto lädt nicht (Wallbox 0 W) – kein Auto angesteckt; Überschuss-Freigabe der Kaskade für die "
+                      "Wallbox: aus", line)
+        lines = explain.snapshot_lines(self.held_by_min_on(NOW))
+        self.assertEqual(lines[1], line)                                        # direkt unter den Messwerten
+        heater = next(x for x in lines if x.startswith("- Wasserspeicher"))
+        self.assertIn("Wasserspeicher (Heizstab): Budget [below_start_threshold]", heater)
+        self.assertNotIn("schaltet AUS", heater)
+
+    def test_all_off_and_active_phases_without_extra_reason(self):
+        self.assertIn("Heizstab AUS (zu Beginn des Laufs gemessen 0 W)", explain.running_line(snap(NOW)))
+        two = snap(NOW, surplus=3300, heater_w=3000, phases=[("keep_on", "budget_available"),
+                                                              ("turn_on", "budget_available"),
+                                                              ("keep_off", "below_start_threshold")])
+        self.assertIn("Heizstab AN mit Phase 1+2 (zu Beginn des Laufs gemessen 3000 W) – Phase 2 in diesem Lauf "
+                      "eingeschaltet;", explain.running_line(two))
+        s = snap(NOW)
+        s["devices"][-1]["data"].update(car_state=4, eco_mode=False)
+        self.assertIn("Auto lädt nicht (Wallbox 0 W) – Laden beendet – Wallbox nicht im Eco-Modus",
+                      explain.running_line(s))
+        s["devices"][-1]["data"]["car_state"] = 2
+        s["energy"]["wallbox_w"] = 3600
+        self.assertIn("Auto lädt (3600 W)", explain.running_line(s))
+
+    def test_budget_action_flips_are_no_changes(self):
+        for m in range(5, -1, -1):
+            s = self.held_by_min_on(NOW - timedelta(minutes=m))
+            s["devices"][2]["action"] = "turn_on" if m % 2 else "turn_off"
+            decisions.save(s)
+        ch = dict(self.build("Warum läuft der Heizstab nicht?").sections)
+        self.assertEqual(ch["Letzte 60 min – Wechsel (14:27–14:32, 6 Läufe)"],
+                         ["keine Wechsel – alle Geräte unverändert wie im aktuellen Stand"])
+
+
+class RoomHistoryTest(Base):
+    def setUp(self):
+        super().setUp()
+        self.seed(NOW, 30)
+        self.calls = []
+
+    def history(self, item, start, end):
+        self.calls.append((item, start, end))
+        ms = lambda h, m: int(NOW.replace(hour=h, minute=m).timestamp() * 1000)  # noqa: E731
+        if item == "K_Temp":
+            return [(ms(h, m), 19.0 + (h - 5) * 0.5 + m / 600) for h in range(5, 9) for m in range(0, 60, 5)]
+        if item == "K_Set":
+            return [(ms(1, 0), 19.0), (ms(6, 59), 19.0), (ms(7, 0), 22.0), (ms(8, 0), 22.0)]
+        if item == "K_Level":
+            return [(ms(h, m), 0.0 if h < 7 else 60.0) for h in range(5, 9) for m in range(0, 60, 10)]
+        return []
+
+    def kind(self, text, history="self"):
+        ctx = self.build(text, rooms=[{"id": "kind", "name": "Kind", "temp": 20.3, "setpoint": 19.0}]) \
+            if history is None else explain.build(
+                text, NOW, load_config(self.cfg_path), heating.parse_heating(self.raw), shutters.parse_shutters(self.raw),
+                [{"id": "kind", "name": "Kind", "temp": 20.3, "setpoint": 19.0}], [],
+                history=self.history if history == "self" else history)
+        return "\n".join(dict(ctx.sections)["Heizung (Räume)"])
+
+    def test_room_with_time_gets_condensed_actual_and_setpoint_history(self):
+        heat = self.kind("Warum war es im Kinderzimmer heute früh so warm?")
+        self.assertIn("  Verlauf heute früh (05:00–09:00) – Ist (Mittel je 20 min, °C): 05:00 19,0, 05:20 19,0, ", heat)
+        self.assertIn("(min 19,0, max 20,6)", heat)
+        self.assertIn("  Verlauf heute früh (05:00–09:00) – Soll (Wechsel, °C): 05:00 19,0, 07:00 22,0", heat)
+        ist = next(x for x in heat.splitlines() if "– Ist" in x)
+        self.assertEqual(len(re.findall(r"\b\d\d:\d\d \d", ist)), explain.ROOM_HISTORY_POINTS)
+        self.assertEqual({c[0] for c in self.calls}, {"K_Temp", "K_Set", "K_Level"})
+
+    def test_before_and_after_the_setpoint_change_and_valve(self):
+        heat = self.kind("Warum war es im Kinderzimmer heute früh so warm?")
+        self.assertIn("  Verlauf heute früh (05:00–09:00) – Ventil (Mittel je 20 min, %): 05:00 0, ", heat)
+        self.assertIn(", 07:00 60, ", heat)
+        self.assertIn("(max 60)", heat)
+        self.assertIn("  Verlauf heute früh (05:00–09:00) – vor Wechsel 07:00 (05:00–07:00, Soll 19,0 °C): "
+                      "Ist 19,0 → 19,6 (min 19,0, max 19,6), Ventil max 0 %", heat)
+        self.assertIn("  Verlauf heute früh (05:00–09:00) – nach Wechsel 07:00 (07:00–09:00, Soll 22,0 °C): "
+                      "Ist 20,0 → 20,6 (min 20,0, max 20,6), Ventil max 60 %", heat)
+
+    def test_no_change_no_segments(self):
+        hist = lambda item, a, b: [] if item == "K_Level" else (  # noqa: E731
+            [(int(NOW.replace(hour=1).timestamp() * 1000), 19.0)] if item == "K_Set" else self.history(item, a, b))
+        heat = self.kind("Warum war Kind heute früh warm?", history=hist)
+        self.assertNotIn("Wechsel 0", heat)
+        self.assertIn("– Soll (Wechsel, °C): 05:00 19,0", heat)
+        self.assertIn("– Ventil: unbekannt (keine gespeicherten Werte)", heat)
+
+    def test_without_data_it_says_unknown(self):
+        self.assertIn("– Ist: unbekannt (keine gespeicherten Werte)", self.kind("Warum war Kind heute früh warm?",
+                                                                                  history=lambda *a: []))
+
+        def boom(*a):
+            raise heating.OpenHabError("GET http://192.168.2.5:8080/rest/persistence: timeout")
+        heat = self.kind("Warum war Kind heute früh warm?", history=boom)
+        self.assertIn("– Ist: unbekannt (Persistenz nicht lesbar)", heat)
+        self.assertNotIn("192.168", heat)
+        self.assertIn("– Ist: unbekannt (openHAB nicht verbunden)", self.kind("Warum war Kind heute früh warm?",
+                                                                               history=None))
+
+    def test_no_time_reference_or_no_named_room_means_no_history(self):
+        self.assertNotIn("Verlauf", self.kind("Warum ist Kind so warm?"))
+        self.assertEqual(self.calls, [])
+        heat = self.kind("Warum war es heute früh im Zimmer so warm?")             # nur allgemein: kein Abruf
+        self.assertEqual(self.calls, [])
+        self.assertIn("Temperatur-Verlauf heute früh (05:00–09:00): unbekannt (nur für ausdrücklich genannte Räume)", heat)
+
+
+class ExplainModelTest(unittest.TestCase):
+    def test_default_is_model_and_it_is_validated(self):
+        base = {"enabled": True, "provider": "openai", "openai_api_key": "sk-x", "model": "gpt-4.1-mini"}
+        self.assertEqual(hc.parse_assistant({"assistant": base}).explain_model, "")
+        self.assertEqual(hc.parse_assistant({"assistant": {**base, "explain_model": "gpt-4.1"}}).explain_model, "gpt-4.1")
+        with self.assertRaises(ValueError):
+            hc.parse_assistant({"assistant": {**base, "explain_model": "GPT 4!"}})
+
+    def test_only_why_questions_use_it(self):
+        acfg = hc.AssistantConfig(enabled=True, provider="openai", openai_api_key="sk-proj-TEST", model="gpt-4.1-mini",
+                                  explain_model="gpt-4.1")
+        api = FakeOpenAI({"entries": [], "explanation": "x"})
+        hc.call_model(acfg, "K", [{"role": "user", "content": "x"}], client_factory=lambda a: api)
+        hc.call_model(acfg, "K", [{"role": "user", "content": "warum?"}], client_factory=lambda a: api, explain=True)
+        self.assertEqual([c["model"] for c in api.calls], ["gpt-4.1-mini", "gpt-4.1"])
+        self.assertEqual(acfg.model, "gpt-4.1-mini")                              # Config bleibt unverändert
+        plain = hc.AssistantConfig(enabled=True, provider="openai", openai_api_key="sk-proj-TEST", model="gpt-4.1-mini")
+        hc.call_model(plain, "K", [{"role": "user", "content": "warum?"}], client_factory=lambda a: api, explain=True)
+        self.assertEqual(api.calls[-1]["model"], "gpt-4.1-mini")
+
+    def test_prompt_rules_from_the_examples(self):
+        for s in ("Hauptgrund zuerst", "„Läuft gerade“", "nur das Budget, kein Schaltzustand",
+                  "nicht schätzen und nicht aus anderen Werten folgern"):
+            self.assertIn(s, hc.EXPLAIN_PROMPT)
+
+
+class WebRoomHistoryTest(WebExplainTest):
+    def test_room_history_comes_from_rrd4j_via_the_openhab_client(self):
+        calls = []
+        self.fake.get_history = lambda item, start, end=None, service_id=None: calls.append((item, service_id)) or []
+        res = self.chat("Warum war es im Kinderzimmer heute früh so warm?")
+        self.assertEqual(res["type"], "explain")
+        self.assertEqual(sorted(calls), [("K_Level", "rrd4j"), ("K_Set", "rrd4j"), ("K_Temp", "rrd4j")])
+        heat = next(s for s in res["basis"] if s["title"] == "Heizung (Räume)")["lines"]
+        self.assertIn("unbekannt (keine gespeicherten Werte)", "\n".join(heat))

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-14 – „Warum?“ Phase 2, Nachbesserung nach den echten Beispielen
+
+Fünf echte Beispielfragen (gpt-4.1-mini, Kopie der Prod-Schnappschüsse) zeigten zwei Fehler: „Heizstab läuft nicht“, obwohl Phase 1 per Mindestlaufzeit lief, und „die Heizung hatte angehoben“ ohne Raumtemperaturen vom Morgen im Kontext.
+- **„Läuft gerade“-Zeile** (`explain.running_line`) direkt unter den Messwerten jedes Schnappschusses im Kontext: Heizstab AN/AUS mit Phasen und gemessener Leistung (zu Beginn des Laufs), Phasen, die nur wegen Mindestlaufzeit/Fail-safe o. Ä. an sind, mit Grund; in diesem Lauf eingeschaltete Phasen; Kaskaden-Geräte AN/aus; Auto lädt/lädt nicht mit Grund (kein Auto, Laden beendet, nicht im Eco-Modus) und die Überschuss-Freigabe der Kaskade für die Wallbox.
+- **Budget-Zeile des Heizstabs** zeigt nur noch „Budget“ (nie „schaltet EIN/AUS“); Aktionswechsel dieser Zeile zählen nicht mehr als Wechsel.
+- **Raum-Verlauf aus rrd4j:** Nennt eine Warum-Frage einen Raum und einen Zeitbezug, kommen Ist-Temperatur (Mittelwerte, höchstens 12 je Zeitraum, mit min/max) und Soll-Wechsel (Anfangswert + Wechsel) des Zeitraums in den Kontext – über `openhab.persistence` bzw. `rrd4j`, nur lesend, höchstens 3 ausdrücklich genannte Räume. Ohne Daten steht ausdrücklich „unbekannt“ (keine gespeicherten Werte / Persistenz nicht lesbar / openHAB nicht verbunden), Fehlertexte nie im Kontext.
+- **Soll-Wechsel und Ventil im Raum-Verlauf:** Zusätzlich der Ventil-Verlauf des Raums (Mittelwerte in %, mit max) und – wenn der Sollwert im Zeitraum wechselt – je Abschnitt eine Zeile „vor Wechsel HH:MM“ / „nach Wechsel HH:MM“ mit Soll, Ist Anfang → Ende, min/max und Ventil max. Damit ist ablesbar, ob es schon vor dem Zeitplan warm war bzw. geheizt wurde (Beispiel Kind heute: vor 07:01 bei Soll 19 °C bis 20,2 °C, Ventil bis 84 %).
+- **Prompt (`EXPLAIN_PROMPT`):** Hauptgrund zuerst (Auto: kein Auto/kein Eco-Modus vor Überschuss); ob etwas läuft, steht in „Läuft gerade“, die Budget-Zeile ist kein Schaltzustand; Werte, die nicht im Kontext stehen, nicht schätzen oder folgern.
+- **`assistant.explain_model` (optional, neu):** eigenes Modell nur für Warum-Fragen; leer/fehlend = `assistant.model`. Wird geprüft wie `model`, bleibt beim Speichern der Settings erhalten, `chat/status` meldet es. In Prod noch nicht gesetzt.
+- Tests: +12 in `tests/test_explain.py` („Läuft gerade“, Budget-Zeile, Raum-Verlauf mit/ohne Daten, vor/nach Soll-Wechsel, Ventil, Fehler, kein Abruf ohne Zeitbezug oder ohne genannten Raum, rrd4j über den openHAB-Client, `explain_model`). Suite: 575 grün.
+
 ## 2026-10-13 – „Warum?“-Antworten im Chat (Phase 2)
 
 Der Chat (unten auf allen Tabs) beantwortet Warum-/Statusfragen („Warum heizt der Heizstab gerade nicht?“, „Warum ging um 14 Uhr Phase 2 aus?“, „Warum ist der Rollladen Hintereingang nicht ganz zu?“). **Nur lesen:** eine reine Frage erzeugt nie einen Vorschlag, Schaltvorgang oder DB-Eintrag außer dem Tageszähler. Bestehendes Chat-Verhalten für Zeitpläne/Sofortbefehle und die Abfragen ohne API sind unverändert (gleicher Prompt, gleiches Tool).

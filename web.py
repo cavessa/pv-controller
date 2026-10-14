@@ -2247,7 +2247,9 @@ def heating_chat(body: _ChatRequest) -> dict[str, Any]:
         context += "\n" + _schat.build_context(scfg, sh_status, _ssched.list_schedules(), now, loc)
     ectx = None
     if why:
-        ectx = _explain.build(text, now, _load_cfg(), hcfg, scfg, rooms, sh_status)
+        svc = (raw.get("openhab") or {}).get("persistence") or "rrd4j"
+        hist_fn = (lambda item, start, end: client.get_history(item, start, end, service_id=svc)) if client else None
+        ectx = _explain.build(text, now, _load_cfg(), hcfg, scfg, rooms, sh_status, history=hist_fn)
         context += "\n\n" + ectx.text
     try:
         inp = _hchat.call_model(acfg, context, hist, explain=True) if why else _hchat.call_model(acfg, context, hist)

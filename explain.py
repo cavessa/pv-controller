@@ -2,7 +2,8 @@
 
 Der Server baut aus dem Entscheidungs-Schnappschuss (``decisions``), dem Zeitplan-Verlauf
 (``schedule_log``), dem Geräte-Ereignislog und der Konfiguration (nur Zahlen und Namen) einen Text aus
-Abschnitten. Das Sprachmodell bekommt genau diesen Text und darf nur ihn verwenden; die UI zeigt ihn
+Abschnitten; bei Fragen zu einem Raum mit Zeitbezug kommt der Ist/Soll-Verlauf aus der openHAB-Persistenz
+(rrd4j) verdichtet dazu. Das Sprachmodell bekommt genau diesen Text und darf nur ihn verwenden; die UI zeigt ihn
 unter „Grundlage“. Fehlt etwas, steht dort ausdrücklich „unbekannt“.
 
 Nichts hier schaltet, sendet oder schreibt. In den Kontext kommen keine Adressen und keine
@@ -16,7 +17,7 @@ import re
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import db
 import decisions
@@ -34,6 +35,12 @@ POINT_MIN = 15                    # Zeitpunkt in der Frage: ± 15 min
 STALE_MIN = 5                     # letzter Schnappschuss älter → Hinweis
 MAX_CHANGES = 40                  # Wechsel je Abschnitt
 MAX_WINDOWS = 2
+ROOM_HISTORY_ROOMS = 3            # Raum-Verlauf nur für ausdrücklich genannte Räume, höchstens so viele
+ROOM_HISTORY_POINTS = 12          # Ist-Verlauf: höchstens so viele Mittelwerte je Zeitraum
+SETPOINT_LOOKBACK_H = 6           # Soll-Verlauf: so weit vor dem Zeitraum nach dem Anfangswert suchen
+
+# (Item, Start, Ende) → [(epoch_ms, Wert)] aus der openHAB-Persistenz; wirft bei Fehlern
+HistoryFn = Callable[[str, datetime, datetime], list[tuple[int, float]]]
 
 _WHY_RE = re.compile(r"\b(warum|wieso|weshalb|weswegen|woran liegt|aus welchem grund|wie kommt es|"
                      r"was ist (?:da |denn )?(?:los|passiert)|was war (?:da |denn )?(?:los|passiert))\b", re.IGNORECASE)
@@ -55,6 +62,8 @@ DEVICE_NAMES = {"zendure": "Batterie", "wallbox_control": "Wallbox (Ladesteuerun
                 "heizstab_phase1": "Heizstab Phase 1", "heizstab_phase2": "Heizstab Phase 2",
                 "heizstab_phase3": "Heizstab Phase 3"}
 _CAR = {1: "kein Auto angesteckt", 2: "lädt", 3: "wartet aufs Auto", 4: "Laden beendet"}
+_ON = {"turn_on", "keep_on", "skip_min_on"}       # Gerät ist nach diesem Lauf an
+_ACTIVE_REASONS = {"budget_available", "grid_assist", "keep_running", "surplus_sufficient"}
 
 
 # ── Erkennen ────────────────────────────────────────────────────────────────
@@ -197,6 +206,68 @@ def _name(d: dict[str, Any]) -> str:
     return DEVICE_NAMES.get(d["id"]) or d.get("name") or d["id"]
 
 
+def _is_budget(d: dict[str, Any]) -> bool:
+    """Kaskaden-Eintrag des Heizstabs: verteilt nur das Budget, geschaltet wird über die Phasen."""
+    return d.get("type") == "heizstab" or d.get("id") == "heizstab"
+
+
+def _action(d: dict[str, Any]) -> str:
+    if _is_budget(d):
+        return "Budget"
+    return ACTION_DE.get(d.get("action"), d.get("action") or "–")
+
+
+def running_line(snap: dict[str, Any]) -> str:
+    """Was nach diesem Lauf tatsächlich läuft – ausdrücklich, damit das nicht aus den Grund-Zeilen erschlossen
+    werden muss (z. B. Phase an trotz 0 W Überschuss wegen Mindestlaufzeit)."""
+    devs = snap.get("devices") or []
+    e = snap.get("energy") or {}
+    parts: list[str] = []
+    phases = [d for d in devs if str(d["id"]).startswith("heizstab_phase")]
+    if phases:
+        on = [d for d in phases if d.get("action") in _ON]
+        meas = f"zu Beginn des Laufs gemessen {_w(e.get('heater_w'))}"
+        if on:
+            why = [f"Phase {d['id'][-1]} in diesem Lauf eingeschaltet" for d in on if d.get("action") == "turn_on"]
+            for d in on:
+                if d.get("reason") not in _ACTIVE_REASONS:
+                    t = f"Phase {d['id'][-1]}: {decisions.reason_text(snap, d)}"
+                    why.append(t)
+            parts.append(f"Heizstab AN mit Phase {'+'.join(d['id'][-1] for d in on)} ({meas})"
+                         + (f" – {'; '.join(why)}" if why else ""))
+        elif any(d.get("action") == "unknown" for d in phases):
+            parts.append(f"Heizstab: Zustand unbekannt ({meas})")
+        else:
+            parts.append(f"Heizstab AUS ({meas})")
+    if snap.get("summer_mode_heating"):
+        parts.append("Sommermodus heizt aus dem Netz")
+    wb = None
+    for d in devs:
+        if d["id"] in ("zendure", "wallbox_control") or str(d["id"]).startswith("heizstab_phase") or _is_budget(d):
+            continue
+        if d.get("type") == "wallbox":
+            wb = d
+            continue
+        a = d.get("action")
+        parts.append(f"{_name(d)} " + ("AN" if a in _ON else "AUS (in diesem Lauf ausgeschaltet)" if a == "turn_off"
+                                       else "aus" if a in ("keep_off", "skip_min_off") else "Zustand unbekannt"))
+    wc = next((d for d in devs if d["id"] == "wallbox_control"), None)
+    if wc is not None or wb is not None or "wallbox_w" in e:
+        data = decisions.device_data(snap, wc) if wc is not None else {}
+        car, w = data.get("car_state"), e.get("wallbox_w")
+        charging = car == 2 or (w or 0) > 100
+        s = f"Auto lädt ({_w(w)})" if charging else f"Auto lädt nicht (Wallbox {_w(w)})"
+        if car in _CAR and car != 2:
+            s += f" – {_CAR[car]}"
+        if data.get("eco_mode") is False:
+            s += " – Wallbox nicht im Eco-Modus, die PV-Steuerung fasst sie nicht an"
+        if wb is not None:
+            s += (f"; Überschuss-Freigabe der Kaskade für die Wallbox: {'an' if wb.get('action') in _ON else 'aus'} "
+                  "(lädt nur mit angestecktem Auto im Eco-Modus)")
+        parts.append(s)
+    return "Läuft gerade (nach diesem Lauf): " + ("; ".join(parts) if parts else "unbekannt")
+
+
 def device_line(snap: dict[str, Any], d: dict[str, Any]) -> str:
     extra = ""
     data = decisions.device_data(snap, d)
@@ -204,7 +275,7 @@ def device_line(snap: dict[str, Any], d: dict[str, Any]) -> str:
         extra = f" (Auto: {_CAR[data['car_state']]}, Eco-Modus {'an' if data.get('eco_mode') else 'aus'})"
     if d.get("error"):
         extra += " – Schaltbefehl fehlgeschlagen"        # Fehlertext bewusst nicht (kann Adressen enthalten)
-    return (f"{_name(d)}: {ACTION_DE.get(d.get('action'), d.get('action') or '–')} [{d.get('reason') or '–'}] "
+    return (f"{_name(d)}: {_action(d)} [{d.get('reason') or '–'}] "
             f"{decisions.reason_text(snap, d)}{extra}")
 
 
@@ -235,7 +306,8 @@ def _merge_phases(lines: list[tuple[str, str]]) -> list[str]:
 
 def snapshot_lines(snap: dict[str, Any]) -> list[str]:
     lines = [f"Stand {_hm(snap['ts'])} ({'Sommer' if snap.get('profile') == 'summer' else 'Winter'}profil"
-             + (", Dry-Run: es wird nichts geschaltet" if snap.get("dry_run") else "") + "): " + energy_line(snap)]
+             + (", Dry-Run: es wird nichts geschaltet" if snap.get("dry_run") else "") + "): " + energy_line(snap),
+             running_line(snap)]
     fs = snap.get("failsafe")
     if fs:
         lines.append(f"Fail-safe aktiv [failsafe_global]: {', '.join(fs.get('names') or fs.get('unreadable') or [])} "
@@ -273,7 +345,7 @@ def changes(snaps: list[dict[str, Any]], limit: int = MAX_CHANGES) -> list[str]:
         fs_prev = fs
         changed: list[tuple[str, str]] = []
         for d in s.get("devices") or []:
-            key = (d.get("action"), d.get("reason"))
+            key = ("budget" if _is_budget(d) else d.get("action"), d.get("reason"))
             if last.get(d["id"]) != key:
                 if i > 0:
                     changed.append((d["id"], device_line(s, d)))
@@ -438,9 +510,115 @@ def _result_lines(kind: str, ids: set[str], names: dict[str, str], since: dateti
     return out
 
 
-def _heating_lines(text: str, hcfg: Any, rooms: list[dict], since: datetime, now: datetime) -> list[str]:
+def _bucket_min(span_min: float) -> int:
+    for b in (5, 10, 15, 20, 30, 60, 120):
+        if span_min / b <= ROOM_HISTORY_POINTS:
+            return b
+    return 240
+
+
+def _tc(v: float) -> str:
+    return f"{v:.1f}".replace(".", ",")
+
+
+def _fetch(history: Optional[HistoryFn], item: str, start: datetime, end: datetime) -> tuple[list, str]:
+    """→ (Punkte als [(datetime, Wert)], Grund wenn leer). Fehlertexte bewusst fest (keine Adressen)."""
+    if history is None:
+        return [], "unbekannt (openHAB nicht verbunden)"
+    try:
+        pts = history(item, start, end)
+    except Exception:                                    # noqa: BLE001 – Verlauf ist nur Zusatz
+        return [], "unbekannt (Persistenz nicht lesbar)"
+    out = sorted((datetime.fromtimestamp(ms / 1000, TZ), v) for ms, v in pts or [])
+    return out, "" if out else "unbekannt (keine gespeicherten Werte)"
+
+
+def _buckets(pts: list[tuple[datetime, float]], b: int) -> list[tuple[datetime, float]]:
+    groups: dict[datetime, list[float]] = {}
+    for t, v in pts:
+        m = (t.hour * 60 + t.minute) // b * b
+        groups.setdefault(t.replace(hour=m // 60, minute=m % 60, second=0, microsecond=0), []).append(v)
+    return [(k, sum(g) / len(g)) for k, g in sorted(groups.items())]
+
+
+def _pct(v: float) -> str:
+    return f"{int(round(v))}"
+
+
+def room_history_lines(room: Any, windows: list[Window], history: Optional[HistoryFn]) -> list[str]:
+    """Je Zeitfenster: Soll-Wechsel, Ist-Verlauf (Mittelwerte je Zeitblock), Ventil-Verlauf und – wenn der Sollwert
+    im Fenster wechselt – Ist/Ventil vor bzw. nach jedem Wechsel (damit „war es schon vorher warm?“ ablesbar ist)."""
+    lines: list[str] = []
+    for w in windows:
+        span = (w.end - w.start).total_seconds() / 60
+        if span <= 0:
+            continue
+        b = _bucket_min(span)
+        head = f"  Verlauf {w.label}"
+        # Soll zuerst: die Wechselzeiten teilen den Ist-/Ventil-Verlauf in „vor/nach Wechsel“
+        changes_: list[tuple[datetime, float, float]] = []          # (Zeit, Soll vorher, Soll danach)
+        sp_line = None
+        if room.setpoint_item:
+            pts, why = _fetch(history, room.setpoint_item, w.start - timedelta(hours=SETPOINT_LOOKBACK_H), w.end)
+            if not pts:
+                sp_line = f"{head} – Soll: {why}"
+            else:
+                before = [v for t, v in pts if t <= w.start]
+                last = round(before[-1], 1) if before else None
+                seq = [f"{w.start:%H:%M} {_tc(last)}"] if last is not None else []
+                for t, v in pts:
+                    if w.start < t <= w.end and round(v, 1) != last:
+                        if last is not None:
+                            changes_.append((t, last, round(v, 1)))
+                        last = round(v, 1)
+                        seq.append(f"{t:%H:%M} {_tc(last)}")
+                sp_line = f"{head} – Soll (Wechsel, °C): " + (", ".join(seq) if seq else "unbekannt")
+        if sp_line:
+            lines.append(sp_line)
+        temp: list[tuple[datetime, float]] = []
+        if not room.temp_item:
+            lines.append(f"{head} – Ist: unbekannt (kein Temperatur-Item)")
+        else:
+            pts, why = _fetch(history, room.temp_item, w.start, w.end)
+            temp = [(t, v) for t, v in pts if w.start <= t < w.end]
+            if not temp:
+                lines.append(f"{head} – Ist: {why or 'unbekannt (keine gespeicherten Werte)'}")
+            else:
+                vals = [v for _, v in temp]
+                lines.append(f"{head} – Ist (Mittel je {b} min, °C): "
+                             + ", ".join(f"{k:%H:%M} {_tc(v)}" for k, v in _buckets(temp, b))
+                             + f" (min {_tc(min(vals))}, max {_tc(max(vals))})")
+        valve: list[tuple[datetime, float]] = []
+        if room.valve_item:
+            pts, why = _fetch(history, room.valve_item, w.start, w.end)
+            valve = [(t, v) for t, v in pts if w.start <= t < w.end]
+            if not valve:
+                lines.append(f"{head} – Ventil: {why or 'unbekannt (keine gespeicherten Werte)'}")
+            else:
+                lines.append(f"{head} – Ventil (Mittel je {b} min, %): "
+                             + ", ".join(f"{k:%H:%M} {_pct(v)}" for k, v in _buckets(valve, b))
+                             + f" (max {_pct(max(v for _, v in valve))})")
+        if changes_ and (temp or valve):
+            bounds = [w.start] + [t for t, _, _ in changes_] + [w.end]
+            sps = [changes_[0][1]] + [new for _, _, new in changes_]
+            for i in range(len(bounds) - 1):
+                a, z = bounds[i], bounds[i + 1]
+                label = f"vor Wechsel {z:%H:%M}" if i == 0 else f"nach Wechsel {a:%H:%M}"
+                seg = [v for t, v in temp if a <= t < z]
+                vseg = [v for t, v in valve if a <= t < z]
+                part = (f"Ist {_tc(seg[0])} → {_tc(seg[-1])} (min {_tc(min(seg))}, max {_tc(max(seg))})"
+                        if seg else "Ist unbekannt")
+                if room.valve_item:
+                    part += f", Ventil max {_pct(max(vseg))} %" if vseg else ", Ventil unbekannt"
+                lines.append(f"{head} – {label} ({a:%H:%M}–{z:%H:%M}, Soll {_tc(sps[i])} °C): {part}")
+    return lines
+
+
+def _heating_lines(text: str, hcfg: Any, rooms: list[dict], since: datetime, now: datetime,
+                   windows: Optional[list[Window]] = None, history: Optional[HistoryFn] = None) -> list[str]:
     import heating_schedule as hs
     picked = _mentioned(text, [r for r in hcfg.rooms], _HEATING_WORDS)
+    named = {r.id for r in _mentioned(text, [r for r in hcfg.rooms], re.compile(r"(?!x)x"))}
     if not picked:
         return []
     by_id = {r["id"]: r for r in rooms}
@@ -458,6 +636,10 @@ def _heating_lines(text: str, hcfg: Any, rooms: list[dict], since: datetime, now
                      + (" – Status nicht lesbar" if st.get("error") or not st else ""))
         if room.id in alerts:
             lines.append(f"  Rückprüfung: {alerts[room.id]['message']}")
+        if windows and room.id in named and len([r for r in picked if r.id in named]) <= ROOM_HISTORY_ROOMS:
+            lines += room_history_lines(room, windows, history)
+        elif windows:
+            lines.append(f"  Temperatur-Verlauf {windows[0].label}: unbekannt (nur für ausdrücklich genannte Räume)")
         for e in [e for e in entries if e["room_id"] == room.id][:12]:
             lines.append(f"  Zeitplan #{e['id']}: {hs.when(e)} → {_c(e['setpoint'])}, "
                          + (f"einmalig {e['date']}" if e["date"] else ",".join(e["days"]))
@@ -536,7 +718,8 @@ def _available(now: datetime) -> str:
 
 
 def build(text: str, now: datetime, config: Any, hcfg: Any = None, scfg: Any = None,
-          rooms: Optional[list[dict]] = None, sh_status: Optional[list[dict]] = None) -> Context:
+          rooms: Optional[list[dict]] = None, sh_status: Optional[list[dict]] = None,
+          history: Optional[HistoryFn] = None) -> Context:
     """Erklär-Kontext zur Frage ``text``. Liest nur; fehlende Daten stehen als „unbekannt“ im Text."""
     now = now.astimezone(TZ)
     ctx = Context(windows=time_windows(text, now))
@@ -592,7 +775,7 @@ def build(text: str, now: datetime, config: Any, hcfg: Any = None, scfg: Any = N
     if scfg is not None and getattr(scfg, "enabled", False):
         ctx.add("Rollläden", _shutter_lines(text, scfg, sh_status or [], since, now, room_named))
     if heat_on:
-        ctx.add("Heizung (Räume)", _heating_lines(text, hcfg, rooms or [], since, now))
+        ctx.add("Heizung (Räume)", _heating_lines(text, hcfg, rooms or [], since, now, ctx.windows, history))
     ctx.add("Geräte-Erreichbarkeit", _health_lines(now, since))
     try:
         ctx.add("Einstellungen (Zahlen)", _settings_lines(config))
