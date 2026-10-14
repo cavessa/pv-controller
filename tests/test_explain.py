@@ -395,7 +395,7 @@ def tool(explanation=None, **kw):
     return {**tsc.tool(**kw), "explanation": explanation}
 
 
-class WebExplainTest(Base):
+class WebBase(Base):
     def setUp(self):
         super().setUp()
         self.fake = tsc.Client()
@@ -424,6 +424,9 @@ class WebExplainTest(Base):
             tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")]
             return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables}
 
+
+
+class WebExplainTest(WebBase):
     def test_why_question_returns_text_and_basis(self):
         res = self.chat("Warum heizt der Heizstab gerade nicht?")
         self.assertEqual(res["type"], "explain")
@@ -668,11 +671,12 @@ class ExplainModelTest(unittest.TestCase):
 
     def test_prompt_rules_from_the_examples(self):
         for s in ("Hauptgrund zuerst", "„Läuft gerade“", "nur das Budget, kein Schaltzustand",
-                  "nicht schätzen und nicht aus anderen Werten folgern"):
+                  "nicht schätzen und nicht aus anderen Werten folgern", "„vor Wechsel HH:MM“ und „nach Wechsel HH:MM“",
+                  "nenne beide Abschnitte"):
             self.assertIn(s, hc.EXPLAIN_PROMPT)
 
 
-class WebRoomHistoryTest(WebExplainTest):
+class WebRoomHistoryTest(WebBase):
     def test_room_history_comes_from_rrd4j_via_the_openhab_client(self):
         calls = []
         self.fake.get_history = lambda item, start, end=None, service_id=None: calls.append((item, service_id)) or []
@@ -681,3 +685,22 @@ class WebRoomHistoryTest(WebExplainTest):
         self.assertEqual(sorted(calls), [("K_Level", "rrd4j"), ("K_Set", "rrd4j"), ("K_Temp", "rrd4j")])
         heat = next(s for s in res["basis"] if s["title"] == "Heizung (Räume)")["lines"]
         self.assertIn("unbekannt (keine gespeicherten Werte)", "\n".join(heat))
+
+
+class WebSetpointChangeTest(WebBase):
+    def test_segments_and_rule_reach_the_model_together(self):
+        ms = lambda h, m: int(self.now.replace(hour=h, minute=m, second=0).timestamp() * 1000)  # noqa: E731
+        data = {"K_Set": [(ms(0, 30), 19.0), (ms(7, 1), 22.0)],
+                "K_Temp": [(ms(h, m), 18.7 + (h - 5) * 0.4) for h in range(5, 9) for m in range(0, 60, 10)],
+                "K_Level": [(ms(h, m), 80.0 if h < 6 else 100.0) for h in range(5, 9) for m in range(0, 60, 10)]}
+        self.fake.get_history = lambda item, start, end=None, service_id=None: [
+            p for p in data.get(item, []) if start.timestamp() * 1000 <= p[0] <= (end or self.now).timestamp() * 1000]
+        with mock.patch.object(explain, "time_windows", lambda text, now: [explain.Window(
+                "heute früh (05:00–09:00)", self.now.replace(hour=5, minute=0, second=0),
+                self.now.replace(hour=9, minute=0, second=0))]):
+            res = self.chat("Warum war es im Kinderzimmer heute früh so warm?")
+        self.assertEqual(res["type"], "explain")
+        system = self.api.calls[-1]["system"]
+        self.assertIn("nenne beide Abschnitte", system)
+        self.assertIn("– vor Wechsel 07:01 (05:00–07:01, Soll 19,0 °C): Ist 18,7", system)
+        self.assertIn("– nach Wechsel 07:01 (07:01–09:00, Soll 22,0 °C): Ist", system)

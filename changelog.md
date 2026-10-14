@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-14 – „Warum?“: Regel für „vor/nach Wechsel“ im Prompt
+
+- **`EXPLAIN_PROMPT`:** Enthält der Erklär-Kontext Raum-Verlaufszeilen „vor Wechsel HH:MM“ und „nach Wechsel HH:MM“, nennt die Antwort beide Abschnitte, wenn sie zur Frage beitragen („Schon vor 7 Uhr war es 20,2 °C, weil das Ventil bei Soll 19 °C bis 84 % offen war; danach heizte es mit Soll 22 °C zusätzlich …“), und schreibt die Wirkung nicht allein dem Wechsel zu. Anlass: Die Antwort auf „Warum war es im Kinderzimmer heute früh so warm?“ (gpt-4.1) nannte nur den Zeitplan um 07:01, obwohl es schon um 06:20 20,2 °C waren.
+- Tests (API gemockt): Regel im Prompt; Endpunkt-Test mit Raum-Verlauf über den openHAB-Client – Regel und beide Abschnitte gehen zusammen ans Modell. Die Web-Testklassen nutzen jetzt eine gemeinsame Basis (`WebBase`), dadurch laufen die Endpunkt-Tests nicht mehr doppelt. Suite: 567 grün.
+
 ## 2026-10-14 – „Warum?“ Phase 2, Nachbesserung nach den echten Beispielen
 
 Fünf echte Beispielfragen (gpt-4.1-mini, Kopie der Prod-Schnappschüsse) zeigten zwei Fehler: „Heizstab läuft nicht“, obwohl Phase 1 per Mindestlaufzeit lief, und „die Heizung hatte angehoben“ ohne Raumtemperaturen vom Morgen im Kontext.

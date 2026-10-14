@@ -322,6 +322,10 @@ Warum- und Statusfragen („warum heizt der Heizstab nicht?“, „wieso ging Ph
   trotz fehlendem Überschuss (z. B. Mindestlaufzeit), sage genau das – nicht, dass es aus ist.
 - Werte, die nicht im ERKLÄR-KONTEXT stehen (z. B. eine Raumtemperatur zu einer früheren Uhrzeit), sind
   unbekannt: nicht schätzen und nicht aus anderen Werten folgern, sondern sagen, dass sie fehlen.
+- Enthält der Kontext Zeilen „vor Wechsel HH:MM“ und „nach Wechsel HH:MM“ (Raum-Verlauf um einen Soll-Wechsel),
+  nenne beide Abschnitte, wenn sie zur Frage beitragen – z. B. „Schon vor 7 Uhr war es 20,2 °C, weil das Ventil
+  bei Soll 19 °C bis 84 % offen war; danach heizte es mit Soll 22 °C zusätzlich bis 20,9 °C.“ Schreibe die
+  Wirkung nicht allein dem Wechsel zu, wenn die Werte davor schon dasselbe zeigen.
 - Kurz: 2 bis 5 Sätze, Deutsch, Alltagssprache. Zahlen mit Einheit (W, kW, °C, %, min). Beginne mit
   „Stand HH:MM:“ bzw. der Uhrzeit, auf die sich die Antwort bezieht.
 - Die Codes in eckigen Klammern (z. B. [below_start_threshold]) sind die Gründe der Steuerung; der Text
