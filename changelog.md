@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-14 – „Warum?“: Prompt-Beispiel mit Platzhaltern
+
+- **`EXPLAIN_PROMPT`:** Das Beispiel zur Regel „vor/nach Wechsel“ nutzt keine echten Messwerte mehr, sondern Platzhalter („Schon vor <Uhrzeit> war es <X> °C, weil das Ventil bei Soll <A> °C bis <Y> % offen war; danach heizte es mit Soll <B> °C zusätzlich bis <Z> °C.“), dazu „Setze nur Werte aus dem Kontext ein.“ – damit das Modell keine Beispielzahlen übernimmt.
+- Test: Das Beispiel im Prompt enthält keine Ziffer. Suite: 567 grün.
+
 ## 2026-10-14 – „Warum?“: Regel für „vor/nach Wechsel“ im Prompt
 
 - **`EXPLAIN_PROMPT`:** Enthält der Erklär-Kontext Raum-Verlaufszeilen „vor Wechsel HH:MM“ und „nach Wechsel HH:MM“, nennt die Antwort beide Abschnitte, wenn sie zur Frage beitragen („Schon vor 7 Uhr war es 20,2 °C, weil das Ventil bei Soll 19 °C bis 84 % offen war; danach heizte es mit Soll 22 °C zusätzlich …“), und schreibt die Wirkung nicht allein dem Wechsel zu. Anlass: Die Antwort auf „Warum war es im Kinderzimmer heute früh so warm?“ (gpt-4.1) nannte nur den Zeitplan um 07:01, obwohl es schon um 06:20 20,2 °C waren.

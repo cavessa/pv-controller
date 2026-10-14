@@ -672,8 +672,11 @@ class ExplainModelTest(unittest.TestCase):
     def test_prompt_rules_from_the_examples(self):
         for s in ("Hauptgrund zuerst", "„Läuft gerade“", "nur das Budget, kein Schaltzustand",
                   "nicht schätzen und nicht aus anderen Werten folgern", "„vor Wechsel HH:MM“ und „nach Wechsel HH:MM“",
-                  "nenne beide Abschnitte"):
+                  "nenne beide Abschnitte", "Schon vor <Uhrzeit> war es <X> °C", "Setze nur Werte aus dem Kontext ein"):
             self.assertIn(s, hc.EXPLAIN_PROMPT)
+        example = hc.EXPLAIN_PROMPT[hc.EXPLAIN_PROMPT.index("„Schon vor"):]
+        example = example[:example.index("“")]
+        self.assertIsNone(re.search(r"\d", example), example)                  # Beispiel ohne echte Messwerte
 
 
 class WebRoomHistoryTest(WebBase):
