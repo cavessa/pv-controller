@@ -285,7 +285,9 @@ function renderChatStatus(st) {
   const count = st && st.enabled ? `${st.used_today}/${st.limit}` : "";
   const cEl = $("#heat-chat-count");
   if (cEl.textContent !== count) cEl.textContent = count;
-  cEl.title = st && st.enabled ? `${st.provider_name ? st.provider_name + " · " : ""}${st.used_today} von ${st.limit} Anfragen heute` : "";
+  cEl.title = st && st.enabled ? `${st.provider_name ? st.provider_name + " · " : ""}${st.used_today} von ${st.limit} Anfragen heute` +
+    (st.warning ? `\n⚠ ${st.warning}` : "") : "";
+  cEl.classList.toggle("warn", !!(st && st.enabled && st.warning));   // Modell eingestellt → Ersatzmodell aktiv
 }
 
 // Antwort/Vorschau als Sheet über der Eingabezeile (Handy: Bottom-Sheet, Desktop: Popover)
@@ -394,6 +396,7 @@ async function chatSend(text) {
       body: JSON.stringify({ messages: c.history }) });
     wait.remove();
     if (res.chat) c.status = res.chat;
+    if (res.fallback) _chatAdd("assistant", "⚠ " + res.fallback, "info");
     if (res.type === "question") {
       _chatAdd("assistant", res.text);
       c.history.push({ role: "assistant", content: res.text });

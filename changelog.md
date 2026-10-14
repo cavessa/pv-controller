@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-14 – Chat: Ersatzmodell (`assistant.fallback_model`) und neue GPT-Modelle
+
+Anlass: OpenAI stellt `gpt-4.1` und `gpt-4.1-mini` am 14.01.2027 ein (empfohlener Nachfolger laut Deprecations-Seite: `gpt-6-luna`).
+- **`assistant.fallback_model`** (neu, optional, nur config.json): Meldet die API für `model` bzw. `explain_model` „Modell nicht gefunden/eingestellt“ (Fehlerart `model`: 404 oder 400 `model_not_found`), wiederholt der Chat die Anfrage einmal mit dem Ersatzmodell. Warnung ins Log, das Modell wird in der DB gemerkt (Tabelle `assistant_model_unavailable`); die nächsten 24 h gehen Anfragen direkt an das Ersatzmodell (kein unnötiger 404), danach wird das eigentliche Modell wieder versucht – antwortet es, verschwindet die Warnung. Andere Fehler (Key, Guthaben, Rate-Limit, Zeitüberschreitung) lösen keinen Wechsel aus. Ohne `fallback_model` bleibt alles wie bisher.
+- **Chat-Status:** neues Feld `warning` („Modell „gpt-4.1-mini“ nicht verfügbar (seit …) – Chat nutzt Ersatzmodell „gpt-6-luna“. Bitte assistant.model in config.json umstellen.“) und `fallback_model`; der Zähler in der Chat-Leiste zeigt dann ⚠ (Text im Tooltip). Die Antwort, die das Ersatzmodell gegeben hat, trägt `fallback` → Hinweiszeile im Chat. Die Warnung gilt nur, solange die Config das gemerkte Modell noch nennt.
+- **`reasoning_effort="none"` für neuere GPT-Modelle** (`gpt-5.1` ff., `gpt-6-*`): Diese denken per Default nach und können in Chat Completions nur mit `none` Tools aufrufen. `gpt-4.1`/`gpt-4o` bekommen den Parameter nicht. **Ohne diese Änderung funktionieren `gpt-6-luna`/`gpt-6-sol` im deployten Code nicht** – Config in Prod erst nach Deploy umstellen. `gpt-6.1-sol` kann in Chat Completions gar keine Tools (nur Responses API) und ist damit nicht nutzbar.
+- **Eingebauter OpenAI-Standard** (ohne `assistant.model` in der Config): `gpt-6-luna` statt `gpt-4.1-mini`; `config.example.json` ebenso.
+- Tests: `tests/test_chat_fallback.py` (12): Config, reasoning_effort je Modell, Wechsel bei 404 inkl. Warum-Frage (eigenes Tool-Schema), direkt an Ersatz nach Merken und erneuter Versuch nach 24 h, ohne Ersatz unverändert, Ersatz ebenfalls weg, andere Fehler ohne Wechsel, Warnung weg nach Config-Änderung, Web-Antwort/Status mit Warnung, Key nie in Log/Antwort. Suite: 598 grün.
+- Vergleich mit echten Anfragen (6, Kopie der Prod-DB, nichts übernommen): `gpt-6-luna` setzt beide Zeitplan-Befehle aus Prod genauso um wie damals `gpt-4.1-mini` und den Rollladen-Befehl mit Sonnenbezug richtig; Warum-Frage Heizstab (`gpt-6-sol`) und Kinderzimmer (`gpt-6-sol` und `gpt-6-luna`) stimmen mit der Grundlage und nennen beim Kinderzimmer erstmals beide Abschnitte (vor/nach Wechsel 07:01).
+
 ## 2026-10-14 – Hauptzähler: Shelly Pro 3EM (Gen2) und Zählertausch ohne Sprung
 
 Vorbereitung auf den Tausch Shelly 3EM (Gen1) → Shelly Pro 3EM (Gen2). Vorher las der Code die Leistung des Hauptzählers nur über Gen1 `/status` (ein Pro 3EM hätte sofort Fail-safe ausgelöst); ein Typ-Feld gab es nur für die Phasen-Shellys.

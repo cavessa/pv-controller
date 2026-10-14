@@ -597,7 +597,7 @@ class ParseTest(unittest.TestCase):
         a = hc.parse_assistant({})
         self.assertEqual((a.enabled, a.model, a.max_requests_per_day, a.key_set), (False, "claude-haiku-5-5", 100, False))
         o = hc.parse_assistant({"assistant": {"provider": "openai", "openai_api_key": " sk-x "}})
-        self.assertEqual((o.provider, o.model, o.key, o.key_field), ("openai", "gpt-4.1-mini", "sk-x", "openai_api_key"))
+        self.assertEqual((o.provider, o.model, o.key, o.key_field), ("openai", "gpt-6-luna", "sk-x", "openai_api_key"))
         self.assertEqual(hc.parse_assistant({"assistant": {"workspace_id": " wrkspc_01ABC "}}).workspace_id, "wrkspc_01ABC")
         for bad in ({"enabled": "ja"}, {"model": "x y"}, {"max_requests_per_day": 0}, {"api_key": 5},
                     {"workspace_id": "wrkspc 1"}, {"workspace_id": 7}, {"provider": "gemini"},

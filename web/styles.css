@@ -1914,6 +1914,8 @@ body.sheet-open { overflow: hidden; }
 .chat-ico:hover { background: rgba(255,255,255,0.06); }
 .chatbar .heat-chat-count { flex-shrink: 0; min-width: 0; font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .chatbar .heat-chat-count:empty { display: none; }
+.heat-chat-count.warn { color: var(--warn); }
+.heat-chat-count.warn::before { content: "⚠ "; }
 .chat-pop { position: absolute; left: 50%; bottom: 100%; transform: translateX(-50%); width: min(480px, calc(100vw - 32px)); max-height: min(60vh, 520px); margin-bottom: 8px; display: flex; flex-direction: column; gap: 8px; padding: 4px 14px 14px; background: #191c28; border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,0.7); overflow-y: auto; overscroll-behavior: contain; }
 .chat-pop.hidden { display: none; }
 .chat-pop-head { display: flex; align-items: center; justify-content: space-between; margin-right: -10px; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: rgba(255,255,255,0.7); }

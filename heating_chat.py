@@ -14,8 +14,9 @@ Config (config.json):
                 "provider": "openai",           # "openai" (ChatGPT) | "anthropic" (Claude, Default)
                 "openai_api_key": "sk-…",       # Keys nur in config.json, nie ins Git/Frontend/Log
                 "api_key": "sk-ant-…",          # Anthropic-Key
-                "model": "gpt-4.1-mini",        # Default je Anbieter, s. DEFAULT_MODELS
-                "explain_model": "gpt-4.1",     # optional, nur für Warum-Fragen (Default: model)
+                "model": "gpt-6-luna",          # Default je Anbieter, s. DEFAULT_MODELS
+                "explain_model": "gpt-6-sol",   # optional, nur für Warum-Fragen (Default: model)
+                "fallback_model": "gpt-6-luna", # optional: Ersatz, wenn die API ein Modell nicht (mehr) kennt
                 "max_requests_per_day": 100,
                 "workspace_id": "wrkspc_…"}     # optional, nur Anthropic-Keys ohne Workspace-Zuordnung
 
@@ -44,7 +45,7 @@ log = logging.getLogger("pv-controller.heating")
 
 ANTHROPIC, OPENAI = "anthropic", "openai"
 PROVIDERS = {ANTHROPIC: "Claude", OPENAI: "ChatGPT"}
-DEFAULT_MODELS = {ANTHROPIC: "claude-haiku-5-5", OPENAI: "gpt-4.1-mini"}
+DEFAULT_MODELS = {ANTHROPIC: "claude-haiku-5-5", OPENAI: "gpt-6-luna"}
 DEFAULT_MODEL = DEFAULT_MODELS[ANTHROPIC]
 _KEY_FIELD = {ANTHROPIC: "api_key", OPENAI: "openai_api_key"}
 _SDK = {ANTHROPIC: "anthropic", OPENAI: "openai"}
@@ -80,6 +81,7 @@ class AssistantConfig:
     api_key: str = ""                 # Anthropic
     model: str = DEFAULT_MODEL
     explain_model: str = ""           # nur Warum-Fragen; leer = model
+    fallback_model: str = ""          # Ersatz, wenn die API model/explain_model nicht (mehr) kennt; leer = keiner
     max_requests_per_day: int = DEFAULT_LIMIT
     workspace_id: str = ""            # Header anthropic-workspace-id (Key ohne Workspace-Zuordnung)
     provider: str = ANTHROPIC
@@ -117,10 +119,13 @@ def parse_assistant(raw: dict) -> AssistantConfig:
         keys[field_] = v.strip()
     model = a.get("model") or DEFAULT_MODELS[provider]
     if not isinstance(model, str) or not _MODEL_RE.match(model):
-        raise ValueError("assistant.model must look like 'gpt-4.1-mini' or 'claude-haiku-5-5'")
+        raise ValueError("assistant.model must look like 'gpt-6-luna' or 'claude-haiku-5-5'")
     explain_model = a.get("explain_model") or ""
     if not isinstance(explain_model, str) or (explain_model and not _MODEL_RE.match(explain_model)):
-        raise ValueError("assistant.explain_model must look like 'gpt-4.1' or 'claude-sonnet-5-5'")
+        raise ValueError("assistant.explain_model must look like 'gpt-6-sol' or 'claude-sonnet-5-5'")
+    fallback_model = a.get("fallback_model") or ""
+    if not isinstance(fallback_model, str) or (fallback_model and not _MODEL_RE.match(fallback_model)):
+        raise ValueError("assistant.fallback_model must look like 'gpt-6-luna' or 'claude-haiku-5-5'")
     limit = a.get("max_requests_per_day", DEFAULT_LIMIT)
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 10000:
         raise ValueError("assistant.max_requests_per_day must be 1…10000")
@@ -129,13 +134,59 @@ def parse_assistant(raw: dict) -> AssistantConfig:
         raise ValueError("assistant.workspace_id must look like 'wrkspc_…'")
     return AssistantConfig(enabled=enabled, api_key=keys["api_key"], openai_api_key=keys["openai_api_key"],
                            provider=provider, model=model, max_requests_per_day=limit, workspace_id=ws.strip(),
-                           explain_model=explain_model)
+                           explain_model=explain_model, fallback_model=fallback_model)
 
 
 def _usage_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(db.DB_PATH, timeout=10)
     conn.execute("CREATE TABLE IF NOT EXISTS assistant_usage (day TEXT PRIMARY KEY, count INTEGER NOT NULL)")
     return conn
+
+
+def _unavail_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(db.DB_PATH, timeout=10)
+    conn.execute("CREATE TABLE IF NOT EXISTS assistant_model_unavailable "
+                 "(model TEXT PRIMARY KEY, fallback TEXT NOT NULL, at TEXT NOT NULL)")
+    return conn
+
+
+def mark_unavailable(model: str, fallback: str, now: Optional[datetime] = None) -> None:
+    """API kennt ``model`` nicht (mehr): merken, damit Status/Chat warnen und die nächsten Anfragen direkt
+    das Ersatzmodell nehmen (bis UNAVAILABLE_RECHECK_H vorbei ist oder die Config ein anderes Modell nennt)."""
+    at = (now or datetime.now(hs.TZ)).astimezone(hs.TZ).isoformat(timespec="seconds")
+    with _unavail_conn() as conn:
+        conn.execute("INSERT OR REPLACE INTO assistant_model_unavailable (model, fallback, at) VALUES (?, ?, ?)",
+                     (model, fallback, at))
+
+
+def unavailable_since(model: str) -> Optional[datetime]:
+    """Zeitpunkt, seit dem ``model`` als nicht verfügbar gilt (None = nicht bekannt)."""
+    with _unavail_conn() as conn:
+        row = conn.execute("SELECT at FROM assistant_model_unavailable WHERE model = ?", (model,)).fetchone()
+    try:
+        return datetime.fromisoformat(row[0]) if row else None
+    except ValueError:
+        return None
+
+
+def clear_unavailable(model: str) -> None:
+    with _unavail_conn() as conn:
+        conn.execute("DELETE FROM assistant_model_unavailable WHERE model = ?", (model,))
+
+
+def model_warning(acfg: AssistantConfig) -> Optional[str]:
+    """Warnung für den Chat-Status, wenn ein konfiguriertes Modell als nicht verfügbar gemerkt ist."""
+    bad = [m for m in dict.fromkeys(m for m in (acfg.model, acfg.explain_model) if m) if unavailable_since(m)]
+    if not bad:
+        return None
+    fields = " bzw. ".join(f"assistant.{f}" for f, m in (("model", acfg.model), ("explain_model", acfg.explain_model))
+                           if m in bad)
+    names = ", ".join(f"„{m}“" for m in bad)
+    since = min(unavailable_since(m) for m in bad).astimezone(hs.TZ).strftime("%d.%m. %H:%M")
+    if acfg.fallback_model and acfg.fallback_model not in bad:
+        return (f"Modell {names} nicht verfügbar (seit {since}) – Chat nutzt Ersatzmodell „{acfg.fallback_model}“. "
+                f"Bitte {fields} in config.json umstellen.")
+    return f"Modell {names} nicht verfügbar (seit {since}). Bitte {fields} in config.json umstellen."
 
 
 def used_today(now: Optional[datetime] = None) -> int:
@@ -178,7 +229,8 @@ def status(hcfg: heating.HeatingConfig, acfg: AssistantConfig, now: Optional[dat
     elif used >= acfg.max_requests_per_day:
         hint = f"Tageslimit erreicht ({used}/{acfg.max_requests_per_day}). Morgen geht es weiter."
     return {"enabled": acfg.enabled, "key_set": acfg.key_set, "model": acfg.model,
-            "explain_model": acfg.explain_model or acfg.model,
+            "explain_model": acfg.explain_model or acfg.model, "fallback_model": acfg.fallback_model or None,
+            "warning": model_warning(acfg),
             "provider": acfg.provider, "provider_name": PROVIDERS[acfg.provider],
             "used_today": used, "limit": acfg.max_requests_per_day,
             "ready": hint is None, "hint": hint}
@@ -547,9 +599,20 @@ OPENAI_TOOL = {"type": "function", "function": {
     "name": TOOL["name"], "description": TOOL["description"], "parameters": TOOL["input_schema"], "strict": True}}
 
 
+_REASONING_NONE_RE = re.compile(r"^gpt-(5\.[1-9]|[6-9])")
+
+
+def _openai_extra(model: str) -> dict[str, Any]:
+    """Neuere GPT-Modelle (gpt-5.1 ff., gpt-6-*) denken per Default nach; Tool-Aufrufe in Chat Completions gehen
+    dort nur mit ``reasoning_effort="none"`` (so verhält sich das Modell auch wie gpt-4.1). Ältere Modelle
+    (gpt-4.1, gpt-4o) kennen den Parameter nicht – dann wird er weggelassen."""
+    return {"reasoning_effort": "none"} if _REASONING_NONE_RE.match(model) else {}
+
+
 def _request_openai(client: Any, acfg: AssistantConfig, system: str, messages: list[dict],
                     tool: dict = TOOL) -> dict[str, Any]:
     resp = client.chat.completions.create(
+        **_openai_extra(acfg.model),
         model=acfg.model,
         max_completion_tokens=MAX_TOKENS,
         messages=[{"role": "system", "content": system}, *messages],
@@ -575,25 +638,59 @@ def _request_openai(client: Any, acfg: AssistantConfig, system: str, messages: l
     return _no_tool(msg.content or "")
 
 
+UNAVAILABLE_RECHECK_H = 24      # so lange geht ein als „nicht verfügbar“ gemerktes Modell direkt an den Ersatz
+
+
 def call_model(acfg: AssistantConfig, context: str, history: list[dict[str, str]],
                client_factory: Optional[Callable[[AssistantConfig], Any]] = None,
-               explain: bool = False) -> dict[str, Any]:
+               explain: bool = False, now: Optional[datetime] = None) -> dict[str, Any]:
     """Ein API-Aufruf beim gewählten Anbieter → Eingabe des Tools ``propose_schedule`` (dict).
 
     ``explain``: Warum-Frage – Prompt und Tool tragen zusätzlich das Textfeld ``explanation`` (der Kontext
     enthält dann den Erklär-Kontext); Modell ist ``explain_model``, falls gesetzt. Ohne ``explain`` ist die Anfrage unverändert wie bisher.
+    Kennt die API das Modell nicht (mehr) und ist ``fallback_model`` gesetzt, wird einmal mit dem Ersatzmodell
+    wiederholt (Warnung ins Log, Modell gemerkt → Chat-Status warnt; die nächsten UNAVAILABLE_RECHECK_H Stunden
+    geht es direkt an den Ersatz). Das Ergebnis trägt dann ``_fallback`` = {"model", "fallback"}.
     Fehler werden zu ChatError mit verständlichem Text; der API-Key erscheint nie (auch nicht im Log).
     """
     messages = [{"role": m["role"], "content": m["content"]} for m in history]
     if explain and acfg.explain_model:
         acfg = replace(acfg, model=acfg.explain_model)     # Fehlermeldungen nennen dann dieses Modell
     system = SYSTEM_PROMPT + (EXPLAIN_PROMPT if explain else "") + "\n\n" + context
+    tool = TOOL_EXPLAIN if explain else TOOL
+    fb = acfg.fallback_model if acfg.fallback_model and acfg.fallback_model != acfg.model else ""
+    now = now or datetime.now(hs.TZ)
+    if fb:
+        since = unavailable_since(acfg.model)
+        if since and now - since < timedelta(hours=UNAVAILABLE_RECHECK_H):
+            out = _call_once(replace(acfg, model=fb), system, messages, tool, client_factory)
+            out["_fallback"] = {"model": acfg.model, "fallback": fb}
+            return out
+    try:
+        out = _call_once(acfg, system, messages, tool, client_factory)
+    except ChatError as e:
+        if e.kind != "model" or not fb:
+            raise
+        log.warning("Chat: Modell „%s“ nicht verfügbar – Ersatzmodell „%s“ (assistant.fallback_model) verwendet. "
+                    "Bitte assistant.model/explain_model umstellen.", acfg.model, fb)
+        mark_unavailable(acfg.model, fb, now)
+        out = _call_once(replace(acfg, model=fb), system, messages, tool, client_factory)
+        out["_fallback"] = {"model": acfg.model, "fallback": fb}
+        return out
+    if fb and unavailable_since(acfg.model):              # nach der Prüfpause wieder erreichbar: Warnung weg
+        clear_unavailable(acfg.model)
+        log.info("Chat: Modell „%s“ wieder verfügbar.", acfg.model)
+    return out
+
+
+def _call_once(acfg: AssistantConfig, system: str, messages: list[dict], tool: dict,
+               client_factory: Optional[Callable[[AssistantConfig], Any]]) -> dict[str, Any]:
     client = (client_factory or _default_client)(acfg)
     request = _request_openai if acfg.provider == OPENAI else _request_anthropic
     try:
-        if explain:
-            return request(client, acfg, system, messages, TOOL_EXPLAIN)
-        return request(client, acfg, system, messages)
+        if tool is TOOL:
+            return request(client, acfg, system, messages)
+        return request(client, acfg, system, messages, tool)
     except ChatError:
         raise
     except Exception as e:  # noqa: BLE001 – SDK-Fehler typisiert in _translate

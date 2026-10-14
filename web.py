@@ -2333,6 +2333,10 @@ def heating_chat(body: _ChatRequest) -> dict[str, Any]:
         return {**base, "type": "error", "kind": e.kind, "text": str(e), "chat": st_now()}
     st = st_now()
     usage = inp.pop("_usage", None)
+    fb = inp.pop("_fallback", None)
+    if fb:                                       # Modell eingestellt/unbekannt → Ersatzmodell hat geantwortet
+        base = {**base, "fallback": f"Hinweis: Modell „{fb['model']}“ nicht verfügbar – geantwortet hat das "
+                                    f"Ersatzmodell „{fb['fallback']}“. Bitte Modell in config.json umstellen."}
     expl = None
     if why:
         base = {**base, "basis": ectx.basis, "context_tokens": ectx.tokens, "usage": usage}
