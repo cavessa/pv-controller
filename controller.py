@@ -140,7 +140,8 @@ class Controller:
             config.shelly.storage_url, SHELLY_READ_TIMEOUT_S, name="storage"
         )
         self.main_meter = Shelly3EMClient(
-            config.shelly.main_meter_url, SHELLY_READ_TIMEOUT_S, name="main_meter"
+            config.shelly.main_meter_url, SHELLY_READ_TIMEOUT_S, name="main_meter",
+            type_=config.shelly.main_meter_type
         )
         self.heater_meter = Shelly3EMClient(
             config.shelly.heater_meter_url, SHELLY_READ_TIMEOUT_S, name="heater_meter"
@@ -230,8 +231,9 @@ class Controller:
             energy = self.main_meter.get_energy_wh()
             if energy is not None:
                 r.main_import_wh, r.main_export_wh = energy
-                from db import ensure_meter_snapshot
-                ensure_meter_snapshot(*energy)
+                from db import track_meter
+                # Gerät = Typ + Adresse: ein Tausch (oder neue IP) wird erkannt und der Tagesstand übertragen
+                track_meter(*energy, meter_id=f"{self.cfg.shelly.main_meter_type}|{self.cfg.shelly.main_meter_url}")
         except Exception:
             log.warning("Hauptzähler-Energie/Snapshot fehlgeschlagen", exc_info=True)
 

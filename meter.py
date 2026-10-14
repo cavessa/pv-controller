@@ -18,6 +18,9 @@ log = logging.getLogger(__name__)
 # Ein Snapshot zählt nur als „Mitternacht", wenn er in diesem Zeitfenster nach
 # 00:00 entstand – sonst würde der Tageswert erst ab Neustart/Start zählen.
 SNAPSHOT_MAX_TAKEN_AT = "00:30:00"
+# Mehr als das an einem Tag ist kein Haushaltswert, sondern ein Stand des falschen Zählers (z. B. Web liest
+# kurz nach einem Tausch noch den alten) -> Solax
+METER_DAY_MAX_WH = 1_000_000.0
 
 
 def pv_today_kwh(r: Readings) -> Optional[float]:
@@ -42,10 +45,13 @@ def compute_meter_today(r: Readings, pv_kwh: Optional[float] = None) -> Optional
     if r.main_import_wh is not None and r.main_export_wh is not None:
         try:
             snap = db.ensure_meter_snapshot(r.main_import_wh, r.main_export_wh)
-            d_in = r.main_import_wh - snap["import_wh"]
-            d_out = r.main_export_wh - snap["export_wh"]
-            # Negative Differenz = Zähler wurde zurückgesetzt -> Snapshot unbrauchbar
-            if snap["taken_at"] <= SNAPSHOT_MAX_TAKEN_AT and d_in >= 0 and d_out >= 0:
+            # carry_*: Tagesanteil eines Zählers vor einem Wechsel/Reset (db.track_meter)
+            d_in = snap["carry_import_wh"] + r.main_import_wh - snap["import_wh"]
+            d_out = snap["carry_export_wh"] + r.main_export_wh - snap["export_wh"]
+            # Negative Differenz = Zähler gewechselt/zurückgesetzt und vom Cron noch nicht erkannt
+            # (z. B. Web mit älterem Stand) -> diesmal Solax
+            if (snap["taken_at"] <= SNAPSHOT_MAX_TAKEN_AT and 0 <= d_in <= METER_DAY_MAX_WH
+                    and 0 <= d_out <= METER_DAY_MAX_WH):
                 bezug, einsp, source = d_in / 1000.0, d_out / 1000.0, "shelly"
         except Exception:
             log.warning("meter_today: Snapshot nicht lesbar", exc_info=True)

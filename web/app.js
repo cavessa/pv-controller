@@ -3355,6 +3355,7 @@ async function loadSettings() {
     setFormValue(f, "shelly.ph3_channel", lastConfig.shelly?.ph3_channel ?? 0);
     setFormValue(f, "shelly.storage_url", lastConfig.shelly?.storage_url ?? "");
     setFormValue(f, "shelly.main_meter_url", lastConfig.shelly?.main_meter_url ?? "");
+    setFormValue(f, "shelly.main_meter_type", lastConfig.shelly?.main_meter_type ?? "shelly_3em_gen1");
     setFormValue(f, "shelly.heater_meter_url", lastConfig.shelly?.heater_meter_url ?? "");
     setFormValue(f, "heater.storage_max_temp", lastConfig.heater?.storage_max_temp);
     setFormValue(f, "heater.storage_temp_hysteresis", lastConfig.heater?.storage_temp_hysteresis);
@@ -3462,6 +3463,7 @@ async function saveSettings(e) {
       ph3_channel: numField("shelly.ph3_channel"),
       storage_url: strField("shelly.storage_url"),
       main_meter_url: strField("shelly.main_meter_url"),
+      main_meter_type: f.elements.namedItem("shelly.main_meter_type")?.value,
       heater_meter_url: strField("shelly.heater_meter_url"),
     },
     heater: {
@@ -3658,6 +3660,31 @@ async function testSolax2() {
   }
 }
 
+// Verbindungstest Hauptzähler mit den Formularwerten (ungespeichert): Gerät, Leistung, Zähler, Typ-Prüfung
+async function testMainMeter() {
+  const f = $("#settings-form");
+  const msg = $("#main-meter-test-msg");
+  const btn = $("#main-meter-test-btn");
+  const url = f.elements.namedItem("shelly.main_meter_url")?.value?.trim();
+  const type = f.elements.namedItem("shelly.main_meter_type")?.value;
+  if (!url) { msg.textContent = "URL eintragen."; msg.className = "form-msg error"; return; }
+  btn.disabled = true;
+  msg.textContent = "teste …"; msg.className = "form-msg";
+  try {
+    const r = await api("/api/main-meter/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, type }) });
+    const w = Math.round(r.power_w);
+    const dir = w > 0 ? "Bezug" : w < 0 ? "Einspeisung" : "±0";
+    const kwh = r.import_kwh == null ? "Zähler nicht lesbar" : `Zähler Bezug ${r.import_kwh} kWh, Einspeisung ${r.export_kwh} kWh`;
+    msg.textContent = `OK – ${r.model} (Gen${r.generation}, MAC ${r.mac}): ${w} W (${dir}); ${kwh}`;
+    msg.className = "form-msg ok";
+  } catch (e) {
+    msg.textContent = "Fehler: " + e.message;
+    msg.className = "form-msg error";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // Verbindungstest Zendure mit den Formularwerten (ungespeichert)
 async function testZendure() {
   const f = $("#settings-form");
@@ -3689,6 +3716,7 @@ function boot() {
   $("#btn-run").addEventListener("click", runOnce);
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#solax2-test-btn")?.addEventListener("click", testSolax2);
+  $("#main-meter-test-btn")?.addEventListener("click", testMainMeter);
   $("#zendure-test-btn")?.addEventListener("click", testZendure);
   $$("#storage-range button").forEach(b => b.addEventListener("click", () => setStorageRange(b.dataset.range)));
   $("#btn-logs-refresh").addEventListener("click", refreshLogs);

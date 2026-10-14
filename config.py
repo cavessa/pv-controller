@@ -42,6 +42,9 @@ class ZendureConfig:
     block_discharge_while_wallbox_charging: bool = True
 
 
+METER_TYPES = ("shelly_3em_gen1", "shelly_pro_3em")
+
+
 @dataclass
 class ShellyConfig:
     ph1_url: str
@@ -60,8 +63,14 @@ class ShellyConfig:
     ph2_channel: int = 0
     ph3_type: str = "shelly_gen1"
     ph3_channel: int = 0
+    # Hauptzähler: Shelly 3EM Gen1 (/status) oder Shelly Pro 3EM (Gen2, /rpc/EM…)
+    main_meter_type: str = "shelly_3em_gen1"
 
     def __post_init__(self) -> None:
+        if self.main_meter_type not in METER_TYPES:
+            raise ValueError(
+                f"shelly.main_meter_type must be one of {', '.join(METER_TYPES)}, got {self.main_meter_type!r}"
+            )
         for name, type_ in (
             ("ph1_type", self.ph1_type),
             ("ph2_type", self.ph2_type),

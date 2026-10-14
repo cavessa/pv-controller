@@ -68,7 +68,8 @@ class CascadeService:
             config.shelly.heater_meter_url, _METER_READ_TIMEOUT_S, name="heater_meter"
         )
         self.main_meter = Shelly3EMClient(
-            config.shelly.main_meter_url, _METER_READ_TIMEOUT_S, name="main_meter"
+            config.shelly.main_meter_url, _METER_READ_TIMEOUT_S, name="main_meter",
+            type_=config.shelly.main_meter_type
         )
         self.storage = ShellyStorageTempClient(
             config.shelly.storage_url, _METER_READ_TIMEOUT_S, name="storage"

@@ -744,7 +744,7 @@ _ALLOWED_SHELLY_KEYS = {
     "ph1_url", "ph2_url", "ph3_url",
     "ph1_type", "ph2_type", "ph3_type",
     "ph1_channel", "ph2_channel", "ph3_channel",
-    "storage_url", "main_meter_url", "heater_meter_url",
+    "storage_url", "main_meter_url", "heater_meter_url", "main_meter_type",
 }
 _SHELLY_TYPE_KEYS = {"ph1_type", "ph2_type", "ph3_type"}
 _SHELLY_CHANNEL_KEYS = {"ph1_channel", "ph2_channel", "ph3_channel"}
@@ -870,6 +870,10 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
                     raise HTTPException(
                         400, f"shelly.{k} must be 'shelly_gen1' or 'shelly_gen2'"
                     )
+            elif k == "main_meter_type":
+                from config import METER_TYPES
+                if v not in METER_TYPES:
+                    raise HTTPException(400, f"shelly.main_meter_type must be one of {', '.join(METER_TYPES)}")
             elif k in _SHELLY_CHANNEL_KEYS:
                 if not isinstance(v, int) or isinstance(v, bool) or v < 0:
                     raise HTTPException(400, f"shelly.{k} must be a non-negative integer")
@@ -1185,6 +1189,40 @@ def api_solax(response: Response) -> dict[str, Any]:
 class Solax2TestRequest(BaseModel):
     url: str
     pwd: str
+
+
+class MainMeterTestRequest(BaseModel):
+    url: str
+    type: str = "shelly_3em_gen1"
+
+
+@app.post("/api/main-meter/test")
+def api_main_meter_test(req: MainMeterTestRequest, response: Response) -> dict[str, Any]:
+    """Verbindungstest Hauptzähler mit den (noch ungespeicherten) Formularwerten: Gerät, Leistung, Zähler.
+    Nur lesend; meldet, wenn der gewählte Typ nicht zum Gerät passt."""
+    response.headers["Cache-Control"] = "no-store"
+    from config import METER_TYPES
+    from clients.shelly_client import Shelly3EMClient
+    if not (req.url.startswith("http://") or req.url.startswith("https://")):
+        raise HTTPException(400, "url must start with http:// or https://")
+    if req.type not in METER_TYPES:
+        raise HTTPException(400, f"type must be one of {', '.join(METER_TYPES)}")
+    c = Shelly3EMClient(req.url, 5, name="main_meter_test", type_=req.type)
+    try:
+        info = c.get_device_info()
+    except Exception:                                    # noqa: BLE001
+        raise HTTPException(503, "Gerät nicht erreichbar")
+    want_gen = 2 if c.is_pro else 1
+    if info["generation"] != want_gen:
+        raise HTTPException(409, f"Typ passt nicht: Gerät {info['model']} ist Gen{info['generation']}, "
+                                 f"gewählt ist {'Pro 3EM (Gen2)' if c.is_pro else '3EM (Gen1)'}")
+    power = c.get_total_power_w()
+    energy = c.get_energy_wh()
+    if power is None:
+        raise HTTPException(502, "Gerät erreichbar, aber Leistung nicht lesbar")
+    return {"ok": True, "model": info["model"], "mac": info["mac"], "generation": info["generation"],
+            "power_w": power, "import_kwh": None if energy is None else round(energy[0] / 1000, 2),
+            "export_kwh": None if energy is None else round(energy[1] / 1000, 2)}
 
 
 @app.post("/api/solax2/test")

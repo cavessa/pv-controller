@@ -38,6 +38,7 @@
     "ph3_channel": 0,
     "storage_url": "http://192.168.x.x",
     "main_meter_url": "http://192.168.x.x",
+    "main_meter_type": "shelly_3em_gen1",
     "heater_meter_url": "http://192.168.x.x"
   },
   "heater": {

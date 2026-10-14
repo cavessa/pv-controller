@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Optional
 
 DB_PATH = Path(__file__).resolve().parent / "pvcontroller.db"
 TEMP_HISTORY_PATH = Path(__file__).resolve().parent / "temp_history.json"
+log = logging.getLogger(__name__)
 
 
 def append_temp_history(
@@ -375,29 +377,116 @@ def get_daily_history(days: int = 30) -> list[dict]:
     return result
 
 
-def ensure_meter_snapshot(import_wh: float, export_wh: float) -> dict:
+# Zählerwechsel/-reset: Spalten der Tabelle meter_snapshots (nachgerüstet, s. _meter_table)
+_METER_EXTRA_COLS = (
+    ("meter_id", "TEXT"),                      # Gerät (Typ|Adresse) zum Tagesbeginn bzw. nach Wechsel
+    ("last_import_wh", "REAL"),                # höchster gelesener Stand des aktuellen Zählers (track_meter)
+    ("last_export_wh", "REAL"),
+    ("carry_import_wh", "REAL DEFAULT 0"),     # Tagesanteil früherer Zähler/Segmente
+    ("carry_export_wh", "REAL DEFAULT 0"),
+)
+METER_RESET_TOLERANCE_WH = 100.0              # kleiner Rücksprung (Lesereihenfolge) ist kein Reset
+_meter_ready: set[str] = set()
+
+
+def _meter_table(conn: sqlite3.Connection) -> None:
+    if str(DB_PATH) in _meter_ready:
+        return
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS meter_snapshots (
+            date                  TEXT PRIMARY KEY,
+            import_wh_at_midnight REAL,
+            export_wh_at_midnight REAL,
+            taken_at              TEXT
+        )
+    """)
+    for col, definition in _METER_EXTRA_COLS:
+        try:
+            conn.execute(f"ALTER TABLE meter_snapshots ADD COLUMN {col} {definition}")
+        except sqlite3.OperationalError:
+            pass
+    _meter_ready.add(str(DB_PATH))
+
+
+def _meter_row(conn: sqlite3.Connection, day: str) -> dict:
+    row = conn.execute(
+        """SELECT import_wh_at_midnight, export_wh_at_midnight, taken_at, meter_id,
+                  last_import_wh, last_export_wh, carry_import_wh, carry_export_wh
+           FROM meter_snapshots WHERE date = ?""", (day,)).fetchone()
+    return {"import_wh": row[0], "export_wh": row[1], "taken_at": row[2], "meter_id": row[3],
+            "last_import_wh": row[4], "last_export_wh": row[5],
+            "carry_import_wh": row[6] or 0.0, "carry_export_wh": row[7] or 0.0}
+
+
+def ensure_meter_snapshot(import_wh: float, export_wh: float, meter_id: Optional[str] = None) -> dict:
     """Mitternachts-Snapshot der Hauptzähler-Lifetimezähler für heute.
 
     Legt den Eintrag beim ersten Aufruf des Tages an (INSERT OR IGNORE, damit
     Web-Poller und Cron sich nicht in die Quere kommen) und liefert ihn zurück.
     `taken_at` (HH:MM:SS) erlaubt dem Aufrufer zu prüfen, ob der Snapshot
-    wirklich um Mitternacht entstand.
+    wirklich um Mitternacht entstand. Nach einem Zählerwechsel (``track_meter``) ist
+    ``import_wh``/``export_wh`` der Stand des neuen Zählers beim Wechsel, ``carry_*`` der
+    Tagesanteil davor: Tageswert = carry + (aktuell − import_wh).
     """
     now = datetime.now()
     day = now.strftime("%Y-%m-%d")
     with sqlite3.connect(DB_PATH) as conn:
+        _meter_table(conn)
         conn.execute(
             """INSERT OR IGNORE INTO meter_snapshots
-               (date, import_wh_at_midnight, export_wh_at_midnight, taken_at)
-               VALUES (?,?,?,?)""",
-            (day, import_wh, export_wh, now.strftime("%H:%M:%S")),
+               (date, import_wh_at_midnight, export_wh_at_midnight, taken_at, meter_id,
+                carry_import_wh, carry_export_wh)
+               VALUES (?,?,?,?,?,0,0)""",
+            (day, import_wh, export_wh, now.strftime("%H:%M:%S"), meter_id),
         )
-        row = conn.execute(
-            """SELECT import_wh_at_midnight, export_wh_at_midnight, taken_at
-               FROM meter_snapshots WHERE date = ?""",
-            (day,),
-        ).fetchone()
-    return {"import_wh": row[0], "export_wh": row[1], "taken_at": row[2]}
+        return _meter_row(conn, day)
+
+
+def track_meter(import_wh: float, export_wh: float, meter_id: str) -> dict:
+    """Aus jedem Controller-Lauf (Cron und Web-Status, beide lesen frisch vom Gerät): Stand fortschreiben und
+    einen Zählerwechsel erkennen. Kleine Rücksprünge durch die Reihenfolge paralleler Läufe (< 100 Wh) gelten
+    nicht als Reset; ``last_*`` steigt nur.
+
+    Wechsel = anderes Gerät (``meter_id``: Typ|Adresse) oder ein Zähler läuft rückwärts (neues Gerät
+    startet bei 0, Reset). Dann wird der bisherige Tagesanteil (letzter Stand − Basis) in ``carry_*``
+    übernommen und der neue Stand als Basis gesetzt – kein Sprung, kein negativer Tageswert. Der
+    Verbrauch zwischen letztem Lesen am alten und erstem am neuen Zähler (Umbauzeit) fehlt.
+    """
+    now = datetime.now()
+    day = now.strftime("%Y-%m-%d")
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        _meter_table(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            """INSERT OR IGNORE INTO meter_snapshots
+               (date, import_wh_at_midnight, export_wh_at_midnight, taken_at, meter_id,
+                last_import_wh, last_export_wh, carry_import_wh, carry_export_wh)
+               VALUES (?,?,?,?,?,?,?,0,0)""",
+            (day, import_wh, export_wh, now.strftime("%H:%M:%S"), meter_id, import_wh, export_wh),
+        )
+        r = _meter_row(conn, day)
+        last_in = r["last_import_wh"] if r["last_import_wh"] is not None else r["import_wh"]
+        last_out = r["last_export_wh"] if r["last_export_wh"] is not None else r["export_wh"]
+        swapped = r["meter_id"] is not None and r["meter_id"] != meter_id
+        reset = (import_wh < last_in - METER_RESET_TOLERANCE_WH
+                 or export_wh < last_out - METER_RESET_TOLERANCE_WH)
+        if swapped or reset:
+            c_in = r["carry_import_wh"] + max(0.0, last_in - r["import_wh"])
+            c_out = r["carry_export_wh"] + max(0.0, last_out - r["export_wh"])
+            conn.execute(
+                """UPDATE meter_snapshots SET import_wh_at_midnight = ?, export_wh_at_midnight = ?,
+                       meter_id = ?, last_import_wh = ?, last_export_wh = ?,
+                       carry_import_wh = ?, carry_export_wh = ? WHERE date = ?""",
+                (import_wh, export_wh, meter_id, import_wh, export_wh, c_in, c_out, day))
+            log.warning("Hauptzähler: %s erkannt – Tagesstand übernommen (Bezug %.0f Wh, Einspeisung %.0f Wh), "
+                        "neue Basis %.0f/%.0f Wh", "Gerätewechsel" if swapped else "Zähler-Reset",
+                        c_in, c_out, import_wh, export_wh)
+        else:
+            conn.execute(
+                """UPDATE meter_snapshots SET meter_id = COALESCE(meter_id, ?),
+                       last_import_wh = ?, last_export_wh = ? WHERE date = ?""",
+                (meter_id, max(last_in, import_wh), max(last_out, export_wh), day))
+        return _meter_row(conn, day)
 
 
 def record_main_meter(power_w: float) -> None:

@@ -104,20 +104,36 @@ class ShellyPlugClient:
 
 
 class Shelly3EMClient:
-    """Shelly 3EM / EM (Gen1) — /status liefert total_power und die Energiezähler.
+    """Shelly 3EM (Gen1, ``shelly_3em_gen1``) oder Shelly Pro 3EM (Gen2, ``shelly_pro_3em``).
 
-    Energie (Lifetime, Wh): Gen1 emeters[i].total / total_returned (Summe über
-    alle Phasen); Gen2 (Pro 3EM) /rpc/EMData.GetStatus total_act / total_act_ret.
+    Leistung (W, + Bezug / − Einspeisung – beide Geräte zählen so, keine Umrechnung):
+      Gen1 /status total_power; Pro 3EM /rpc/EM.GetStatus?id=0 total_act_power (fehlt es: Summe
+      a/b/c_act_power).
+    Energie (Lifetime, Wh): Gen1 emeters[i].total / total_returned (Summe über alle Phasen);
+      Pro 3EM /rpc/EMData.GetStatus?id=0 total_act / total_act_ret (ebenfalls Summe der Phasen).
     """
 
     _STATUS_TTL_S = 2.0  # Leistung + Energie im selben Lauf teilen sich einen Abruf
 
-    def __init__(self, base_url: str, timeout: int = 5, name: str = "3em"):
+    def __init__(self, base_url: str, timeout: int = 5, name: str = "3em", type_: str = "shelly_3em_gen1"):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.name = name
+        self.type_ = type_
         self._status_json: Optional[dict] = None
         self._status_ts: float = 0.0
+
+    @property
+    def is_pro(self) -> bool:
+        return self.type_ == "shelly_pro_3em"
+
+    def _rpc(self, method: str) -> dict:
+        r = requests.get(f"{self.base_url}/rpc/{method}", params={"id": 0}, timeout=self.timeout)
+        r.raise_for_status()
+        j = r.json()
+        if not isinstance(j, dict):
+            raise ValueError(f"{method}: unerwartete Antwort")
+        return j
 
     def _status(self) -> dict:
         if self._status_json is not None and (time.monotonic() - self._status_ts) < self._STATUS_TTL_S:
@@ -128,7 +144,24 @@ class Shelly3EMClient:
         self._status_ts = time.monotonic()
         return self._status_json
 
+    def get_device_info(self) -> dict:
+        """{generation, model, mac} über /shelly (gibt es bei Gen1 und Gen2); wirft bei Fehlern."""
+        r = requests.get(f"{self.base_url}/shelly", timeout=self.timeout)
+        r.raise_for_status()
+        j = r.json()
+        gen = int(j.get("gen") or 1)
+        return {"generation": gen, "model": j.get("model") or j.get("type"), "mac": j.get("mac")}
+
     def get_total_power_w(self) -> Optional[float]:
+        if self.is_pro:
+            try:
+                j = self._rpc("EM.GetStatus")
+                if j.get("total_act_power") is not None:
+                    return float(j["total_act_power"])
+                return float(sum(float(j[f"{p}_act_power"]) for p in "abc"))
+            except (requests.RequestException, KeyError, ValueError, TypeError) as e:
+                log.error("Shelly %s read /rpc/EM.GetStatus failed: %s", self.name, e)
+                return None
         try:
             return float(self._status()["total_power"])
         except (requests.RequestException, KeyError, ValueError, TypeError) as e:
@@ -137,6 +170,13 @@ class Shelly3EMClient:
 
     def get_energy_wh(self) -> Optional[tuple[float, float]]:
         """(Bezug, Einspeisung) als Lifetime-Zähler in Wh oder None."""
+        if self.is_pro:
+            try:
+                j = self._rpc("EMData.GetStatus")
+                return float(j["total_act"]), float(j["total_act_ret"])
+            except (requests.RequestException, KeyError, ValueError, TypeError) as e:
+                log.error("Shelly %s read Energiezähler failed: %s", self.name, e)
+                return None
         try:
             em = self._status().get("emeters")
             if isinstance(em, list) and em and all(
