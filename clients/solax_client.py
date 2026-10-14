@@ -179,6 +179,20 @@ class SolaxClient:
         raw = self._fetch()
         if raw is None:
             return None
+        return self._parse(raw)
+
+    def cached_realtime_data(self, max_age: float) -> Optional[SolaxRealtimeData]:
+        """Nur aus dem Prozess-Cache (jünger als ``max_age`` s), nie eine HTTP-Abfrage am Gerät."""
+        raw = self._cache_get(max_age)
+        return None if raw is None else self._parse(raw)
+
+    def cache_age(self) -> Optional[float]:
+        """Alter des Cache-Eintrags dieses Geräts in s (None: nie gelesen)."""
+        with _lock:
+            entry = _cache.get(self.base_url)
+        return None if entry is None else time.monotonic() - entry[1]
+
+    def _parse(self, raw: list) -> SolaxRealtimeData:
         if self.is_x1:
             return SolaxRealtimeData(
                 pv1_power_w=float(raw[7]),

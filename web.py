@@ -1070,6 +1070,44 @@ def _read_pergola(cfg: Config):
         return None
 
 
+PV_NOW_CACHE_S = 60.0          # Web-Cache der Wechselrichter gilt für /api/pv/now so lange
+PV_NOW_SNAPSHOT_S = 180.0      # Entscheidungs-Schnappschuss des Cron-Laufs gilt so lange
+
+
+@app.get("/api/pv/now")
+def api_pv_now(response: Response) -> dict[str, Any]:
+    """Gesamt-PV für die Kopfzeile – nie eine eigene Abfrage am Wechselrichter.
+
+    Quelle: Prozess-Cache der Wechselrichter-Clients (gefüllt vom Dashboard-Polling), sonst der letzte
+    Entscheidungs-Schnappschuss des Cron-Laufs. Pergola fehlt (nachts erwartet offline) → nur Haupt-WR;
+    Haupt-WR fehlt → ``pv_w`` null."""
+    response.headers["Cache-Control"] = "no-store"
+    cfg = _load_cfg()
+    from clients.solax_client import SolaxClient
+    main = SolaxClient(cfg.solax.url, cfg.solax.pwd, cfg.runtime.request_timeout_seconds)
+    md = main.cached_realtime_data(PV_NOW_CACHE_S)
+    if md is not None:
+        pg = None
+        if cfg.solax2_active:
+            pg = SolaxClient(cfg.solax2.url, cfg.solax2.pwd, cfg.solax2_timeout).cached_realtime_data(PV_NOW_CACHE_S)
+        pg_w = pg.pv_total_w if pg is not None else None
+        return {"pv_w": md.pv_total_w + (pg_w or 0.0), "main_w": md.pv_total_w, "pergola_w": pg_w,
+                "source": "cache", "age_s": round(main.cache_age() or 0.0)}
+    import decisions as _dec
+    try:
+        snap = _dec.latest()
+    except Exception:                                   # noqa: BLE001 – Kopfzeile nie am Lesen scheitern lassen
+        snap = None
+    if snap:
+        age = (datetime.now().astimezone() - datetime.fromisoformat(snap["ts"])).total_seconds()
+        if age <= PV_NOW_SNAPSHOT_S:
+            e = snap.get("energy") or {}
+            return {"pv_w": e.get("pv_w"), "main_w": None if e.get("pv_w") is None else
+                    e["pv_w"] - (e.get("pv_pergola_w") or 0), "pergola_w": e.get("pv_pergola_w"),
+                    "source": "snapshot", "age_s": round(age)}
+    return {"pv_w": None, "main_w": None, "pergola_w": None, "source": None, "age_s": None}
+
+
 @app.get("/api/solax")
 def api_solax(response: Response) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"

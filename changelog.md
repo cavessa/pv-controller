@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-14 – Gesamt-PV in der Kopfzeile und Σ im Energiefluss
+
+- **Kopfzeile (alle Tabs):** kleine Pill links neben „aktualisiert“ mit der Gesamt-PV (Hauptwechselrichter + Pergola): „☀ 7,5 kW“, unter 1 kW in W, 0 W und „☀ –“ gedimmt. Pergola nachts offline zählt einfach nicht mit (kein Fehlerzustand); fehlt der Hauptwechselrichter → „☀ –“. Antippen → Dashboard. Auf dem Handy zeigt die Zeit-Pill nur die Uhrzeit, damit Titel, PV und Zeit in eine Zeile passen (geprüft bei 320, 390 und 1440 px, kein horizontales Scrollen).
+- **Datenquelle ohne zusätzliche Wechselrichter-Abfrage:** Auf Dashboard/Prioritäten aus dem vorhandenen Dashboard-Polling (`/api/solax`). Auf den anderen Tabs neuer Endpoint **`GET /api/pv/now`**: liest nur den Prozess-Cache der Wechselrichter-Clients (`SolaxClient.cached_realtime_data`, höchstens 60 s alt), sonst den letzten Entscheidungs-Schnappschuss des Cron-Laufs (höchstens 180 s alt); nie ein HTTP-Request am Gerät. Abfrage alle 30 s, pausiert bei verdeckter Seite und auf Dashboard/Prioritäten (kein Doppel-Polling), beim Tabwechsel und Zurückkehren sofort.
+- **Energiefluss:** zwischen den Kästen PV und Pergola dezent „Σ 7,52 kW“ (Summe beider Wechselrichter), gleiche Schrift und Farbe wie die Kasten-Labels; nur wenn die Pergola eingerichtet ist. Sonst unverändert.
+- `clients/solax_client.py`: `get_realtime_data` parst über `_parse`; neu `cached_realtime_data(max_age)` und `cache_age()` (nur Cache).
+- Tests: `tests/test_pv_now.py` (6): Cache Haupt-WR + Pergola, Pergola offline, Fallback Schnappschuss, Haupt-WR fehlt / Schnappschuss zu alt → null, Cache-Lesen ohne Geräteabfrage (HTTP im Test verboten), Markup. Im Testbrowser: Werte/Dimmen für –, 0, 0,4, 654, 999,6 und 7520 W, keine Abfrage bei verdeckter Seite, Klick → Dashboard, keine JS-Fehler. Suite: 573 grün.
+
 ## 2026-10-14 – „Warum?“: Prompt-Beispiel mit Platzhaltern
 
 - **`EXPLAIN_PROMPT`:** Das Beispiel zur Regel „vor/nach Wechsel“ nutzt keine echten Messwerte mehr, sondern Platzhalter („Schon vor <Uhrzeit> war es <X> °C, weil das Ventil bei Soll <A> °C bis <Y> % offen war; danach heizte es mit Soll <B> °C zusätzlich bis <Z> °C.“), dazu „Setze nur Werte aus dem Kontext ein.“ – damit das Modell keine Beispielzahlen übernimmt.

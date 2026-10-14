@@ -8,13 +8,16 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=83">
+  <link rel="stylesheet" href="/static/styles.css?v=84">
 </head>
 <body>
   <div class="app-shell">
   <header class="topbar">
     <h1 class="brand-title">PV Controller</h1>
-    <span class="pill subtle" id="pill-time">aktualisiert …</span>
+    <div class="topbar-right">
+      <button type="button" class="pill pv-pill dim" id="pill-pv" title="Gesamt-PV (Hauptwechselrichter + Pergola) – zum Dashboard">☀ –</button>
+      <span class="pill subtle" id="pill-time"><span class="pt-label">aktualisiert</span><span class="pt-val">…</span></span>
+    </div>
   </header>
 
   <nav class="tabs">
@@ -1018,7 +1021,7 @@
     </form>
   </div>
 
-  <script src="/static/app.js?v=20261013j" defer></script>
+  <script src="/static/app.js?v=20261014a" defer></script>
   <script src="/static/heating.js?v=20261013t" defer></script>
   <script src="/static/shutters.js?v=20261013j" defer></script>
 </body>

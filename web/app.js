@@ -596,6 +596,8 @@ function renderEnergyFlow(heater, wb, cs, zd) {
   });
 
   // display values
+  // Summe Haupt-WR + Pergola, dezent zwischen den beiden PV-Kästen
+  const pvSumStr = "Σ " + (Math.abs(pvW) >= 1000 ? (pvW / 1000).toFixed(2).replace(".", ",") + " kW" : Math.round(pvW) + " W");
   const nzVal = Math.abs(gridW) > 50 ? kwOrW(Math.abs(gridW)) : "~0 W";
   const nzSub = feeding ? "Einsp." : drawing ? "Bezug" : "";
   const hzEst = heater.heater_power_source === "phase_sum";   // Zähler tot: Ersatzwert aus den Phasen
@@ -605,6 +607,7 @@ function renderEnergyFlow(heater, wb, cs, zd) {
 ${conn.join("\n")}
 ${node(pv.x, pv.y, NW, NH, { icon:"☀️", label:"PV", value:kwOrW(pv1W), sub:"", aktiv:pv1On, accent:PVC, always:true })}
 ${pergolaOn_ ? node(pg.x, pg.y, PG_W, pg.nh, { icon:"☀️", label:pgName, value: heater.pv2_power == null ? "n/a" : kwOrW(pgW), sub:"", aktiv:pgOn, accent:PVC, always:true }) : ""}
+${pergolaOn_ ? `<text x="${W/2}" y="${pv.by + 6.5}" text-anchor="middle" font-size="6.5" fill="rgba(255,255,255,0.5)" letter-spacing="1" font-family="'DM Mono',monospace">${esc(pvSumStr)}</text>` : ""}
 ${node(nz.x, nz.y, NW, NH, { icon:"⚡", label:"NETZ", value:nzVal, sub:nzSub, aktiv:gridOn })}
 ${hausNode()}
 ${node(hz.x, hz.y, NW, NH, { icon:"🔥", label:"HEIZSTAB", value:hzKw, sub:hzEst ? "aus Phasen" : `${phases}/3 Ph.`, aktiv:heatOn, dots:phaseDots })}
@@ -3198,7 +3201,28 @@ function updatePillTime() {
   const tab = _activeTab();
   el.style.visibility = tab === "settings" ? "hidden" : "";
   const t = tab === "heizung" ? pillTimes.heating : tab === "rolllaeden" ? pillTimes.shutters : pillTimes.status;
-  el.textIfChanged = t ? "aktualisiert " + t : "aktualisiert …";
+  const val = el.querySelector(".pt-val");
+  if (val) val.textIfChanged = t || "…";
+}
+
+// Gesamt-PV-Pill in der Kopfzeile (Haupt-WR + Pergola). Dashboard/Prioritäten: aus dem Dashboard-Polling
+// (/api/solax); andere Tabs: /api/pv/now (Server-Cache bzw. letzter Schnappschuss, keine Geräteabfrage)
+// alle 30 s, pausiert bei verdeckter Seite. Fehlt der Haupt-WR → „☀ –“ gedimmt; Pergola nachts offline
+// zählt einfach nicht mit (kein Fehlerzustand).
+const PV_PILL_MS = 30000;
+function fmtPvShort(w) {
+  if (w == null || !isFinite(w)) return "–";
+  return Math.round(w) >= 1000 ? (w / 1000).toFixed(1).replace(".", ",") + " kW" : Math.max(0, Math.round(w)) + " W";
+}
+function setPvPill(w) {
+  const el = $("#pill-pv");
+  if (!el) return;
+  el.textIfChanged = "☀ " + fmtPvShort(w);
+  el.classList.toggle("dim", w == null || !isFinite(w) || Math.round(w) <= 0);
+}
+async function refreshPvPill() {
+  if (document.hidden || _statusWanted()) return;
+  try { setPvPill((await api("/api/pv/now")).pv_w); } catch { setPvPill(null); }
 }
 
 function _statusTick() { if (_statusWanted()) refreshStatus(); }
@@ -3211,6 +3235,7 @@ function _refreshIfStale() {
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) return;
   if (_statusWanted()) _refreshIfStale();
+  else refreshPvPill();
   if (_activeTab() === "logs" && $("#log-auto")?.checked) refreshLogs();
 });
 
@@ -3253,6 +3278,7 @@ async function refreshStatus() {
     }
     renderStatus(data);
     renderSolax(effectiveSolax);
+    setPvPill(effectiveSolax ? effectiveSolax.pv_total_w : null);
     const history = await historyP;
     loadStorage().catch(() => {});
     loadHouseDash().catch(() => {});
@@ -3279,6 +3305,7 @@ async function runOnce() {
     }
     renderStatus(data);
     renderSolax(effectiveSolax);
+    setPvPill(effectiveSolax ? effectiveSolax.pv_total_w : null);
     loadStorage().catch(() => {});
     loadHouseDash().catch(() => {});
     loadZendureChart().catch(() => {});
@@ -3584,6 +3611,7 @@ function setupLogAuto() {
 function activateTab(name) {
   $$(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === name));
   updatePillTime();
+  if (!STATUS_TABS.has(name)) refreshPvPill();
   $$(".tab-panel").forEach(p => p.classList.toggle("active", p.id === "tab-" + name));
   if (name === "verlauf")      loadVerlauf();
   if (name === "settings")     { loadSettings(); loadCascadeSettings(); loadHeatingSettings(); loadShutterSettings(); }
@@ -3770,6 +3798,8 @@ function boot() {
 
   refreshStatus();
   refreshTimer = setInterval(_statusTick, REFRESH_MS);
+  setInterval(refreshPvPill, PV_PILL_MS);
+  $("#pill-pv")?.addEventListener("click", () => { activateTab("dashboard"); window.scrollTo({ top: 0 }); });
   loadPeakTimeChart();
 }
 

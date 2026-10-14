@@ -60,8 +60,15 @@ button { font-family: inherit; cursor: pointer; }
   background: rgba(8,11,20,0.92);
   position: sticky; top: 0; z-index: 10;
 }
+.topbar-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* Gesamt-PV in der Kopfzeile (alle Tabs); 0 W / unbekannt gedimmt */
+.pill.pv-pill { color: var(--warn); border-color: rgba(251,191,36,0.35); cursor: pointer; font-variant-numeric: tabular-nums; }
+.pill.pv-pill.dim { color: var(--text-dim); border-color: var(--line); opacity: 0.55; }
+#pill-time { font-variant-numeric: tabular-nums; }
+#pill-time .pt-label { margin-right: 0.45em; }
 .brand-title {
   margin: 0;
+  white-space: nowrap;
   font-size: 14px;
   letter-spacing: 0.08em;
   font-weight: 500;
@@ -1133,8 +1140,9 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 
 @media (max-width: 599px) {
   main    { padding-left: 16px; padding-right: 16px; }
-  .topbar { padding-left: 16px; padding-right: 16px; }
+  .topbar { padding-left: 16px; padding-right: 16px; gap: 8px; }
   .tabs   { padding-left: 16px; padding-right: 16px; }
+  #pill-time .pt-label { display: none; }     /* Handy: nur die Uhrzeit, damit alles in eine Zeile passt */
 }
 
 @media (max-width: 720px) {
