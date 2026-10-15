@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-15 – Rollladen-Zeitpläne: Endlagen immer senden
+
+Anlass: Nach dem Stromausfall am 15.10. (15:15–16:22) meldeten die Homematic-Aktoren ohne Fahrt 100 % (Wohnen links/rechts um 16:23, Esszimmer und Hintereingang um 17:40), die Rollläden waren aber offen. Der Zeitplan „Sonnenuntergang zu“ um 18:33 hat bei Wohnen rechts und Esszimmer „steht schon dort, nichts gesendet“ gemeldet.
+- **Zeitgesteuerte Fahrten auf 0 % oder 100 %** werden jetzt immer gesendet, auch wenn openHAB die Zielposition schon meldet (an den Anschlag fahren ist harmlos). Die Richtung gilt dann wie bei unbekannter Position, d. h. alle Schutzregeln greifen weiter: Tür offen/Kontakt unbekannt (Aussperrschutz, Warten auf Tür), Tür ohne Kontakt nur bis zum Spalt, Frost beim Öffnen, Vorrang manueller Bedienung, Duty Cycle, „fährt gerade“, Zeitbudget, dry_run.
+- **Zwischenpositionen** (z. B. 70 %) weiterhin nur bei Abweichung > 2 %.
+- **Tür ohne Kontakt (z. B. Hintereingang, schließt automatisch nur bis zum Spalt):** Meldet das Steuer-Item eine Endlage (100 %), gilt sie wie bei den anderen als unsicher → der Zu-Plan fährt den Spalt (80 %) an, auch wenn das einen wirklich geschlossenen Rollladen leicht anhebt (lieber 20 % offen als ganz offen). Nur bei verlässlicher Position – eigenes Lese-Item/Shelly oder eigene Fahrt dorthin mit bestätigter Rückmeldung (`status ok`, gleiche Position) – fährt „zu“ nie hoch: steht er schon auf dem Spalt oder weiter zu, bleibt er. Zwischenwerte aus dem Steuer-Item (z. B. 90 %) bleiben ebenfalls (vorher fuhr „zu“ von 90 % auf den Spalt hoch).
+- **Log eindeutig:** „…: Befehl gesendet“ (bei Endlage mit gleichem gemeldetem Wert: „(openHAB meldete schon 100 % – Endlage wird trotzdem angefahren)“, beim Spalt: „(openHAB meldete 100 % – Endlage unsicher, Spalt wird angefahren)“) bzw. „…: unverändert – steht schon bei X %, kein Befehl gesendet“. Verlauf (`schedule_log`): `sent` mit `forced_end: true`.
+- Unverändert: manuelle Bedienung (Buttons), Chat-Sofortbefehle, Rollläden mit Automatik „openHAB-Regel“, Heizungs-Zeitpläne. Ein Zeitplan-Ereignis sendet weiterhin höchstens einmal (`last_run`).
+- Tests: `EndPositionTest` (23) in `tests/test_shutter_schedule.py`: falsche 100 % nach Stromausfall, falsche 0 %, unbekannte Position (NULL), Zwischenposition gleich/abweichend, dasselbe Ereignis über das Nachhol-Fenster und zwei Einträge in derselben Minute → ein Befehl, Tür offen/zu, Tür ohne Kontakt (Spalt; gemeldete 100 % ohne bzw. nach anderer bestätigter Fahrt → Spalt; bestätigte 100 %, Lese-Item 100/90 %, Steuer-Item 90 % → bleibt), Frost, manuelle Bedienung, Duty Cycle, dry_run, „fährt gerade“, openHAB-Regel-Rollladen. 4 bestehende Tests auf Zwischenpositionen umgestellt (prüften „unverändert“ an der Endlage). Suite: 621 grün.
+- Dev-Abnahme gegen Kopie der Prod-DB und echte openHAB-Werte (nur gelesen, dry_run, Senden gesperrt), 18:33 nachgestellt: Prod-Code „steht schon dort“ ×3, Dev-Code DRY-RUN „zu“ für Wohnen links, Wohnen rechts, Esszimmer; Folgeminuten nichts doppelt; Hintereingang 22:01 (Tür ohne Kontakt, meldet unsicher 100 %) → DRY-RUN 80 % (Spalt).
+
 ## 2026-10-14 – Chat: Ersatzmodell (`assistant.fallback_model`) und neue GPT-Modelle
 
 Anlass: OpenAI stellt `gpt-4.1` und `gpt-4.1-mini` am 14.01.2027 ein (empfohlener Nachfolger laut Deprecations-Seite: `gpt-6-luna`).

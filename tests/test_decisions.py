@@ -638,8 +638,8 @@ class ShutterResultTest(tss.RunCase):
                          ("sent", "limited_door_gap", 80, 100))
 
     def test_already_set_late_and_superseded(self):
-        self.c.items["S_Roll"]["state"] = "100"
-        self.add()
+        self.c.items["S_Roll"]["state"] = "50"                          # Zwischenposition (Endlagen gehen immer raus)
+        self.add(action="position", position=50)
         self.run_at(21, 0)
         self.add(shutter_id="terrasse", time="20:00")
         self.run_at(21, 1)

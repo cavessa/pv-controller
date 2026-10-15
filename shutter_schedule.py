@@ -551,7 +551,7 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
     # Rückprüfung (nur Meldung, kein Nachsenden)
     for sid, c in pend.items():
         if sid not in latest:
-            shutters.verify_with(c, pos[sid], True, now)
+            cmds[sid] = shutters.verify_with(c, pos[sid], True, now) or c
 
     # Außentemperatur (nur bei Bedarf gebraucht)
     if cfg.frost_temp_item:
@@ -599,11 +599,17 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
             res.skipped += 1
             note(e_log, code or f"skipped_{result}", msg, position=cur, **data)
 
+        # Endlage (0 %/100 %) wird immer angefahren, auch wenn openHAB sie schon meldet: der Wert kann falsch sein
+        # (15.10.2026: nach Stromausfall meldeten HmIP-Aktoren 100 %, die Rollläden waren offen). Zum Zielanschlag
+        # fahren ist harmlos. Richtung dann wie bei unbekannter Position → Tür-/Frost-/Handregeln gelten weiter.
+        at_target = cur is not None and abs(cur - target) <= 2
+        force_end = at_target and target in (0, 100)
+        dir_cur = None if force_end else cur
         # Position unbekannt → in beide Richtungen prüfen (im Zweifel: nicht fahren)
-        closing = target > 0 if cur is None else target > cur
-        opening = target < 100 if cur is None else target < cur
-        if cur is not None and abs(cur - target) <= 2:
-            emit(f"{label}: steht schon dort, nichts gesendet")
+        closing = target > 0 if dir_cur is None else target > dir_cur
+        opening = target < 100 if dir_cur is None else target < dir_cur
+        if at_target and not force_end:
+            emit(f"{label}: unverändert – steht schon bei {cur} %, kein Befehl gesendet")
             if from_wait:
                 clear_wait(sh.id)
             else:
@@ -631,8 +637,11 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
                 gap = {"limited_from": target, "limited_to": sh.auto_close_max, "limit": "limited_door_gap"}
                 target = sh.auto_close_max
                 label = f"{sh.name} → {target} % ({why}, Spalt)"
-                if cur is not None and abs(cur - target) <= 2:
-                    emit(f"{label}: steht schon dort, nichts gesendet")
+                # Schon dort oder weiter zu: „zu“ fährt nie hoch – aber nur bei verlässlicher Position (Lese-Item/
+                # Shelly oder eigene, bestätigte Fahrt dorthin). Eine gemeldete Endlage aus dem Steuer-Item ist
+                # sonst unsicher (Stromausfall 15.10.2026) → Spalt anfahren: lieber 20 % offen als ganz offen.
+                if cur is not None and cur >= target - 2 and not _end_unsure(p, cur, cmds.get(sh.id)):
+                    emit(f"{label}: unverändert – steht schon bei {cur} %, kein Befehl gesendet")
                     _mark([e["id"]], UNCHANGED, now)
                     note(e_log, "already_set", position=cur, **gap)
                     continue
@@ -711,17 +720,33 @@ def run(raw: dict[str, Any], dry_run: bool, now: Optional[datetime] = None, clie
                 note(e_log, "openhab_error", str(ex)[:200])
             continue
         sent_any = True
-        emit(label)
+        if force_end and not gap:
+            extra = f" (openHAB meldete schon {cur} % – Endlage wird trotzdem angefahren)"
+        elif gap and cur is not None and cur >= target - 2:
+            extra = f" (openHAB meldete {cur} % – Endlage unsicher, Spalt wird angefahren)"
+        else:
+            extra = ""
+        emit(f"{label}: Befehl gesendet{extra}")
         shutters.record_command(sh, cmd, target, "Zeitplan", now)
         if from_wait:
             clear_wait(sh.id)
         else:
             _mark([e["id"]], SENT, now)
-        note(e_log, "sent", position=cur, target_pct=target, door_closed=True if from_wait else None, **gap)
+        note(e_log, "sent", position=cur, target_pct=target, door_closed=True if from_wait else None,
+             forced_end=True if force_end and not gap else None, **gap)
         res.sent += 1
 
     res.duration_s = clock() - t0
     return res
+
+
+def _end_unsure(p: shutters.Position, cur: int, cmd: Optional[dict[str, Any]]) -> bool:
+    """Gemeldete Endlage (0/100 %) aus dem Steuer-Item ohne eigene, bestätigte Fahrt dorthin → unsicher.
+    Verlässlich sind Lese-Item/Shelly (eigene Quelle) und eine Rückprüfung „ok“ mit derselben Position."""
+    if cur not in (0, 100) or p.origin != "item":
+        return False
+    return not (cmd and cmd.get("status") == "ok" and cmd.get("reported") is not None
+                and abs(int(cmd["reported"]) - cur) <= 2)
 
 
 def _note_not_run(cfg: shutters.ShutterConfig, raw: dict[str, Any], now: datetime, code: str,

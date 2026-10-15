@@ -13,6 +13,7 @@ from unittest import mock
 import db
 import heating
 import main as main_mod
+import schedule_log
 import shutter_schedule as ss
 import shutters
 import web
@@ -254,11 +255,13 @@ class RunBasicsTest(RunCase):
         self.assertEqual(ss.get_schedule(b["id"])["last_result"], ss.SENT)
 
     def test_unchanged(self):
-        self.c.items["S_Roll"]["state"] = "100"
-        e = self.add()
+        """Zwischenposition, die schon stimmt → nichts senden (Endlagen: s. EndPositionTest)."""
+        self.c.items["S_Roll"]["state"] = "51"
+        e = self.add(action="position", position=50)
         self.run_at(21, 0)
         self.assertEqual(self.c.sends, [])
         self.assertEqual(ss.get_schedule(e["id"])["last_result"], ss.UNCHANGED)
+        self.assertIn("unverändert – steht schon bei 51 %, kein Befehl gesendet", self.text())
 
     def test_openhab_rule_shutter_never_scheduled(self):
         with sqlite3.connect(db.DB_PATH) as conn:              # z. B. vor dem Umstellen auf „openHAB-Regel“ angelegt
@@ -501,8 +504,8 @@ class UncertainPositionTest(RunCase):
     def test_reliable_again_after_60_min(self):
         sh = self.cfg.shutter("schlafen")
         shutters.record_command(sh, "stop", None, "manuell", datetime(2026, 10, 13, 19, 50, tzinfo=TZ))
-        self.c.items["S_Roll"]["state"] = "100"
-        e = self.add()
+        self.c.items["S_Roll"]["state"] = "50"
+        e = self.add(action="position", position=50)
         self.run_at(21, 0)
         self.assertEqual(ss.get_schedule(e["id"])["last_result"], ss.UNCHANGED)
 
@@ -541,9 +544,9 @@ class ShellySourceRunTest(RunCase):
         self.assertEqual(ss.get_schedule(e["id"])["last_result"], ss.SENT)
 
     def test_unchanged_by_shelly(self):
-        self.c.items["S_Roll"]["state"] = "0"                       # Item falsch, Shelly: zu
-        e = self.add()
-        self.run_shelly(21, 0, {**self.STOP, "current_pos": 0})
+        self.c.items["S_Roll"]["state"] = "0"                       # Item falsch, Shelly: halb zu
+        e = self.add(action="position", position=50)
+        self.run_shelly(21, 0, {**self.STOP, "current_pos": 50})
         self.assertEqual(self.c.sends, [])
         self.assertEqual(ss.get_schedule(e["id"])["last_result"], ss.UNCHANGED)
 
@@ -627,6 +630,211 @@ class FrostTest(RunCase):
         self.c.items["Out_T"]["state"] = "-1 °C"
         self.add(action="position", position=40, time="07:00")
         self.run_at(7, 0)
+        self.assertEqual(self.c.sends, [])
+
+
+class EndPositionTest(RunCase):
+    """15.10.2026 (Prod): nach Stromausfall meldeten HmIP-Aktoren 100 %, die Rollläden waren offen; der Zeitplan
+    „Sonnenuntergang zu“ hat „steht schon dort“ übersprungen. Endlagen (0/100 %) werden jetzt immer gesendet."""
+
+    def ms(self, hh, mm, day=13):
+        return int(datetime(2026, 10, day, hh, mm, tzinfo=TZ).timestamp() * 1000)
+
+    def test_false_100_after_power_cut_still_closes(self):
+        self.c.items["S_Roll"]["state"] = "100"                     # falscher Wert, Rollladen real offen
+        self.c.history["S_Roll"] = [(self.ms(16, 23), 0), (self.ms(16, 24), 100)]   # Sprung > 60 min vorher
+        e = self.add(time="18:33")
+        res = self.run_at(18, 33)
+        self.assertEqual(self.c.sends, [("S_Roll", "DOWN")])
+        self.assertEqual((res.sent, ss.get_schedule(e["id"])["last_result"]), (1, ss.SENT))
+        self.assertIn("Schlafzimmer → zu (Zeitplan 18:33): Befehl gesendet (openHAB meldete schon 100 % – "
+                      "Endlage wird trotzdem angefahren)", self.text())
+        self.assertNotIn("unverändert", self.text())
+        r = schedule_log.results(schedule_log.SHUTTER, target_id="schlafen")[0]
+        self.assertEqual((r["code"], r["data"]["position"], r["data"]["forced_end"]), ("sent", 100, True))
+
+    def test_false_0_still_opens(self):
+        self.c.items["S_Roll"]["state"] = "0"
+        e = self.add(action="up", time="07:40")
+        self.run_at(7, 40)
+        self.assertEqual(self.c.sends, [("S_Roll", "UP")])
+        self.assertEqual(ss.get_schedule(e["id"])["last_result"], ss.SENT)
+
+    def test_normal_send_logs_befehl_gesendet(self):
+        self.add(time="21:00")                                      # Item 0 → zu: echte Abweichung
+        self.run_at(21, 0)
+        self.assertIn("Schlafzimmer → zu (Zeitplan 21:00): Befehl gesendet", self.text())
+        self.assertNotIn("trotzdem", self.text())
+
+    def test_intermediate_still_unchanged(self):
+        self.c.items["S_Roll"]["state"] = "70"
+        e = self.add(action="position", position=70)
+        self.run_at(21, 0)
+        self.assertEqual(self.c.sends, [])
+        self.assertEqual(ss.get_schedule(e["id"])["last_result"], ss.UNCHANGED)
+        r = schedule_log.results(schedule_log.SHUTTER, target_id="schlafen")[0]
+        self.assertEqual(r["code"], "already_set")
+
+    def test_intermediate_deviation_sent(self):
+        self.c.items["S_Roll"]["state"] = "100"
+        self.add(action="position", position=70)
+        self.run_at(21, 0)
+        self.assertEqual(self.c.sends, [("S_Roll", "70")])
+
+    def test_unknown_position_sends(self):
+        self.c.items["S_Roll"]["state"] = "NULL"                    # 15.10. 16:23: Lese-Kanal leer
+        e = self.add()
+        self.run_at(21, 0)
+        self.assertEqual(self.c.sends, [("S_Roll", "DOWN")])
+        self.assertEqual(ss.get_schedule(e["id"])["last_result"], ss.SENT)
+
+    def test_same_event_sent_only_once(self):
+        self.c.items["S_Roll"]["state"] = "100"
+        e = self.add(time="18:33")
+        for mm in (33, 34, 35, 40, 48):                             # weitere Läufe im Nachhol-Fenster
+            self.run_at(18, mm)
+        self.c.items["S_Roll"]["state"] = "100"                     # Rückprüfung erledigt, meldet weiter 100
+        self.run_at(19, 0)
+        self.assertEqual(self.c.sends, [("S_Roll", "DOWN")])
+        self.assertEqual(ss.get_schedule(e["id"])["last_result"], ss.SENT)
+        self.assertEqual(len([c for c in shutters.last_commands().values()]), 1)
+        self.run_at(18, 33, day=14)                                 # nächster Tag: neues Ereignis
+        self.assertEqual(len(self.c.sends), 2)
+
+    def test_two_entries_same_minute_one_command(self):
+        self.c.items["S_Roll"]["state"] = "100"
+        self.add(time="18:30")
+        self.add(time="18:33")
+        self.run_at(18, 33)
+        self.assertEqual(self.c.sends, [("S_Roll", "DOWN")])
+
+    def test_door_open_still_blocks_forced_close(self):
+        self.c.items["T_Roll"]["state"] = "100"                     # meldet zu, Tür offen
+        self.c.items["T_Door"]["state"] = "OPEN"
+        e = self.add(shutter_id="terrasse")
+        self.run_at(21, 0)
+        self.assertEqual(self.c.sends, [])
+        self.assertEqual(ss.get_schedule(e["id"])["last_result"], ss.DOOR_OPEN)
+
+    def test_door_closed_forced_close_sent(self):
+        self.c.items["T_Roll"]["state"] = "100"
+        self.add(shutter_id="terrasse")
+        self.run_at(21, 0)
+        self.assertEqual(self.c.sends, [("T_Roll", "DOWN")])
+
+    def test_door_without_contact_gap_still_applies(self):
+        e = self.add(shutter_id="hinten")                           # Hintereingang: kein Kontakt → nur Spalt
+        self.run_at(21, 0)
+        lim = self.cfg.shutter("hinten").auto_close_max
+        self.assertEqual(self.c.sends, [("H_Roll", str(lim))])
+        self.assertEqual(ss.get_schedule(e["id"])["last_result"], ss.SENT)
+
+    def test_door_without_contact_reported_100_unsure_sends_gap(self):
+        """Steuer-Item meldet 100 % ohne bestätigte eigene Fahrt (z. B. nach Stromausfall) → Spalt anfahren."""
+        lim = self.cfg.shutter("hinten").auto_close_max
+        self.c.items["H_Roll"]["state"] = "100"
+        e = self.add(shutter_id="hinten")
+        self.run_at(21, 0)
+        self.assertEqual(self.c.sends, [("H_Roll", str(lim))])
+        self.assertEqual(ss.get_schedule(e["id"])["last_result"], ss.SENT)
+        self.assertIn("Befehl gesendet (openHAB meldete 100 % – Endlage unsicher, Spalt wird angefahren)", self.text())
+
+    def test_door_without_contact_unsure_also_after_other_confirmed_ride(self):
+        """Letzte bestätigte Fahrt war „auf“ (0 %), jetzt meldet das Item 100 % → unsicher → Spalt."""
+        sh = self.cfg.shutter("hinten")
+        shutters.record_command(sh, "up", 0, "Zeitplan", datetime(2026, 10, 13, 6, 20, tzinfo=TZ))
+        self.run_at(6, 30)                                          # Rückprüfung: ok, 0
+        self.assertEqual(shutters.last_commands()["hinten"]["status"], "ok")
+        self.c.items["H_Roll"]["state"] = "100"
+        self.add(shutter_id="hinten")
+        self.run_at(21, 0)
+        self.assertEqual(self.c.sends, [("H_Roll", str(sh.auto_close_max))])
+
+    def test_door_without_contact_confirmed_100_never_opens(self):
+        """Eigene Fahrt auf 100 % mit bestätigter Rückmeldung → verlässlich → „zu“ fährt nicht hoch."""
+        sh = self.cfg.shutter("hinten")
+        shutters.record_command(sh, "down", 100, "manuell", datetime(2026, 10, 13, 19, 0, tzinfo=TZ))
+        self.c.items["H_Roll"]["state"] = "100"
+        self.run_at(19, 30, cfg=raw(manual_hold_min=0))             # Rückprüfung: ok, 100
+        self.assertEqual(shutters.last_commands()["hinten"]["status"], "ok")
+        e = self.add(shutter_id="hinten")
+        self.run_at(21, 0)
+        self.assertEqual(self.c.sends, [])
+        self.assertEqual(ss.get_schedule(e["id"])["last_result"], ss.UNCHANGED)
+
+    def test_door_without_contact_read_item_never_opens(self):
+        """Eigenes Lese-Item meldet 100 % bzw. 90 % → verlässlich → kein Hochfahren auf den Spalt."""
+        rooms = [dict(r, position_source="item:H_Pos") if r["id"] == "hinten" else r for r in ROOMS]
+        for state in ("100", "90"):
+            with self.subTest(state=state):
+                self.c = Client({**ITEMS, "H_Pos": {"name": "H_Pos", "type": "Rollershutter", "state": state}})
+                e = self.add(shutter_id="hinten")
+                self.run_at(21, 0, cfg=raw(rooms=rooms))
+                self.assertEqual(self.c.sends, [])
+                self.assertEqual(ss.get_schedule(e["id"])["last_result"], ss.UNCHANGED)
+                ss.delete_schedule(e["id"])
+
+    def test_door_without_contact_intermediate_from_item_never_opens(self):
+        """90 % aus dem Steuer-Item ist keine Endlage → bleibt (zu fährt nie hoch)."""
+        self.c.items["H_Roll"]["state"] = "90"
+        e = self.add(shutter_id="hinten")
+        self.run_at(21, 0)
+        self.assertEqual(self.c.sends, [])
+        self.assertEqual(ss.get_schedule(e["id"])["last_result"], ss.UNCHANGED)
+
+    def test_door_without_contact_gap_already_there_unchanged(self):
+        lim = self.cfg.shutter("hinten").auto_close_max
+        self.c.items["H_Roll"]["state"] = str(lim)
+        e = self.add(shutter_id="hinten")
+        self.run_at(21, 0)
+        self.assertEqual(self.c.sends, [])
+        self.assertEqual(ss.get_schedule(e["id"])["last_result"], ss.UNCHANGED)
+
+    def test_frost_still_blocks_forced_open(self):
+        self.c.items["S_Roll"]["state"] = "0"
+        self.c.items["Out_T"]["state"] = "-3 °C"
+        e = self.add(action="up", time="07:00")
+        self.run_at(7, 0)
+        self.assertEqual(self.c.sends, [])
+        self.assertEqual(ss.get_schedule(e["id"])["last_result"], ss.FROST)
+
+    def test_manual_hold_still_blocks(self):
+        self.c.items["S_Roll"]["state"] = "100"
+        self.c.history["S_Roll"] = [(self.ms(20, 10), 0), (self.ms(20, 31), 100), (self.ms(20, 59), 100)]
+        e = self.add()
+        self.run_at(21, 0)
+        self.assertEqual(self.c.sends, [])
+        self.assertEqual(ss.get_schedule(e["id"])["last_result"], ss.MANUAL_HOLD)
+
+    def test_duty_cycle_still_pauses(self):
+        self.c.items["S_Roll"]["state"] = "100"
+        self.c.items["CCU_DC"]["state"] = "95"
+        e = self.add()
+        self.run_at(21, 0)
+        self.assertEqual(self.c.sends, [])
+        self.assertIsNone(ss.get_schedule(e["id"])["last_run"])
+
+    def test_dry_run_sends_nothing(self):
+        self.c.items["S_Roll"]["state"] = "100"
+        e = self.add()
+        self.run_at(21, 0, dry=True)
+        self.assertEqual(self.c.sends, [])
+        self.assertEqual(ss.get_schedule(e["id"])["last_result"], ss.DRY_RUN)
+
+    def test_moving_still_waits(self):
+        with mock.patch.object(shutters, "read_shelly", return_value={"state": "close", "current_pos": 0,
+                                                                       "positioning": True}):
+            rooms = [dict(r, position_source="shelly", shelly_url="http://s") if r["id"] == "schlafen" else r
+                     for r in ROOMS]
+            e = self.add()
+            self.run_at(21, 0, cfg=raw(rooms=rooms))
+        self.assertEqual(self.c.sends, [])
+        self.assertIsNone(ss.get_schedule(e["id"])["last_run"])
+
+    def test_openhab_rule_shutter_untouched(self):
+        self.c.items["W_Roll"]["state"] = "100"
+        self.add(shutter_id="wohnen")
+        self.run_at(21, 0)
         self.assertEqual(self.c.sends, [])
 
 
