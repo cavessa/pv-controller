@@ -12,10 +12,13 @@ jemand einen neuen schreibt.
   Gerätewerte in zwei Takten hintereinander vom Regelzustand ab, ohne dass pvcontroller in den
   letzten ``FOREIGN_GRACE_S`` geschrieben hat (App-Energieplan/HEMS), → Hinweis + sofort
   Standby (höchstens alle ``FOREIGN_STANDBY_MIN_S``).
-- Lade-Drosselung (gleicher Takt): lädt die Batterie und misst der Hauptzähler zwei Takte in
-  Folge Netzbezug > ``THROTTLE_IMPORT_W`` → Ladesollwert sofort um den Bezug senken (bis 0).
-  Nur senken, nie erhöhen (das macht der Minutenlauf); Zähler nicht lesbar → nichts tun.
-  Fälle: Heizstab-Thermostat schließt wieder, Wolke, Herd an.
+- Hauptzähler: jeden Takt gelesen und mit der Batterie-Ist-Leistung in den Ringpuffer
+  ``meter_ring`` gelegt (der Minutenlauf nimmt für die Batterie das 60-s-Mittel „Netz ohne Batterie“).
+- Lade-/Entlade-Drosselung (gleicher Takt), nur senken, nie erhöhen (das macht der Minutenlauf):
+  lädt die Batterie und misst der Zähler zwei Takte in Folge Bezug > ``THROTTLE_IMPORT_W`` →
+  Ladung sofort um den Bezug senken (bis 0; Zähler nicht lesbar → nichts tun). Entlädt sie und
+  speist das Haus zwei Takte ein → Entladung um die Einspeisung senken (unter 50 W Standby;
+  Zähler zwei Takte nicht lesbar → Standby). Fälle: Heizstab-Thermostat, Wolke, Herd, Backofen.
 - ``--boot`` (Cron ``@reboot``): Standby unbedingt, mit Wiederholung bis das Gerät antwortet.
 
 Prozess-Regeln (Cron: ``flock -n /tmp/pvc-zendure-watch.lock`` → nie zwei Instanzen):
@@ -193,58 +196,93 @@ def foreign_tick(cfg, client, st, state: dict, clock: Callable[[], float] = time
     return "foreign_standby"
 
 
-def throttle_tick(cfg, client, meter, state: dict, clock: Callable[[], float] = time.time) -> Optional[str]:
-    """Lädt die Batterie und bezieht das Haus Strom → Ladesollwert sofort um den Bezug senken.
+def throttle_tick(cfg, client, grid: Optional[float], state: dict,
+                  clock: Callable[[], float] = time.time) -> Optional[str]:
+    """Schnelle Drosselung, nur senken, nie erhöhen (das macht der Minutenlauf).
 
-    ``meter``: Hauptzähler (``get_total_power_w()``, + = Bezug, None = nicht lesbar). Liefert
-    "throttle" nach einer Senkung, sonst None."""
+    ``grid``: Hauptzähler in diesem Takt (+ = Bezug, − = Einspeisung, None = nicht lesbar).
+    - Laden + Bezug > ``THROTTLE_IMPORT_W`` (zwei Takte) → Ladung um den Bezug senken (bis 0);
+      Zähler nicht lesbar → nichts tun.
+    - Entladen + Einspeisung > ``THROTTLE_IMPORT_W`` (zwei Takte) → Entladung um die Einspeisung
+      senken (unter 50 W: Standby); Zähler zwei Takte nicht lesbar → Standby (nie ins Blaue entladen).
+    Liefert "throttle"/"standby" nach einem Befehl, sonst None."""
     import db
-    from clients.zendure_client import AC_MODE_CHARGE
-    from zendure_control import _round10, write_guard
-    if meter is None:
-        return None
+    from clients.zendure_client import AC_MODE_CHARGE, AC_MODE_DISCHARGE
+    from zendure_control import DISCHARGE_START_IMPORT_W, _round10, force_standby, write_guard
     ctl = db.get_zendure_ctl()
-    if ctl["mode"] != "charge" or not ctl["limit_w"]:
-        state.pop("imports", None)
+    mode = ctl["mode"]
+    if mode not in ("charge", "discharge") or not ctl["limit_w"]:
+        state.pop("excess", None)
+        state.pop("unreadable", None)
         return None
+    if grid is None:
+        state.pop("excess", None)
+        if mode != "discharge":
+            return None                                    # Laden: nicht lesbar → nichts tun
+        state["unreadable"] = state.get("unreadable", 0) + 1
+        if state["unreadable"] < THROTTLE_TICKS:
+            return None
+        state["unreadable"] = 0
+        force_standby(client, "Wächter: Hauptzähler nicht lesbar – Entladen gestoppt", cfg.runtime.dry_run)
+        return "standby"
+    state.pop("unreadable", None)
     now = clock()
     if now < state.get("throttle_settle_until", 0.0):
         return None
-    try:
-        grid = meter.get_total_power_w()
-    except Exception:
-        grid = None
-    if grid is None or grid <= THROTTLE_IMPORT_W:
-        state.pop("imports", None)                         # nicht lesbar oder kein Bezug: nichts tun
+    excess = float(grid) if mode == "charge" else -float(grid)   # Bezug beim Laden / Einspeisung beim Entladen
+    if excess <= THROTTLE_IMPORT_W or state.get("excess_mode") != mode:
+        state["excess_mode"] = mode
+        state["excess"] = [excess] if excess > THROTTLE_IMPORT_W else []
         return None
-    imports = state.setdefault("imports", [])
-    imports.append(float(grid))
-    if len(imports) < THROTTLE_TICKS:
+    vals = state.setdefault("excess", [])
+    vals.append(excess)
+    if len(vals) < THROTTLE_TICKS:
         return None
-    cut = min(imports[-THROTTLE_TICKS:])                   # nur den anhaltenden Bezug abziehen
-    state["imports"] = []
+    cut = min(vals[-THROTTLE_TICKS:])                      # nur den anhaltenden Anteil abziehen
+    state["excess"] = []
     old = int(ctl["limit_w"])
     new = max(0, _round10(old - cut))
     if new >= old:
         return None
+    what, why = ("Laden", "Netzbezug") if mode == "charge" else ("Entladen", "Einspeisung")
+    state["throttle_settle_until"] = now + THROTTLE_SETTLE_S
+    if mode == "discharge" and new < DISCHARGE_START_IMPORT_W:
+        force_standby(client, f"Wächter: Einspeisung {cut:.0f} W beim Entladen – Entladen gestoppt",
+                      cfg.runtime.dry_run)
+        return "standby"
     if cfg.runtime.dry_run:
-        log.info("[Dry-Run] Zendure-Wächter: Netzbezug %.0f W – würde Laden von %d auf %d W senken", cut, old, new)
-        state["throttle_settle_until"] = now + THROTTLE_SETTLE_S
+        log.info("[Dry-Run] Zendure-Wächter: %s %.0f W – würde %s von %d auf %d W senken", why, cut, what, old, new)
         return "throttle"
     with write_guard() as locked:
         ctl = db.get_zendure_ctl()                         # unter dem Lock neu: Minutenlauf könnte geschrieben haben
-        if not locked or ctl["mode"] != "charge" or int(ctl["limit_w"] or 0) != old:
+        if not locked or ctl["mode"] != mode or int(ctl["limit_w"] or 0) != old:
             return None
-        ok = client.set_mode(AC_MODE_CHARGE, input_limit=new, output_limit=0)
+        if mode == "charge":
+            ok = client.set_mode(AC_MODE_CHARGE, input_limit=new, output_limit=0)
+        else:
+            ok = client.set_mode(AC_MODE_DISCHARGE, input_limit=0, output_limit=new)
         if ok:
             from datetime import datetime
             db.set_zendure_ctl(limit_w=new, written_at=datetime.now().isoformat(timespec="seconds"))
-    state["throttle_settle_until"] = now + THROTTLE_SETTLE_S
     if ok:
-        log.info("Zendure-Wächter: Netzbezug %.0f W beim Laden – Ladung sofort von %d auf %d W gesenkt", cut, old, new)
+        log.info("Zendure-Wächter: %s %.0f W beim %s – sofort von %d auf %d W gesenkt", why, cut, what, old, new)
         return "throttle"
-    log.warning("Zendure-Wächter: Senken des Ladens auf %d W fehlgeschlagen", new)
+    log.warning("Zendure-Wächter: Senken (%s) auf %d W fehlgeschlagen", what, new)
     return None
+
+
+def read_meter(meter, st=None) -> Optional[float]:
+    """Hauptzähler einmal pro Takt lesen; mit der Batterie-Ist-Leistung dieses Takts (``st``) in den
+    Ringpuffer (meter_ring) legen. Ohne lesbare Batterie kein Eintrag (Netz ohne Batterie unbekannt).
+    None = Zähler nicht lesbar."""
+    try:
+        grid = meter.get_total_power_w()
+    except Exception:
+        grid = None
+    if grid is not None and st is not None:
+        import meter_ring
+        meter_ring.append(float(grid), float(st.discharge_w) - float(st.charge_w))
+    return grid
 
 
 def _out_limit(st) -> float:
@@ -274,8 +312,10 @@ def guard_loop(cfg, client, goe, *, end_at: float, tick_s: float = TICK_S,
             res = guard_tick(cfg, client, goe, _out_limit(st) > 0, state)
             if res != "standby":
                 res = foreign_tick(cfg, client, st, state, clock) or res
-            if res not in ("standby", "foreign_standby"):
-                res = throttle_tick(cfg, client, meter, state, clock) or res
+            if meter is not None:
+                grid = read_meter(meter, st)
+                if res not in ("standby", "foreign_standby"):
+                    res = throttle_tick(cfg, client, grid, state, clock) or res
             out.append(res)
         except Exception:
             log.exception("Zendure-Wächter: Fehler im Takt")

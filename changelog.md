@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-10-16 – Batterie: Entlade-Drosselung im Wächter, 60-s-Mittel statt Einzelmessung (kein Minuten-Hin-und-Her)
+
+Anlass: Nach dem Deploy um 15:51 wechselte die Batterie jede Minute zwischen Laden und Entladen, 15:51–16:01 sechsmal. Pulsierende Lasten (Herd/Backofen: ~2 kW für ~7 s, Spitzen bis 10 kW) bestimmten, was der Minutenlauf gerade sah; zeitweise entlud die Batterie ins Netz (15:52:31: 1530 W Entladung bei −3398 W am Zähler).
+- **Entlade-Drosselung** (`zendure_watchdog.throttle_tick`, jetzt für Laden und Entladen):
+  - Entlädt die Batterie und speist das Haus zwei 3-s-Takte in Folge > 100 W ein → Entladung sofort um die Einspeisung senken (kleinerer der beiden Werte); unter 50 W Standby.
+  - Nur senken, nie erhöhen. Zähler zwei Takte nicht lesbar → Standby (nie ins Blaue entladen); beim Laden bleibt „nicht lesbar → nichts tun“.
+  - Log: „Zendure-Wächter: Einspeisung … W beim Entladen – sofort von … auf … W gesenkt“ bzw. „Standby geschrieben … Entladen gestoppt“.
+- **Ringpuffer** (`meter_ring.py`): Der Wächter liest den Hauptzähler jetzt in jedem Takt, auch ohne Laden/Entladen. Er legt ihn **zusammen mit der Batterie-Ist-Leistung** desselben Takts in eine RAM-Datei (`/dev/shm/pvc-meter-<Hash des DB-Pfads>.txt`, ~2,5 min, kein SD-Schreiben alle 3 s). Ist die Batterie nicht lesbar, gibt es keinen Eintrag. Nach einem Neustart ist der Puffer leer.
+- **Gemittelt wird „Netz ohne Batterie“** (Zähler + Entladung − Ladung). Der Minutenlauf setzt das Mittel mit der jetzigen Batterie-Leistung wieder zusammen. Eigene Drosselungen des Wächters mitten in der Minute verändern die Entscheidung so nicht.
+- **Nur frische Werte:** Es zählen nur Werte mit Zeitstempel in den letzten 60 s. Hängt der Wächter oder ist er tot, gibt es weniger als 10 frische Werte → Einzelmessung. Zeilen im alten Format ohne Batteriewert zählen nicht.
+- **Minutenlauf, nur Batterie**: Einspeisung/Bezug kommen aus dem Mittel der letzten 60 s, für Laden/Entladen, Höhe, Grundlast und Einspeise-Deckel. Unter 10 Werten gilt die Einzelmessung. Die Schwellen bleiben gleich (Laden ab 100 W + 100 W Hysterese, Entladen ab 50 W Bezug), gelten aber für das Mittel. Ist an der Batterie-Position laut Kaskade nichts übrig, lädt sie auch bei besserem Mittel nicht. Heizstab und übrige Kaskade nutzen weiter die Einzelmessung. Log „Kaskade: Batterie nutzt Einspeisung … W (Mittel 60 s, n Werte) statt jetzt … W“; Schnappschuss-Felder `battery_feed_in_avg_w`/`_n`.
+- **Replay 15:51–16:01** (20-s-Messreihe + Minutenwerte, Batterie herausgerechnet, echte `plan()`-Funktion):
+  - Gemessen (wirklich): 6 Wechsel, ~62 Wh ins Netz entladen, ~21 Wh aus dem Netz geladen.
+  - Nachgerechnet „alt“: 6 Wechsel, 44 Wh ins Netz, 52 Wh aus dem Netz geladen.
+  - „neu“ (Mittel): 1 Wechsel, 18 Wh / 23 Wh.
+  - „neu + Drosselung“: 1 Wechsel, 13 Wh / 15 Wh.
+  - Näherung: nur ~4 Werte pro Minute statt 20, Drosselung auf 20-s-Proben (echter 3-s-Takt reagiert schneller).
+- Tests (`tests/test_heater_thermostat.py`, jetzt 71; neu u. a.: veralteter Puffer → Einzelmessung, Mittel ohne Batterie, altes Zeilenformat, Drosselung mitten in der Minute ändert die Entscheidung nicht): Laden-Drosselung angepasst (Zählerwert pro Takt). Neu:
+  - Entladen: Einspeisung → senken, größer als Sollwert → Standby, Bezug → nie erhöhen, Zähler 2× unlesbar → Standby, Einzel-Ausfall ignoriert.
+  - Moduswechsel setzt den Zähler zurück; Leerlauf ohne Aktion.
+  - Ringpuffer: jeder Takt auch im Leerlauf, Fenster 60 s, mindestens 10 Werte, Kürzen, fehlende Datei.
+  - Kaskade: Herd-Puls beim Messen → kein Entladen, Einspeise-Delle beim Entladen → kein Laden, zu wenige Werte → Einzelmessung, Heizstab-Budget weiter aus der Einzelmessung.
+
 ## 2026-10-16 – Heizstab-Thermostat erkennen (Relais an, 0 W), „Speicher praktisch voll“; schnelle Lade-Drosselung im Wächter
 
 Anlass: Der Heizstab schaltet über seinen eigenen Thermostat zwischendurch auf 0 W, obwohl das Relais an ist (Drehregler 70 °C, vermutlich Schichtung). Auswertung Prod-Log 11.–16.10.: 8 Fälle, zusammen 37 min (1–10 min, Median 4,5), immer 13:38–15:45, fast nur ≥ 59 °C (einmal 55,8 °C). Bei ~59 °C kam er nach 2–10 min von selbst wieder; bei 63,5–64 °C schaltete er vor unserer Max-Grenze ab. Der Überschuss (zusammen ~2 kWh) ging ins Netz.

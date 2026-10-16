@@ -1,8 +1,10 @@
 """Thermostat im Heizstab (Relais an, 0 W): Erkennung, Relais halten, Kaskade nach Messung,
 „Speicher praktisch voll“; schnelle Lade-Drosselung im Zendure-Wächter. Nur Fakes."""
 import unittest
+from pathlib import Path
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from unittest import mock
 
 import db
 import reasons
@@ -187,7 +189,20 @@ class Meter:
 OLD = (datetime.now() - timedelta(minutes=5)).isoformat(timespec="seconds")
 
 
-class ThrottleTest(DbCase):
+class RingCase(DbCase):
+    def setUp(self):
+        super().setUp()
+        import meter_ring
+        self._old_ring = meter_ring.RING_PATH
+        meter_ring.RING_PATH = str(Path(self.tmp.name) / "ring.txt")
+
+    def tearDown(self):
+        import meter_ring
+        meter_ring.RING_PATH = self._old_ring
+        super().tearDown()
+
+
+class ThrottleTest(RingCase):
     def setUp(self):
         super().setUp()
         self.t = [0.0]
@@ -196,7 +211,11 @@ class ThrottleTest(DbCase):
         return self.t[0]
 
     def tick(self, dev, meter, state, dt=3.0, dry=False):
-        r = wd.throttle_tick(self.cfg(dry), dev, meter, state, self.clock)
+        try:
+            grid = meter.get_total_power_w()
+        except Exception:
+            grid = None
+        r = wd.throttle_tick(self.cfg(dry), dev, grid, state, self.clock)
         self.t[0] += dt
         return r
 
@@ -204,6 +223,11 @@ class ThrottleTest(DbCase):
         db.set_zendure_ctl(mode="charge", limit_w=limit, written_at=OLD)
         return Device(ac=1, inp=limit)
 
+    def discharging(self, limit=1530):
+        db.set_zendure_ctl(mode="discharge", limit_w=limit, written_at=OLD)
+        return Device(ac=2, out=limit)
+
+    # ---- Laden ----
     def test_two_ticks_import_cuts_by_import(self):
         dev, m, st = self.charging(), Meter(800.0, 900.0), {}
         self.assertIsNone(self.tick(dev, m, st))
@@ -211,7 +235,7 @@ class ThrottleTest(DbCase):
             self.assertEqual(self.tick(dev, m, st), "throttle")
         self.assertEqual(dev.writes, [(1, 1200, 0)])            # 2000 − min(800, 900)
         self.assertEqual(db.get_zendure_ctl()["limit_w"], 1200)
-        self.assertIn("von 2000 auf 1200 W gesenkt", logs.output[0])
+        self.assertIn("Netzbezug 800 W beim Laden – sofort von 2000 auf 1200 W gesenkt", logs.output[0])
 
     def test_single_spike_ignored(self):
         dev, m, st = self.charging(), Meter(3000.0, -200.0, 3000.0, -100.0), {}
@@ -225,22 +249,15 @@ class ThrottleTest(DbCase):
         self.tick(dev, m, st)
         self.assertEqual(dev.writes, [(1, 0, 0)])
 
-    def test_meter_unreadable_does_nothing(self):
+    def test_charging_meter_unreadable_does_nothing(self):
         dev, st = self.charging(), {}
-        for m in (Meter(None, None), Meter(OSError("x"), OSError("x"))):
-            self.tick(dev, m, st)
-            self.tick(dev, m, st)
+        for m in (Meter(None, None, None), Meter(OSError("x"), OSError("x"), OSError("x"))):
+            for _ in range(3):
+                self.tick(dev, m, st)
         self.assertEqual(dev.writes, [])
-        self.assertIsNone(wd.throttle_tick(self.cfg(), dev, None, st, self.clock))
 
-    def test_not_charging_meter_not_read(self):
-        db.set_zendure_ctl(mode="discharge", limit_w=500)
-        m = Meter(2000.0)
-        self.tick(Device(ac=2, out=500), m, {})
-        self.assertEqual(m.calls, 0)
-
-    def test_export_never_raises(self):
-        dev, m, st = self.charging(500), Meter(-3000.0, -3000.0, -3000.0), {}
+    def test_export_never_raises_charge(self):
+        dev, m, st = self.charging(500), Meter(-3000.0), {}
         for _ in range(3):
             self.tick(dev, m, st)
         self.assertEqual(dev.writes, [])
@@ -263,36 +280,214 @@ class ThrottleTest(DbCase):
         self.assertEqual(dev.writes, [])
 
     def test_minute_run_wrote_meanwhile(self):
-        dev, st = self.charging(2000), {}
+        import contextlib
+        import zendure_control as zcm
+        dev, m, st = self.charging(2000), Meter(500.0), {}
 
-        class M(Meter):
-            def get_total_power_w(s):
-                v = super().get_total_power_w()
-                if s.calls == 2:
-                    db.set_zendure_ctl(limit_w=800)               # Minutenlauf hat inzwischen gesenkt
-                return v
-        m = M(500.0)
+        @contextlib.contextmanager
+        def guard(*a, **kw):
+            db.set_zendure_ctl(limit_w=800)                       # Minutenlauf schrieb, während wir aufs Lock warteten
+            yield True
         self.tick(dev, m, st)
-        self.assertIsNone(self.tick(dev, m, st))
+        with mock.patch.object(zcm, "write_guard", guard):
+            self.assertIsNone(self.tick(dev, m, st))
         self.assertEqual(dev.writes, [])
 
+    def test_idle_no_action(self):
+        db.set_zendure_ctl(mode="idle", limit_w=0)
+        dev, st = Device(), {}
+        for v in (2000.0, None, -2000.0, None):
+            self.assertIsNone(wd.throttle_tick(self.cfg(), dev, v, st, self.clock))
+        self.assertEqual(dev.writes, [])
+
+    # ---- Entladen ----
+    def test_discharge_export_cuts_by_export(self):
+        dev, m, st = self.discharging(1530), Meter(-1941.0, -1400.0), {}   # 15.10.: Batterie speist ein
+        self.tick(dev, m, st)
+        with self.assertLogs("pv-controller.zendure-watchdog", level="INFO") as logs:
+            self.assertEqual(self.tick(dev, m, st), "throttle")
+        self.assertEqual(dev.writes, [(2, 0, 130)])             # 1530 − 1400
+        self.assertIn("Einspeisung 1400 W beim Entladen", logs.output[0])
+
+    def test_discharge_export_larger_than_limit_standby(self):
+        dev, m, st = self.discharging(1230), Meter(-3190.0, -1895.0), {}
+        self.tick(dev, m, st)
+        with self.assertLogs("zendure_control", level="WARNING") as logs:
+            self.assertEqual(self.tick(dev, m, st), "standby")
+        self.assertEqual(dev.writes, [(None, 0, 0)])
+        self.assertEqual(db.get_zendure_ctl()["mode"], "idle")
+        self.assertIn("Einspeisung 1895 W beim Entladen – Entladen gestoppt", logs.output[0])
+
+    def test_discharge_import_never_raises(self):
+        dev, m, st = self.discharging(500), Meter(2000.0), {}
+        for _ in range(3):
+            self.tick(dev, m, st)
+        self.assertEqual(dev.writes, [])
+
+    def test_discharge_meter_unreadable_two_ticks_standby(self):
+        dev, m, st = self.discharging(800), Meter(None, None), {}
+        self.assertIsNone(self.tick(dev, m, st))
+        with self.assertLogs("zendure_control", level="WARNING") as logs:
+            self.assertEqual(self.tick(dev, m, st), "standby")
+        self.assertEqual(dev.writes, [(None, 0, 0)])
+        self.assertIn("Hauptzähler nicht lesbar – Entladen gestoppt", logs.output[0])
+
+    def test_discharge_single_unreadable_ignored(self):
+        dev, m, st = self.discharging(800), Meter(None, 20.0, None, 15.0), {}
+        for _ in range(4):
+            self.tick(dev, m, st)
+        self.assertEqual(dev.writes, [])
+
+    def test_mode_change_resets_counter(self):
+        dev, st = self.charging(1000), {}
+        wd.throttle_tick(self.cfg(), dev, 500.0, st, self.clock)          # Laden, Bezug 500
+        db.set_zendure_ctl(mode="discharge", limit_w=1000)
+        self.assertIsNone(wd.throttle_tick(self.cfg(), dev, -500.0, st, self.clock))   # neuer Modus: erst 1. Takt
+        self.assertEqual(dev.writes, [])
+
+    # ---- Schleife / Ringpuffer ----
     def test_loop_integration_no_foreign_alarm_after_own_cut(self):
         db.set_zendure_ctl(mode="charge", limit_w=2000, written_at=OLD)
         dev = Device(ac=1, inp=2000)
         t = [0.0]
-        cfg = self.cfg()
         with self.assertLogs("pv-controller.zendure-watchdog", level="INFO"):
-            out = wd.guard_loop(cfg, dev, Goe(IDLE), end_at=12.0, tick_s=3.0, meter=Meter(700.0, 700.0, -50.0),
+            out = wd.guard_loop(self.cfg(), dev, Goe(IDLE), end_at=12.0, tick_s=3.0, meter=Meter(700.0, 700.0, -50.0),
                                 sleep=lambda s: t.__setitem__(0, t[0] + s), clock=lambda: t[0])
         self.assertIn("throttle", out)
         self.assertEqual(dev.writes, [(1, 1300, 0)])
         self.assertIsNone(db.get_zendure_ctl()["foreign_at"])
+
+    def test_loop_fills_ring_every_tick_also_idle(self):
+        import meter_ring
+        db.set_zendure_ctl(mode="idle", limit_w=0)
+        t = [0.0]
+        wd.guard_loop(self.cfg(), Device(), Goe(IDLE), end_at=36.0, tick_s=3.0, meter=Meter(*[100.0 * i for i in range(12)]),
+                      sleep=lambda s: t.__setitem__(0, t[0] + s), clock=lambda: t[0])
+        self.assertEqual(meter_ring.mean(), (550.0, 12))
 
     def test_no_wallbox_configured_guard_ok(self):
         db.set_zendure_ctl(mode="discharge", limit_w=500, written_at=OLD)
         dev = Device(ac=2, out=500)
         self.assertEqual(wd.guard_tick(self.cfg(), dev, None), "ok")
         self.assertEqual(dev.writes, [])
+
+
+class RingTest(RingCase):
+    def test_mean_window_and_minimum(self):
+        import meter_ring
+        now = 1000.0
+        for i in range(9):
+            meter_ring.append(100.0, 0.0, ts=now - 3 * i)
+        self.assertIsNone(meter_ring.mean(now=now))             # < 10 Werte → Einzelmessung
+        meter_ring.append(1100.0, 0.0, ts=now)
+        self.assertEqual(meter_ring.mean(now=now), (200.0, 10))
+        meter_ring.append(5000.0, 0.0, ts=now - 90)             # älter als 60 s zählt nicht
+        self.assertEqual(meter_ring.mean(now=now)[1], 10)
+
+    def test_stale_buffer_falls_back(self):
+        import meter_ring
+        now = 10_000.0
+        for i in range(40):                                     # Wächter hängt seit 61 s: 40 alte Werte
+            meter_ring.append(500.0, 0.0, ts=now - 61 - 3 * i)
+        self.assertIsNone(meter_ring.mean(now=now))
+        for i in range(9):                                      # nur 9 frische
+            meter_ring.append(500.0, 0.0, ts=now - 3 * i)
+        self.assertIsNone(meter_ring.mean(now=now))
+        meter_ring.append(500.0, 0.0, ts=now - 30)
+        self.assertEqual(meter_ring.mean(now=now), (500.0, 10))
+
+    def test_mean_is_grid_without_battery(self):
+        import meter_ring
+        now = 1000.0
+        for i in range(10):                                     # Batterie entlädt 1500 W, Zähler −200 W
+            meter_ring.append(-200.0, 1500.0, ts=now - 3 * i)
+        self.assertEqual(meter_ring.mean(now=now), (1300.0, 10))   # Haus ohne Batterie: 1300 W Bezug
+
+    def test_old_two_field_lines_ignored(self):
+        import meter_ring
+        Path(meter_ring.path()).write_text("".join(f"{1000.0 - i} 300\n" for i in range(20)))
+        self.assertIsNone(meter_ring.mean(now=1000.0))
+
+    def test_prune_keeps_recent(self):
+        import meter_ring
+        for i in range(800):
+            meter_ring.append(float(i), 0.0, ts=float(i * 3))
+        lines = Path(meter_ring.path()).read_text().splitlines()
+        self.assertLess(len(lines), 600)                        # zwischendurch gekürzt
+        self.assertEqual(lines[-1].split()[1], "799")
+
+    def test_missing_file(self):
+        import meter_ring
+        self.assertIsNone(meter_ring.mean())
+
+
+class CascadeMeanTest(tcp.ServiceIntegrationTest):
+    """Minutenlauf: Batterie auf das 60-s-Mittel, Heizstab/Kaskade auf die Einzelmessung."""
+
+    def setUp(self):
+        super().setUp()
+        import meter_ring
+        self._old_ring = meter_ring.RING_PATH
+        meter_ring.RING_PATH = str(Path(self.tmp.name) / "ring.txt")
+
+    def tearDown(self):
+        import meter_ring
+        meter_ring.RING_PATH = self._old_ring
+        super().tearDown()
+
+    def fill(self, *vals, battery=0.0):
+        """Werte neuester zuerst; ``battery``: Batterie-Ist (+ Entladen) – Zahl oder Liste je Wert."""
+        import meter_ring, time
+        now = time.time()
+        for i, v in enumerate(vals):
+            b = battery[i] if isinstance(battery, list) else battery
+            meter_ring.append(v, b, ts=now - 3 * i)
+
+    def test_pulse_at_measurement_no_discharge(self):
+        # Herd-Puls genau beim Messen (+1700 W), Mittel −400 W (Einspeisung): kein Entladen
+        self.fill(*([-1000.0] * 14 + [1700.0] * 6))
+        svc = self.service(False, 45.0, 1700.0, pv=2500.0, zd=ZendureStatus(soc=98, home_out_w=0))
+        out = svc.run_cascade()
+        self.assertNotEqual(svc._last_plan.mode, "discharge")
+        self.assertEqual(out["battery_feed_in_avg_n"], 20)
+
+    def test_export_dip_at_measurement_no_charge_flip(self):
+        # Entladen läuft, beim Messen kurz −2000 W, im Mittel Bezug 600 W → weiter entladen
+        db.set_zendure_ctl(mode="discharge", limit_w=1200)
+        self.fill(*([-2000.0] * 3 + [600.0] * 17), battery=1200.0)
+        svc = self.service(False, 45.0, -2000.0, pv=500.0, zd=ZendureStatus(soc=98, discharge_w=1200.0, home_out_w=1200.0))
+        svc.run_cascade()
+        self.assertNotEqual(svc._last_plan.mode, "charge")
+
+    def test_own_throttle_mid_minute_does_not_change_decision(self):
+        # Netz ohne Batterie die ganze Minute 1800 W Bezug. A: Batterie entlud durchgehend 300 W.
+        # B: Batterie entlud erst 1500 W, der Wächter drosselte nach 30 s auf 300 W (Zähler sprang dabei).
+        # Jetzt entlädt sie in beiden Fällen 300 W → gleiche Entscheidung.
+        results = []
+        for meters, bats in (([1500.0] * 20, [300.0] * 20),
+                             ([1500.0] * 10 + [300.0] * 10, [300.0] * 10 + [1500.0] * 10)):
+            import meter_ring
+            Path(meter_ring.path()).unlink(missing_ok=True)
+            db.set_zendure_ctl(mode="discharge", limit_w=300)
+            self.fill(*meters, battery=bats)
+            svc = self.service(False, 45.0, 1500.0, pv=500.0,
+                               zd=ZendureStatus(soc=60, discharge_w=300.0, home_out_w=300.0))
+            out = svc.run_cascade()
+            results.append((svc._last_plan.mode, svc._last_plan.limit_w, out["battery_feed_in_avg_w"]))
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(results[0][2], -1500)                   # −(1800 − 300)
+
+    def test_too_few_values_single_measurement(self):
+        self.fill(*([-1000.0] * 5))
+        svc = self.service(False, 45.0, 1700.0, pv=2500.0, zd=ZendureStatus(soc=98))
+        out = svc.run_cascade()
+        self.assertIsNone(out["battery_feed_in_avg_n"])
+
+    def test_heater_budget_uses_single_measurement(self):
+        self.fill(*([3000.0] * 20))                             # Mittel: Bezug – darf den Heizstab nicht stören
+        svc = self.service(False, 45.0, -3000.0, soc=100, zd=ZendureStatus(soc=100))
+        svc.run_cascade()
+        self.assertEqual(db.get_cascade_budget("heizstab")["raw_w"], 3000)
 
 
 if __name__ == "__main__":

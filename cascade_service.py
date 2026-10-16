@@ -29,6 +29,7 @@ from clients.solax_client import SolaxClient
 from clients.zendure_client import ZendureClient
 from zendure_control import WRITE_DELTA_W
 from heater_phases import RELEASE_DROP_C, THERMOSTAT_OPEN_W
+import meter_ring
 from config import Config
 from heater_power import PhaseRead
 from heater_power import resolve as resolve_heater_power
@@ -195,12 +196,31 @@ class CascadeService:
             "Sommer" if season == "summer" else "Winter", surplus, effective_surplus, len(order),
         )
 
+        # Batterie-Entscheidung auf das 60-s-Mittel des Hauptzählers ohne Batterie (Ringpuffer des
+        # Wächters, 3-s-Werte; eigene Drosselungen zählen so nicht mit) statt der Einzelmessung: pulsierende Lasten (Herd, Backofen) ließen sie sonst jede Minute
+        # zwischen Laden und Entladen wechseln. Unter 10 Werten: Einzelmessung. Heizstab/Kaskade unverändert.
+        bat_feed_in = float(raw_feed_in)
+        feed_avg: Optional[tuple[float, int]] = None
+        if battery_dev is not None and main_feed_in is not None and zd_status is not None:
+            try:
+                m = meter_ring.mean()                 # Mittel „Netz ohne Batterie“
+            except Exception:
+                m = None
+                log.warning("Zähler-Ringpuffer nicht lesbar", exc_info=True)
+            if m is not None:
+                # mit der jetzigen Batterie-Leistung wieder zusammensetzen (wie eine Zählermessung jetzt)
+                bat_feed_in = -(m[0] + zd_status.charge_w - zd_status.discharge_w)
+                feed_avg = (bat_feed_in, m[1])
+                log.info("Kaskade: Batterie nutzt Einspeisung %.0f W (Mittel 60 s, %d Werte) statt jetzt %d W",
+                         bat_feed_in, m[1], raw_feed_in)
+        bat_delta = bat_feed_in - raw_feed_in
+
         # Grundlast für das Batterie-Entladen: Haus ohne Heizstab und Wallbox.
         # Haus = PV + Netzbezug + Entladung − Ladung (die Batterie ist selbst kein Verbraucher).
         base_load_w: Optional[float] = None
         if battery_dev is not None and pv_total_w is not None and zd_status is not None:
             wb_power = self._wallbox_power_w() or 0.0
-            house_w = pv_total_w - raw_feed_in + zd_status.discharge_w - zd_status.charge_w
+            house_w = pv_total_w - bat_feed_in + zd_status.discharge_w - zd_status.charge_w
             heater_w = actual_device_w.get(heater_dev["id"], 0.0) if heater_dev else 0.0
             base_load_w = max(0.0, house_w - heater_w - wb_power)
 
@@ -229,11 +249,15 @@ class CascadeService:
             n for n, bad in (("Hauptzähler", main_feed_in is None), ("Wechselrichter", pv_total_w is None)) if bad
         ) or None
         # Laden höchstens bis „jetzige Ladung + jetzige Einspeisung“ (nie Leistung, die gerade aus dem Netz käme)
-        export_cap_w = (zd_status.charge_w + raw_feed_in) if zd_status is not None else None
+        export_cap_w = (zd_status.charge_w + bat_feed_in) if zd_status is not None else None
 
         def battery_fn(avail_w: float) -> float:
+            # Mittel statt jetzt: Differenz auf den Rest an der Batterie-Position (walk liefert ≥ 0;
+            # ist dort nichts übrig, bleibt es dabei – kein Laden auf ein besseres Mittel hin)
+            if avail_w > 0:
+                avail_w = max(0.0, avail_w + bat_delta)
             charge_w, reason = self._handle_zendure(
-                battery_dev, avail_w, surplus, zd_status, -raw_feed_in, base_load_w,
+                battery_dev, avail_w, surplus, zd_status, -bat_feed_in, base_load_w,
                 self._active_override(battery_dev), failsafe=battery_failsafe, export_cap_w=export_cap_w,
             )
             p = self._last_plan
@@ -271,6 +295,8 @@ class CascadeService:
             "surplus_watts": surplus, "devices": results, "profile": season,
             # Zahlen für den Entscheidungs-Schnappschuss (decisions.py)
             "effective_surplus_w": int(effective_surplus), "feed_in_w": int(raw_feed_in),
+            "battery_feed_in_avg_w": None if feed_avg is None else int(round(feed_avg[0])),
+            "battery_feed_in_avg_n": None if feed_avg is None else feed_avg[1],
             "feed_in_source": feed_in_source, "controlled_loads_w": int(controlled_loads_w),
             "remaining_w": res.remaining_w, "order": list(order), "storage_temp_c": temp,
             "min_surplus_w": int(settings["min_surplus_watts"]), "allow_grid_draw": bool(settings["allow_grid_draw"]),
