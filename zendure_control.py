@@ -30,6 +30,11 @@ Regeln:
 - Watchdog (`zendure_watchdog.py`, eigener Cron): Regelung seit 5 min nicht gelaufen → Standby.
 - Meldet das Gerät andere Sollwerte als den Regelzustand (App/HEMS, Neustart:
   smartMode=1 schreibt nur ins RAM), wird der Zustand erneut geschrieben.
+- Fremdregler (App-Energieplan/HEMS, 16.10.2026 mehrfach beobachtet): Gerätewerte ändern sich
+  ohne eigenen Schreibbefehl (``FOREIGN_GRACE_S`` nach dem letzten eigenen Befehl) oder das Gerät
+  entlädt gegen den Regelzustand → ``record_foreign`` (Log, Dashboard-Hinweis); der Wächter
+  schreibt dann sofort Standby. Weicht ``minSoc`` am Gerät von der Config ab, wird er
+  nachgeschrieben (Flash, höchstens einmal pro Stunde).
 """
 from __future__ import annotations
 
@@ -89,6 +94,9 @@ def write_guard(wait_s: float = WRITE_LOCK_WAIT_S) -> Iterator[bool]:
             fcntl.flock(f, fcntl.LOCK_UN)
         f.close()
 DEVICE_MAX_W = 2400
+FOREIGN_GRACE_S = 10.0          # so lange nach einem eigenen Befehl keine Fremdregler-Prüfung
+FOREIGN_ACTIVE_S = 15 * 60      # Hinweis bleibt so lange nach der letzten Erkennung stehen
+MIN_SOC_REFIX_S = 3600          # minSoc höchstens einmal pro Stunde nachschreiben (Flash)
 UNLIMITED = float("inf")        # Grundlast nicht begrenzt (Tests/Aufrufer ohne Grundlast-Angabe)
 
 
@@ -275,6 +283,73 @@ def device_drift(st: ZendureStatus, mode: str, limit_w: int) -> str:
     return ", ".join(out)
 
 
+def _mode_text(mode: str, limit_w: int) -> str:
+    return {"charge": f"Laden {limit_w} W", "discharge": f"Entladen {limit_w} W"}.get(mode, "Standby")
+
+
+def foreign_deviation(st: ZendureStatus, mode: str, limit_w: int, *, target_soc: float = 100.0,
+                      min_soc: float = 0.0) -> str:
+    """Hat jemand anderes die Sollwerte gesetzt? Leer = nein (oder Gerät meldet sie nicht).
+
+    Anders als ``device_drift`` zählt acMode allein nicht, und ein niedrigeres Limit nicht dort,
+    wo das Gerät selbst stoppt (Laden bei SoC ≥ Ziel − 1, Entladen bei SoC ≤ Mindest-SoC + 1)."""
+    props = st.props or {}
+    try:
+        have_in, have_out = float(props["inputLimit"]), float(props["outputLimit"])
+    except (KeyError, TypeError, ValueError):
+        return ""
+    want_in = limit_w if mode == "charge" else 0
+    want_out = limit_w if mode == "discharge" else 0
+    soc = st.soc
+    out = []
+    if have_out - want_out > WRITE_DELTA_W:
+        out.append(f"Gerät entlädt bis {have_out:.0f} W" if mode != "discharge"
+                   else f"outputLimit {have_out:.0f} statt {want_out}")
+    elif want_out - have_out > WRITE_DELTA_W and not (soc is not None and soc <= min_soc + 1):
+        out.append(f"outputLimit {have_out:.0f} statt {want_out}")
+    if have_in - want_in > WRITE_DELTA_W:
+        out.append(f"inputLimit {have_in:.0f} statt {want_in}")
+    elif want_in - have_in > WRITE_DELTA_W and not (soc is not None and soc >= target_soc - 1):
+        out.append(f"inputLimit {have_in:.0f} statt {want_in}")
+    if not out:
+        return ""
+    return ", ".join(out) + f" (Regelung: {_mode_text(mode, limit_w)})"
+
+
+def _age_s(ts: Optional[str], now: Optional[datetime] = None) -> Optional[float]:
+    if not ts:
+        return None
+    try:
+        return ((now or datetime.now()) - datetime.fromisoformat(ts)).total_seconds()
+    except ValueError:
+        return None
+
+
+def record_foreign(detail: str, source: str) -> bool:
+    """Fremdregler-Erkennung speichern (Dashboard) und loggen; True = neue Episode."""
+    now = datetime.now()
+    ctl = db.get_zendure_ctl()
+    age = _age_s(ctl.get("foreign_at"), now)
+    new = age is None or age > FOREIGN_ACTIVE_S
+    iso = now.isoformat(timespec="seconds")
+    upd = {"foreign_at": iso, "foreign_detail": f"{detail} – {source}"}
+    if new:
+        upd["foreign_since"] = iso
+        log.error("Zendure: Fremdregler aktiv – %s (%s). HEMS / Energieplan in der Zendure-App prüfen", detail, source)
+    else:
+        log.info("Zendure: Fremdregler weiter aktiv – %s (%s)", detail, source)
+    db.set_zendure_ctl(**upd)
+    return new
+
+
+def foreign_status(ctl: Optional[dict] = None) -> dict:
+    """Für das Dashboard: active (letzte Erkennung < FOREIGN_ACTIVE_S), since, last, detail."""
+    ctl = ctl if ctl is not None else db.get_zendure_ctl()
+    age = _age_s(ctl.get("foreign_at"))
+    return {"active": age is not None and age <= FOREIGN_ACTIVE_S, "since": ctl.get("foreign_since"),
+            "last": ctl.get("foreign_at"), "detail": ctl.get("foreign_detail")}
+
+
 class ZendureControl:
     def __init__(self, cfg, client: ZendureClient, dry_run: bool = False) -> None:
         self.cfg = cfg
@@ -314,7 +389,8 @@ class ZendureControl:
                 with write_guard():
                     ok = not self.dry_run and self.client.set_mode(None, input_limit=0, output_limit=0)
                 if ok:
-                    db.set_zendure_ctl(mode="idle", limit_w=0, changed_at=now.isoformat(timespec="seconds"))
+                    db.set_zendure_ctl(mode="idle", limit_w=0, changed_at=now.isoformat(timespec="seconds"),
+                                       written_at=datetime.now().isoformat(timespec="seconds"))
                     text += " – neutral gestellt (Limits 0)"
             db.set_zendure_ctl(decision=text, decided_at=now.isoformat(timespec="seconds"))
             return Plan(ctl["mode"], ctl["limit_w"], False, text, "unreachable", code="device_unreachable",
@@ -322,6 +398,11 @@ class ZendureControl:
 
         if ctl["fail_count"]:
             db.set_zendure_ctl(fail_count=0)
+        if not self.dry_run:
+            try:
+                self._check_foreign(st, ctl, now)
+            except Exception:
+                log.warning("Zendure: Fremdregler-Prüfung fehlgeschlagen", exc_info=True)
 
         changed_at = datetime.fromisoformat(ctl["changed_at"]) if ctl["changed_at"] else None
         since = (now - changed_at).total_seconds() if changed_at else 1e9
@@ -353,7 +434,7 @@ class ZendureControl:
                     else:
                         ok = self.client.set_mode(None, input_limit=0, output_limit=0)
                 if ok:
-                    upd = dict(mode=p.mode, limit_w=p.limit_w)
+                    upd = dict(mode=p.mode, limit_w=p.limit_w, written_at=datetime.now().isoformat(timespec="seconds"))
                     if p.mode != ctl["mode"]:
                         upd["changed_at"] = now.isoformat(timespec="seconds")
                     db.set_zendure_ctl(**upd)
@@ -365,6 +446,28 @@ class ZendureControl:
         db.set_zendure_ctl(decision=reason, decided_at=now.isoformat(timespec="seconds"))
         p.reason = reason
         return p
+
+    def _check_foreign(self, st: ZendureStatus, ctl: dict, now: datetime) -> None:
+        """Fremdregler (Sollwerte ohne eigenen Befehl geändert) und minSoc am Gerät prüfen."""
+        age = _age_s(ctl.get("written_at"), now)
+        if age is None or age >= FOREIGN_GRACE_S:
+            dev = foreign_deviation(st, ctl["mode"], ctl["limit_w"], target_soc=self.zc.target_soc,
+                                    min_soc=self.zc.min_soc)
+            if dev:
+                record_foreign(dev, "Minutenlauf")
+        have = st.props.get("minSoc") if st.props else None
+        try:
+            have = int(float(have))
+        except (TypeError, ValueError):
+            return
+        want = int(round(float(self.zc.min_soc) * 10))
+        if have == want:
+            return
+        record_foreign(f"Mindest-SoC am Gerät {have / 10:g} % statt {self.zc.min_soc:g} %", "Minutenlauf")
+        fixed = _age_s(ctl.get("min_soc_fixed_at"), now)
+        if fixed is None or fixed >= MIN_SOC_REFIX_S:
+            db.set_zendure_ctl(min_soc_fixed_at=now.isoformat(timespec="seconds"))
+            apply_min_soc(self.client, self.zc.min_soc)
 
 
 def force_standby(client: ZendureClient, reason: str, dry_run: bool = False) -> bool:
@@ -380,7 +483,7 @@ def force_standby(client: ZendureClient, reason: str, dry_run: bool = False) -> 
         ok = client.set_mode(None, input_limit=0, output_limit=0)
     try:
         if ok:
-            db.set_zendure_ctl(mode="idle", limit_w=0, changed_at=now)
+            db.set_zendure_ctl(mode="idle", limit_w=0, changed_at=now, written_at=now)
         # decided_at bleibt: das ist der Herzschlag der Regelung, den der Watchdog prüft
         db.set_zendure_ctl(decision=f"Standby: {reason}" if ok else f"Standby fehlgeschlagen: {reason}")
     except Exception:

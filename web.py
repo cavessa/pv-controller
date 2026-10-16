@@ -191,6 +191,32 @@ def _wallbox_decision_to_dict(
     }
 
 
+def _battery_priority(cfg: Config, temp: Optional[float]) -> Optional[int]:
+    """Ladesollwert der Batterie, wenn sie gerade lädt (oder auf Leistung wartet) und im aktiven
+    Profil vor dem Heizstab-Schritt steht, der jetzt zählt („bis Min“ unterhalb Min, sonst „bis
+    Max“); sonst None. Für die Überschrift statt „Wasserspeicher priorisiert“."""
+    if not (cfg.zendure_active and cfg.zendure.control_enabled):
+        return None
+    try:
+        from cascade_plan import BATTERY, HEATER_MAX, HEATER_MIN
+        from db import get_cascade_profile, get_zendure_ctl
+        ctl = get_zendure_ctl()
+        if ctl["mode"] != "charge" or not ctl["decided_at"] or (
+            datetime.now() - datetime.fromisoformat(ctl["decided_at"])
+        ).total_seconds() > 180:
+            return None
+        season = "summer" if cfg.summer_mode.enabled else "winter"
+        cmin = cfg.comfort_min_for(season)
+        order = get_cascade_profile(season, cmin is not None)
+        heater = HEATER_MIN if (HEATER_MIN in order and cmin is not None and temp is not None
+                                and temp < cmin) else HEATER_MAX
+        if BATTERY in order and heater in order and order.index(BATTERY) < order.index(heater):
+            return int(ctl["limit_w"] or 0)
+    except Exception:
+        log.debug("Batterie-Vorrang nicht bestimmbar", exc_info=True)
+    return None
+
+
 def _summary(result: ControllerResult, cfg: Config) -> dict[str, str]:
     """Eine kompakte UI-Zusammenfassung des aktuellen Zustands."""
     r = result.readings
@@ -260,6 +286,13 @@ def _summary(result: ControllerResult, cfg: Config) -> dict[str, str]:
             "Keine neuen Phasen."
         )
         severity = "ok"
+    elif (bat := _battery_priority(cfg, temp)) is not None:
+        state = "Batterie priorisiert"
+        reason = (
+            f"Batterie steht im Profil vor dem Heizstab und lädt zuerst ({bat} W); "
+            f"der Heizstab bekommt nur den Rest. Wasserspeicher {temp:.1f} °C."
+        )
+        severity = "ok"
     else:  # BELOW_RESUME
         state = "Wasserspeicher priorisiert"
         reason = (
@@ -326,8 +359,20 @@ def _zendure_status_block(cfg: Config, r) -> dict[str, Any]:
         "decision": ctl["decision"] if z.control_enabled else None,
         "ctl_mode": ctl["mode"] if z.control_enabled else None,
         "limit_w": ctl["limit_w"] if z.control_enabled else None,
+        "foreign": _zendure_foreign(ctl, st) if z.control_enabled else None,
         **energy,
     }
+
+
+def _zendure_foreign(ctl: dict, st) -> dict[str, Any]:
+    """Fremdregler (App-Energieplan/HEMS) für Dashboard und Batterie-Card; dazu minSoc am Gerät."""
+    from zendure_control import foreign_status
+    out = foreign_status(ctl)
+    try:
+        out["device_min_soc"] = float(st.props["minSoc"]) / 10 if st is not None else None
+    except (KeyError, TypeError, ValueError):
+        out["device_min_soc"] = None
+    return out
 
 
 def _device_alerts(cfg: Config) -> list[dict[str, Any]]:

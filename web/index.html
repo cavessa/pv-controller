@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=86">
+  <link rel="stylesheet" href="/static/styles.css?v=88">
 </head>
 <body>
   <div class="app-shell">
@@ -37,6 +37,7 @@
     <section id="tab-dashboard" class="tab-panel active">
 
       <div id="device-banner" class="wb-banner warn hidden"></div>
+      <div id="zd-foreign-banner" class="wb-banner error zd-foreign-banner hidden" role="alert"></div>
       <div id="wb-banner" class="wb-banner hidden"></div>
       <div id="cascade-alert-strip" class="cascade-alert-strip hidden"></div>
 
@@ -72,7 +73,7 @@
         <div id="kpi-gauges"><div class="skeleton skeleton-chart" style="height:72px"></div></div>
       </div>
 
-      <div class="card">
+      <div class="card" id="house-card">
         <h2>Hausverbrauch</h2>
         <div class="hv-body">
           <div class="hv-left">
@@ -97,7 +98,7 @@
         <div id="cascade-mini-footer" class="cascade-mini-footer"></div>
       </div>
 
-      <div class="card storage-card">
+      <div class="card storage-card" id="storage-card">
         <div class="card-head">
           <h2><span id="storage-title">Wasserspeicher · heute</span> <span class="dot hidden" id="storage-dot"></span></h2>
           <div class="seg" id="storage-range" role="group" aria-label="Zeitraum">
@@ -136,6 +137,7 @@
           <span class="dot hidden" id="zd-dot"></span>
         </div>
         <div class="big-temp" id="zd-soc">–</div>
+        <div class="zd-foreign hidden" id="zd-foreign" role="alert"></div>
         <div class="zd-bar">
           <div class="zd-cover" id="zd-cover"></div>
           <div class="zd-minmark" id="zd-minmark"></div>
@@ -177,7 +179,7 @@
       </div><!-- .dashboard-left -->
       <div class="dashboard-right">
       <div class="grid">
-        <div class="card">
+        <div class="card" id="pv-card">
           <h2>PV Erzeugung</h2>
           <div class="pv-live-total" id="pv-live-total"><span class="skeleton">5123 W</span></div>
           <div id="pv-peak-display" style="font-size:12px;color:#6a6d75;text-align:center;margin-top:4px"><span class="skeleton">Tageshoch: 6420 W um 13:10</span></div>
@@ -198,7 +200,7 @@
           <div id="pv-strings-chart-wrap" class="temp-chart-wrap"><div class="skeleton skeleton-chart"></div></div>
         </div>
 
-        <div class="card">
+        <div class="card" id="heater-card">
           <h2>Heizstab Phasen</h2>
           <div class="phases" id="phases"><div class="skeleton skeleton-chart" style="height:56px"></div></div>
           <div id="phase-timeline" class="phase-tl-wrap hidden"></div>
@@ -289,7 +291,7 @@
       </div><!-- .dashboard-cols -->
 
       <div class="dashboard-bottom">
-        <div class="card">
+        <div class="card" id="meter-card">
         <div class="card-head">
           <h2>Hauptzähler</h2>
           <span class="house-max" id="house-dash-max"></span>
@@ -1036,7 +1038,7 @@
     </form>
   </div>
 
-  <script src="/static/app.js?v=20261016b" defer></script>
+  <script src="/static/app.js?v=20261016d" defer></script>
   <script src="/static/heating.js?v=20261014a" defer></script>
   <script src="/static/shutters.js?v=20261013j" defer></script>
 </body>

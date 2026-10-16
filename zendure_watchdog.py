@@ -8,6 +8,10 @@ jemand einen neuen schreibt.
 - Wallbox-Wächter (Schleife bis kurz vor Minutenende, alle ``TICK_S``): Entlädt die Batterie
   laut Regelzustand oder Gerät und lädt die Wallbox (go-e car=2 oder > 100 W, nicht lesbar =
   lädt) → sofort Standby. So liefert der Akku beim Ladestart höchstens ein paar Sekunden mit.
+- Fremdregler-Wächter (gleicher Takt, liest das Gerät jeden Takt, ~30–130 ms): Weichen die
+  Gerätewerte in zwei Takten hintereinander vom Regelzustand ab, ohne dass pvcontroller in den
+  letzten ``FOREIGN_GRACE_S`` geschrieben hat (App-Energieplan/HEMS), → Hinweis + sofort
+  Standby (höchstens alle ``FOREIGN_STANDBY_MIN_S``).
 - ``--boot`` (Cron ``@reboot``): Standby unbedingt, mit Wiederholung bis das Gerät antwortet.
 
 Prozess-Regeln (Cron: ``flock -n /tmp/pvc-zendure-watch.lock`` → nie zwei Instanzen):
@@ -35,6 +39,8 @@ CODE_LOCK_PATH = "/tmp/pvc-code.lock"
 STALE_S = 5 * 60
 TICK_S = 3.0
 LOOP_END_S = 58.0          # Schleife endet bei Sekunde 58 der Minute (Cron startet zur vollen Minute neu)
+FOREIGN_TICKS = 2           # so viele Takte in Folge, bevor ein Fremdeingriff gilt
+FOREIGN_STANDBY_MIN_S = 30.0
 BOOT_TRIES = 12
 BOOT_WAIT_S = 15.0
 
@@ -151,17 +157,48 @@ def guard_tick(cfg, client, goe, device_discharging: bool = False, state: Option
     return "standby"
 
 
+def foreign_tick(cfg, client, st, state: dict, clock: Callable[[], float] = time.time) -> Optional[str]:
+    """Fremdregler: Gerät weicht ``FOREIGN_TICKS`` Takte in Folge vom Regelzustand ab, ohne eigenen
+    Befehl in den letzten ``FOREIGN_GRACE_S`` → Hinweis + Standby. None = nichts erkannt."""
+    import db
+    from zendure_control import FOREIGN_GRACE_S, _age_s, force_standby, foreign_deviation, record_foreign
+    if st is None or cfg.runtime.dry_run:                  # dry_run: Regelzustand ≠ Gerät (schreibt nie)
+        state.pop("foreign_n", None)
+        return None
+    ctl = db.get_zendure_ctl()
+    age = _age_s(ctl.get("written_at"))
+    dev = "" if age is not None and age < FOREIGN_GRACE_S else foreign_deviation(
+        st, ctl["mode"], ctl["limit_w"], target_soc=cfg.zendure.target_soc, min_soc=cfg.zendure.min_soc)
+    key = (ctl["mode"], ctl["limit_w"])
+    if not dev or state.get("foreign_key") != key:
+        state["foreign_key"], state["foreign_n"] = key, (1 if dev else 0)
+        return None
+    state["foreign_n"] = state.get("foreign_n", 0) + 1
+    if state["foreign_n"] < FOREIGN_TICKS:
+        return None
+    record_foreign(dev, "Wächter")
+    now = clock()
+    if now - state.get("foreign_standby_at", -1e18) < FOREIGN_STANDBY_MIN_S:
+        return "foreign"
+    state["foreign_standby_at"] = now
+    force_standby(client, f"Fremdregler aktiv ({dev}) – HEMS in der Zendure-App prüfen", cfg.runtime.dry_run)
+    state["foreign_n"] = 0
+    return "foreign_standby"
+
+
+def _out_limit(st) -> float:
+    try:
+        return float(st.props.get("outputLimit", 0) or 0) if st is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def guard_loop(cfg, client, goe, *, end_at: float, tick_s: float = TICK_S,
                stop: Callable[[], Optional[str]] = lambda: None,
                sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.time) -> list[str]:
-    """Wächter-Schleife bis ``end_at`` (Unix-Zeit); ``stop()`` → Grund zum Beenden oder None."""
-    st = client.get_status()
-    device_discharging = False
-    if st is not None:
-        try:
-            device_discharging = float(st.props.get("outputLimit", 0) or 0) > 0
-        except (TypeError, ValueError):
-            device_discharging = False
+    """Wächter-Schleife bis ``end_at`` (Unix-Zeit); ``stop()`` → Grund zum Beenden oder None.
+
+    Liest das Gerät in jedem Takt (Wallbox-Wächter: entlädt es gerade? Fremdregler-Wächter)."""
     state: dict = {}
     out: list[str] = []
     while clock() < end_at:
@@ -171,7 +208,11 @@ def guard_loop(cfg, client, goe, *, end_at: float, tick_s: float = TICK_S,
             out.append("stop")
             break
         try:
-            out.append(guard_tick(cfg, client, goe, device_discharging, state))
+            st = client.get_status()
+            res = guard_tick(cfg, client, goe, _out_limit(st) > 0, state)
+            if res != "standby":
+                res = foreign_tick(cfg, client, st, state, clock) or res
+            out.append(res)
         except Exception:
             log.exception("Zendure-Wächter: Fehler im Takt")
             out.append("error")

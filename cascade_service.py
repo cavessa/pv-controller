@@ -27,6 +27,7 @@ from cascade_plan import BATTERY, HEATER_MAX, HEATER_MIN, HEATER_STAGES, HeaterC
 from clients.shelly_client import Shelly3EMClient, ShellyPlugClient, ShellyStorageTempClient
 from clients.solax_client import SolaxClient
 from clients.zendure_client import ZendureClient
+from zendure_control import WRITE_DELTA_W
 from config import Config
 from heater_power import PhaseRead
 from heater_power import resolve as resolve_heater_power
@@ -229,6 +230,9 @@ class CascadeService:
                 code = "priority_first"               # Batterie steht im Profil vor dem Heizstab
             results.append(self._result(battery_dev, reason, p.action, code, {**p.data, "limit_w": p.limit_w}))
             battery_plan["charge_w"] = charge_w
+            # Batterie wartet (Einspeise-Deckel): bekommt weniger, als ihr zusteht
+            battery_plan["waiting"] = (p.mode == "charge" and p.want_w is not None
+                                       and p.want_w - p.limit_w > WRITE_DELTA_W)
             return charge_w
 
         def device_fn(key: str, remaining: float) -> float:
@@ -243,6 +247,7 @@ class CascadeService:
             reason = self._store_heater_budget(
                 heater_dev, gross_w, battery_w, remaining_w, surplus, season, temp, ctx,
                 actual_heater_w, self._active_override(heater_dev),
+                battery_waiting=bool(battery_plan.get("waiting")),
             )
             results.append(self._result(heater_dev, reason, *self._last_code))
 
@@ -264,6 +269,7 @@ class CascadeService:
     def _store_heater_budget(
         self, device: dict, gross_w: int, battery_w: int, remaining_w: int, surplus: int, season: str,
         temp: Optional[float], ctx: HeaterCtx, actual_w: float, override: Optional[str],
+        battery_waiting: bool = False,
     ) -> str:
         """Heizstab-Budget für den Controller ablegen.
 
@@ -272,6 +278,10 @@ class CascadeService:
         sofort, wenn die Batterie voll wird (kein Nachlaufen des Mittelwerts).
         Welche Phasen innerhalb des Budgets laufen, entscheidet allein der Controller
         (heater_phases.decide_phases; Mindestzeiten, Hysterese, Max-Temp).
+
+        ``battery_waiting``: die Batterie (im Profil davor) bekommt wegen des Einspeise-Deckels
+        weniger, als ihr zusteht → auch fürs Abschalten zählt der jetzige Überschuss statt des
+        Mittels, damit der Heizstab im selben Lauf Platz macht (Mindestlaufzeit gilt weiter).
         """
         h = self.cfg.heater
         n_ph = h.enabled_phase_count           # stillgelegte Phasen zählen nicht im Budget
@@ -287,6 +297,8 @@ class CascadeService:
             # das noch hohe Mittel den Heizstab sonst aus dem Netz starten (mit Batterie nimmt sie zudem den
             # Rest). Abschalten nutzt weiter das kurze Mittel.
             up = min(up, gross_w)
+            if battery_waiting:
+                down = min(down, gross_w)
             budget, budget_down, force = int(round(up)) - battery_w, int(round(down)) - battery_w, None
         set_cascade_budget(device["id"], budget, gross_w, force, budget_down)
 
@@ -306,7 +318,8 @@ class CascadeService:
             stage = " (bis Min)" if ctx.stage_active(HEATER_MIN) else " (Min erreicht)"
         reason = (
             f"Budget {budget} W zu / {budget_down} W ab (Überschuss roh {gross_w} W, Mittel "
-            f"{h.budget_smooth_min}/{h.budget_smooth_down_min} min, abzüglich Batterie {battery_w} W jetzt) "
+            f"{h.budget_smooth_min}/{h.budget_smooth_down_min} min, abzüglich Batterie {battery_w} W jetzt"
+            + ("; Batterie wartet → ab ohne Mittel" if battery_waiting else "") + ") "
             f"→ bis zu {target} Phase(n); Startschwelle {int(h.phase_power_w - h.grid_assist_w)} W, "
             f"Ist {int(actual_w)} W"
             + (f"; Speicher {temp:.1f} °C{stage}" if temp is not None else "; Speichertemperatur unbekannt")
@@ -317,6 +330,8 @@ class CascadeService:
                 "rest_w": budget, "threshold_w": start_w, "target_phases": target, "actual_w": int(actual_w),
                 "smooth_min": h.budget_smooth_min, "grid_assist_w": int(h.grid_assist_w),
                 "temp_c": None if temp is None else round(temp, 1)}
+        if battery_waiting:
+            data["battery_waiting"] = True
         if force:
             code = "manual_override"
             data["mode"] = "an" if force == "on" else "aus"

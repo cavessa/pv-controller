@@ -1577,6 +1577,14 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 .zd-cover { position: absolute; top: 0; right: 0; bottom: 0; width: 100%; background: #23262d; transition: width 0.5s ease; }
 .zd-minmark { position: absolute; top: -2px; bottom: -2px; width: 2px; background: rgba(255,255,255,0.75); }
 .badge.zd-orange { color: #e8a435; border-color: rgba(232,164,53,0.4); }
+.zd-foreign {
+  margin: 8px 0 10px; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid rgba(248,113,113,0.55); background: rgba(248,113,113,0.12);
+  color: var(--c-grid); font-size: 13px; line-height: 1.5;
+}
+.zd-foreign.hidden { display: none; }
+.zd-foreign-meta { color: var(--text-muted); font-size: 12px; }
+.wb-banner.zd-foreign-banner { font-weight: 600; border-color: rgba(248,113,113,0.6); background: rgba(248,113,113,0.12); }
 .zd-decision { margin-top: 10px; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
 .zd-decision.hidden, #zd-day-card.hidden, #zd-month-card.hidden { display: none; }
 .cl-zd-dis { color: #e8a435; background: rgba(232,164,53,0.1); }
@@ -1954,3 +1962,18 @@ body.sheet-open { overflow: hidden; }
 .verlauf-subnav { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
 .verlauf-subnav::-webkit-scrollbar { display: none; }
 @media (max-width: 768px) { .verlauf-nav-btn { flex: 1 0 auto; white-space: nowrap; padding: 8px 12px; } }   /* Desktop: gleich breite Knöpfe wie bisher */
+
+/* Energiefluss: antippbare Kacheln → Card (initFlowTaps) */
+.ef-tap { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.ef-tap > rect { transition: stroke-width .15s ease, filter .15s ease; }
+.ef-tap:hover > rect, .ef-tap:focus-visible > rect { stroke-width: 2.5; filter: brightness(1.25); }
+.ef-tap:active > rect { stroke-width: 3; filter: brightness(1.4); }
+.ef-tap:focus { outline: none; }
+#tab-dashboard .card { scroll-margin-top: var(--sticky-h, 72px); }
+.card.card-pulse { animation: card-pulse 1s ease-out; }
+@keyframes card-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(46,216,163,0.0); border-color: var(--line); }
+  25%  { box-shadow: 0 0 0 3px rgba(46,216,163,0.55); border-color: #2ed8a3; }
+  100% { box-shadow: 0 0 0 0 rgba(46,216,163,0.0); }
+}
+@media (prefers-reduced-motion: reduce) { .card.card-pulse { animation-duration: .01s; } }

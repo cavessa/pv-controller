@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-10-16 – Batterie: Fremdregler (App/HEMS) erkennen → Standby + roter Hinweis; Heizstab weicht der wartenden Batterie
+
+Anlass: In der Zendure-App schaltete sich HEMS wieder ein. Der App-Energieplan regelte dann mit Hauptzähler auf 0 W: am 16.10. 13:01–14:45 und 15:14–15:30 änderten sich `inputLimit` (alle 20 s, z. B. 1260 → 2253 → 1429 W) und `outputLimit` (Entladen 193–1963 W gegen den Regelzustand, teils in den Heizstab) ohne Befehl von pvcontroller. Zusätzlich stand `minSoc` am Gerät auf 50 (5 %) statt 100.
+- **Erkennung** (`zendure_control.foreign_deviation`): Gerätewerte weichen > 50 W vom Regelzustand ab, ohne dass pvcontroller in den letzten 10 s geschrieben hat (`zendure_ctl.written_at`, neu, bei jedem eigenen Befehl). Fälle: Gerät entlädt gegen den Regelzustand, `inputLimit`/`outputLimit` anders als geschrieben. acMode allein zählt nicht. Kein Fehlalarm, wo das Gerät selbst stoppt: Laden bei SoC ≥ Ziel − 1, Entladen bei SoC ≤ Mindest-SoC + 1.
+- **Wächter** (`zendure_watchdog.py`): liest das Gerät jetzt in jedem 3-s-Takt (bisher nur beim Minutenstart; damit sieht auch der Wallbox-Wächter Entladen nach App-Eingriff sofort). Zwei Takte hintereinander Abweichung → `record_foreign` + **sofort Standby** (Log „Standby geschrieben … Fremdregler aktiv (…) – HEMS in der Zendure-App prüfen“). Standby höchstens alle 30 s, solange der Fremdregler weiter eingreift. Bei dry_run nur beobachten.
+- **Minutenlauf**: prüft dasselbe vor der Planung (Log „Fremdregler aktiv … (Minutenlauf)“, schreibt dann wie bisher den Regelzustand neu). `minSoc` am Gerät ≠ Config → Hinweis und **nachschreiben** (Flash, mit Rücklesen, höchstens einmal pro Stunde, `min_soc_fixed_at`).
+- **Log**: neue Episode = ERROR „Zendure: Fremdregler aktiv – … HEMS / Energieplan in der Zendure-App prüfen“, weitere Erkennungen INFO.
+- **Dashboard**: roter Hinweis oben („Fremdregler aktiv – HEMS in der Zendure-App prüfen (seit 15:14, zuletzt 15:29)“) und in der Batterie-Card mit Detail (z. B. „Gerät entlädt bis 337 W (Regelung: Laden 0 W) – Wächter“), dazu der Mindest-SoC am Gerät. Steht 15 min nach der letzten Erkennung. API: `zendure.foreign {active, since, last, detail, device_min_soc}`.
+- HEMS selbst ist über die lokale API nicht direkt lesbar. Die Properties enthalten kein `hems*`-Feld, und `smartMode`, `IOTState`, `bindstate`, `oldMode` sind bei HEMS aus dieselben wie vorher unbekannt. Ein Property-Protokoll (alle 5 s) läuft, um ein Merkmal zu finden, falls HEMS wieder angeht.
+- **Heizstab weicht der wartenden Batterie** (Fall 14:06): Bekommt die Batterie wegen des Einspeise-Deckels weniger, als ihr zusteht (Wunsch − Sollwert > 50 W), gilt auch fürs Abschalten der jetzige Überschuss statt des 2-min-Mittels (`budget_down = min(Mittel, jetzt) − Batterie`). Der Heizstab gibt seine Phase so im selben Lauf ab. Die Mindestlaufzeit (420 s) bleibt (User-Entscheidung). Begründung im Log: „Batterie wartet → ab ohne Mittel“.
+- **Überschrift „Batterie priorisiert“** statt „Wasserspeicher priorisiert“, wenn die Batterie lädt oder wartet und im aktiven Profil vor dem gerade zählenden Heizstab-Schritt steht („bis Min“ unterhalb Min, sonst „bis Max“).
+- Gemessen (Prod-Gerät, nur lesen): `/properties/report` antwortet in 32 ms (Median), 130 ms (p95), max. 200 ms bei 2 Abfragen/s, Werte live. 3-s-Takt = ~20 Abfragen/min. `app.js?v=20261016d`, `styles.css?v=88`.
+- Mindest-SoC am echten Gerät geprüft: 50 → 150 → 100 geschrieben und zurückgelesen (Einheit 0,1 % bestätigt).
+- Tests `tests/test_zendure_foreign.py` (35): Abweichung (Entladen gegen Laden, inputLimit, kleine Differenzen, acMode allein, Gerät voll/leer), Wächter (2 Takte → Standby, Schonfrist nach eigenem Befehl, Einzelausreißer, dauerhafter Fremdregler → Standby höchstens alle 30 s, dry_run, passendes Gerät), Minutenlauf (Hinweis, written_at, minSoc einmal pro Stunde, dry_run), Status-Block, Heizstab bei wartender/voller Batterie, Überschrift (Winter, Sommer kalt/warm, Batterie idle). Suite: 716 grün.
+
+## 2026-10-16 – Energiefluss: Kacheln antippbar → Card
+
+- Jede Kachel im Energiefluss-Diagramm ist antippbar und scrollt weich zur passenden Card im Dashboard: PV/Pergola → „PV Erzeugung“, Netz → „Hauptzähler“, Haus → „Hausverbrauch“, Heizstab → „Heizstab Phasen“, Wasserspeicher → „Wasserspeicher“, Batterie → „Batterie“, Wallbox → „Wallbox (go-e)“, eBike/Shelly → „Kaskade“ (dort stehen die Geräte). Die Card pulsiert 1 s mit grünem Rahmen.
+- Sticky Kopfzeile: `scroll-margin-top` aus ihrer echten Höhe (+12 px, CSS-Variable `--sticky-h`, bei Größenänderung neu). Bei „Bewegung reduzieren“ ohne Animation.
+- Tap-Feedback: Zeiger-Cursor, Rahmen wird beim Hover/Fokus/Antippen kräftiger; per Tastatur (Tab + Enter/Leertaste) bedienbar (`role="button"`, `aria-label`). Ein Handler auf dem Container, ohne neue Library. Neue Card-IDs: `pv-card`, `house-card`, `heater-card`, `storage-card`, `meter-card`. `app.js?v=20261016c`, `styles.css?v=87`.
+
 ## 2026-10-16 – Batterie: nie entladen, solange die Wallbox lädt (Wächter 3 s); Mindest-Ladestand einstellbar
 
 Regel (User): Solange die Wallbox lädt, wird nie aus der Batterie entladen – Auto und Haus kommen dann aus dem Netz. Laden aus PV-Überschuss bleibt erlaubt.

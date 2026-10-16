@@ -484,7 +484,7 @@ function renderEnergyFlow(heater, wb, cs, zd) {
     icon: "🌡️", label: "WASSERSPEICHER",
     value: heater.storage_temp != null ? fmtTemp(heater.storage_temp) : "–",
     sub: speicherStatusLabel(heater.temperature_status),
-    aktiv: heatOn, flow: heatOn,
+    aktiv: heatOn, flow: heatOn, target: "storage-card",
   });
   if (zd?.enabled) {
     // Batterie: Laden = Linie Haus → Batterie, Entladen = Batterie → Haus
@@ -496,7 +496,7 @@ function renderEnergyFlow(heater, wb, cs, zd) {
       value: !zd.reachable ? "n/a" : zd.soc != null ? Math.round(zd.soc) + " %" : "–",
       sub: !zd.reachable ? "offline" : st === "charging" ? `lädt ${kwOrW(pw)}` : st === "discharging" ? `entlädt ${kwOrW(pw)}` : "Standby",
       aktiv: st === "charging" || st === "discharging", flow: st === "charging" || st === "discharging",
-      rev: st === "discharging",
+      rev: st === "discharging", target: "zendure-card",
     });
   }
   if (wb.enabled) {
@@ -510,7 +510,7 @@ function renderEnergyFlow(heater, wb, cs, zd) {
         wbS = wbSt.fup ? "Eco/PV" : "manuell";
       }
     }
-    bots.push({ icon: "🚗", label: "WALLBOX", value: wbV, sub: wbS, aktiv: wbOn, flow: wbOn });
+    bots.push({ icon: "🚗", label: "WALLBOX", value: wbV, sub: wbS, aktiv: wbOn, flow: wbOn, target: "wallbox-card" });
   }
   shellys.forEach(d => {
     const pw    = d.last_status_power_w ?? 0;
@@ -522,7 +522,7 @@ function renderEnergyFlow(heater, wb, cs, zd) {
       label: (d.name || "Shelly").toUpperCase().slice(0, 11),
       value: d.is_on ? pwStr : "aus",
       sub: d.is_on ? "aktiv" : "wartet",
-      aktiv, flow,
+      aktiv, flow, target: "cascade-mini",          // eBike/Shelly: Kaskade-Card listet die Geräte
     });
   });
 
@@ -542,12 +542,14 @@ function renderEnergyFlow(heater, wb, cs, zd) {
   const L    = (x1, y1, x2, y2, d) =>
     `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="ef-line ef-${d}"/>`;
 
-  function node(x, y, w, nh, { icon, label, value, sub, aktiv, accent = ACTIVE, always = false, dots = null }) {
+  function node(x, y, w, nh, { icon, label, value, sub, aktiv, accent = ACTIVE, always = false, dots = null, target = null }) {
     const op  = !aktiv && !always ? ' opacity="0.35"' : "";
+    // antippbar: scrollt zur passenden Card (Klick-Handler einmalig auf #flow-diagram, siehe initFlowTaps)
+    const tap = target ? ` class="ef-tap" data-target="${target}" role="button" tabindex="0" aria-label="${esc(label)} – Details"` : "";
     const bdr = aktiv || always ? accent : "rgba(255,255,255,0.12)";
     const bg  = aktiv || always ? rgba(accent, 0.07) : "rgba(255,255,255,0.04)";
     const vc  = aktiv || always ? accent : "rgba(255,255,255,0.6)";
-    return `<g transform="translate(${x},${y})"${op}>
+    return `<g transform="translate(${x},${y})"${op}${tap}>
   <rect width="${w}" height="${nh}" rx="10" fill="${bg}" stroke="${bdr}" stroke-width="1.5"/>
   <text x="${w/2}" y="16" text-anchor="middle" font-size="14" font-family="'DM Mono',monospace">${icon}</text>
   <text x="${w/2}" y="27" text-anchor="middle" font-size="${label.length > 11 ? 5.4 : 6.5}" fill="rgba(255,255,255,0.5)" letter-spacing="${label.length > 11 ? 0.4 : 1}" font-family="'DM Mono',monospace">${esc(label)}</text>
@@ -561,7 +563,7 @@ function renderEnergyFlow(heater, wb, cs, zd) {
   }
 
   function hausNode() {
-    return `<g transform="translate(${hs.x},${hs.y})">
+    return `<g transform="translate(${hs.x},${hs.y})" class="ef-tap" data-target="house-card" role="button" tabindex="0" aria-label="Haus – Details">
   <rect width="${H_W}" height="${NH}" rx="10" fill="rgba(46,216,163,0.05)" stroke="${ACTIVE}55" stroke-width="2"/>
   <text x="${H_W/2}" y="16" text-anchor="middle" font-size="14" font-family="'DM Mono',monospace">🏠</text>
   <text x="${H_W/2}" y="27" text-anchor="middle" font-size="6.5" fill="rgba(255,255,255,0.5)" letter-spacing="1" font-family="'DM Mono',monospace">HAUS</text>
@@ -605,14 +607,47 @@ function renderEnergyFlow(heater, wb, cs, zd) {
 
   el.htmlIfChanged = `<svg viewBox="0 0 ${W} ${SVG_H}" width="100%" style="display:block;margin-top:8px">
 ${conn.join("\n")}
-${node(pv.x, pv.y, NW, NH, { icon:"☀️", label:"PV", value:kwOrW(pv1W), sub:"", aktiv:pv1On, accent:PVC, always:true })}
-${pergolaOn_ ? node(pg.x, pg.y, PG_W, pg.nh, { icon:"☀️", label:pgName, value: heater.pv2_power == null ? "n/a" : kwOrW(pgW), sub:"", aktiv:pgOn, accent:PVC, always:true }) : ""}
+${node(pv.x, pv.y, NW, NH, { icon:"☀️", label:"PV", value:kwOrW(pv1W), sub:"", aktiv:pv1On, accent:PVC, always:true, target:"pv-card" })}
+${pergolaOn_ ? node(pg.x, pg.y, PG_W, pg.nh, { icon:"☀️", label:pgName, value: heater.pv2_power == null ? "n/a" : kwOrW(pgW), sub:"", aktiv:pgOn, accent:PVC, always:true, target:"pv-card" }) : ""}
 ${pergolaOn_ ? `<text x="${W/2}" y="${pv.by + 6.5}" text-anchor="middle" font-size="6.5" fill="rgba(255,255,255,0.5)" letter-spacing="1" font-family="'DM Mono',monospace">${esc(pvSumStr)}</text>` : ""}
-${node(nz.x, nz.y, NW, NH, { icon:"⚡", label:"NETZ", value:nzVal, sub:nzSub, aktiv:gridOn })}
+${node(nz.x, nz.y, NW, NH, { icon:"⚡", label:"NETZ", value:nzVal, sub:nzSub, aktiv:gridOn, target:"meter-card" })}
 ${hausNode()}
-${node(hz.x, hz.y, NW, NH, { icon:"🔥", label:"HEIZSTAB", value:hzKw, sub:hzEst ? "aus Phasen" : `${phases}/3 Ph.`, aktiv:heatOn, dots:phaseDots })}
-${bots.map(b => node(b.x, b.y, b.w, NH, { icon:b.icon, label:b.label, value:b.value, sub:b.sub, aktiv:b.aktiv })).join("\n")}
+${node(hz.x, hz.y, NW, NH, { icon:"🔥", label:"HEIZSTAB", value:hzKw, sub:hzEst ? "aus Phasen" : `${phases}/3 Ph.`, aktiv:heatOn, dots:phaseDots, target:"heater-card" })}
+${bots.map(b => node(b.x, b.y, b.w, NH, { icon:b.icon, label:b.label, value:b.value, sub:b.sub, aktiv:b.aktiv, target:b.target })).join("\n")}
 </svg>`;
+}
+
+// Energiefluss: Kachel antippen → weich zur passenden Card scrollen und sie kurz hervorheben.
+// Ein Handler auf dem Container (das SVG wird bei jedem Update neu gezeichnet).
+function initFlowTaps() {
+  const el = document.getElementById("flow-diagram");
+  if (!el || el.dataset.taps) return;
+  el.dataset.taps = "1";
+  const go = (g) => {
+    const card = document.getElementById(g.dataset.target);
+    if (!card || card.classList.contains("hidden")) return;
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    card.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+    card.classList.remove("card-pulse");
+    void card.offsetWidth;                                  // Animation neu starten
+    card.classList.add("card-pulse");
+    setTimeout(() => card.classList.remove("card-pulse"), 1100);
+  };
+  el.addEventListener("click", (e) => {
+    const g = e.target.closest?.(".ef-tap");
+    if (g) go(g);
+  });
+  el.addEventListener("keydown", (e) => {
+    const g = e.target.closest?.(".ef-tap");
+    if (g && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); go(g); }
+  });
+  // Sticky-Kopfzeile: Abstand für scrollIntoView (scroll-margin-top) aus ihrer echten Höhe
+  const setH = () => {
+    const h = document.querySelector(".topbar")?.offsetHeight ?? 0;
+    document.documentElement.style.setProperty("--sticky-h", `${h + 12}px`);
+  };
+  setH();
+  window.addEventListener("resize", setH);
 }
 
 // ---------- solax / PV live + heute ----------
@@ -2711,9 +2746,30 @@ function renderZendureCard(z) {
   }
   $("#zd-range-label").textIfChanged = rngLabel;
   $("#zd-range").textIfChanged = rng;
+  renderZendureForeign(z.foreign);
   const dec = $("#zd-decision");
   dec.textIfChanged = z.control_enabled && z.decision ? z.decision : "";
   dec.classList.toggle("hidden", !(z.control_enabled && z.decision));
+}
+
+// Fremdregler (App-Energieplan/HEMS) – roter Hinweis oben im Dashboard und in der Batterie-Card
+function renderZendureForeign(f) {
+  const banner = $("#zd-foreign-banner");
+  const box = $("#zd-foreign");
+  const active = f?.active === true;
+  banner?.classList.toggle("hidden", !active);
+  box?.classList.toggle("hidden", !active);
+  if (!active) return;
+  const hm = iso => (iso || "").slice(11, 16);
+  const since = hm(f.since), last = hm(f.last);
+  const when = since && since !== last ? `seit ${since}, zuletzt ${last}` : `um ${last}`;
+  const head = "Fremdregler aktiv – HEMS in der Zendure-App prüfen";
+  if (banner) banner.textIfChanged = `${head} (${when})`;
+  if (box) {
+    const ms = f.device_min_soc != null ? ` · Mindest-SoC am Gerät ${f.device_min_soc} %` : "";
+    box.htmlIfChanged = `<b>${head}</b><br>${escapeHtml(f.detail || "")}<br>`
+      + `<span class="zd-foreign-meta">${when}${ms} · pvcontroller stellt die Batterie bei jedem Eingriff auf Standby</span>`;
+  }
 }
 
 async function loadZendureChart() {
@@ -3728,6 +3784,7 @@ async function testZendure() {
 // ---------- boot ----------
 function boot() {
   $$(".tab").forEach(t => t.addEventListener("click", () => activateTab(t.dataset.tab)));
+  initFlowTaps();
   $("#btn-run").addEventListener("click", runOnce);
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#solax2-test-btn")?.addEventListener("click", testSolax2);

@@ -150,6 +150,11 @@ def init_pv_logging_tables() -> None:
             )
         """)
         conn.execute("INSERT OR IGNORE INTO zendure_ctl (id) VALUES (1)")
+        for col in _ZENDURE_CTL_EXTRA_COLS:      # Fremdregler-Erkennung (16.10.2026)
+            try:
+                conn.execute(f"ALTER TABLE zendure_ctl ADD COLUMN {col} TEXT")
+            except sqlite3.OperationalError:
+                pass
         # Hauptzähler-Leistung (Shelly) pro Minute: Mittel/Max/Min der Messungen
         conn.execute("""
             CREATE TABLE IF NOT EXISTS main_meter_min (
@@ -509,18 +514,21 @@ def record_main_meter(power_w: float) -> None:
         update_house_peak(power_w)
 
 
+# written_at: letzter eigener Schreibbefehl; foreign_*: Fremdregler (App/HEMS) erkannt;
+# min_soc_fixed_at: Mindest-SoC zuletzt nachgeschrieben (Flash, höchstens 1×/h)
+_ZENDURE_CTL_EXTRA_COLS = ("written_at", "foreign_at", "foreign_since", "foreign_detail", "min_soc_fixed_at")
+_ZENDURE_CTL_COLS = ("mode", "limit_w", "changed_at", "fail_count", "decision", "decided_at") + _ZENDURE_CTL_EXTRA_COLS
+
+
 def get_zendure_ctl() -> dict:
     with sqlite3.connect(DB_PATH) as conn:
-        r = conn.execute(
-            "SELECT mode, limit_w, changed_at, fail_count, decision, decided_at FROM zendure_ctl WHERE id = 1"
-        ).fetchone()
-    return {"mode": r[0], "limit_w": r[1], "changed_at": r[2], "fail_count": r[3],
-            "decision": r[4], "decided_at": r[5]}
+        r = conn.execute(f"SELECT {', '.join(_ZENDURE_CTL_COLS)} FROM zendure_ctl WHERE id = 1").fetchone()
+    return dict(zip(_ZENDURE_CTL_COLS, r))
 
 
 def set_zendure_ctl(**kw) -> None:
-    """Regelzustand fortschreiben (mode, limit_w, changed_at, fail_count, decision, decided_at)."""
-    allowed = {"mode", "limit_w", "changed_at", "fail_count", "decision", "decided_at"}
+    """Regelzustand fortschreiben (Spalten siehe _ZENDURE_CTL_COLS)."""
+    allowed = set(_ZENDURE_CTL_COLS)
     kw = {k: v for k, v in kw.items() if k in allowed}
     if not kw:
         return
