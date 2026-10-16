@@ -449,8 +449,8 @@ def _settings_lines(config: Any) -> list[str]:
     if config.zendure_active:
         lines.append(f"Batterie: Regelung {'an' if zc.control_enabled else 'aus'}; Mindest-SoC {zc.min_soc:g} %, "
                      f"Ziel-SoC {zc.target_soc:g} %, Laden bis {int(zc.max_charge_w)} W, Entladen bis "
-                     f"{int(zc.max_discharge_w)} W nur für die Grundlast; Entladen gesperrt, während die Wallbox lädt: "
-                     f"{'ja' if zc.block_discharge_while_wallbox_charging else 'nein'}")
+                     f"{int(zc.max_discharge_w)} W nur für die Grundlast; Entladen immer gesperrt, während die Wallbox lädt "
+                     f"oder nicht lesbar ist")
     else:
         lines.append("Batterie: nicht eingerichtet")
     wb = config.wallbox

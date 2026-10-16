@@ -714,10 +714,11 @@
             <label>Kapazität (Wh)<input type="number" step="100" name="zendure.capacity_wh"></label>
             <label>Max. Ladeleistung (W)<input type="number" step="50" min="0" max="2400" name="zendure.max_charge_w"></label>
             <label>Max. Entladeleistung (W)<input type="number" step="50" min="0" max="2400" name="zendure.max_discharge_w"></label>
-            <label>Mindest-SoC (%)<input type="number" step="1" min="0" max="50" name="zendure.min_soc"></label>
+            <label>Mindest-Ladestand<select name="zendure.min_soc">
+                <option value="5">5 %</option><option value="10">10 %</option>
+                <option value="15">15 %</option><option value="20">20 %</option></select>
+              <small class="field-hint">Entladen stoppt hier, wieder frei ab +2 %. Wird beim Speichern auch ins Gerät geschrieben (Schutz ohne Pi).</small></label>
             <label>Ziel-SoC (%)<input type="number" step="1" min="70" max="100" name="zendure.target_soc"></label>
-            <label class="check"><input type="checkbox" name="zendure.block_discharge_while_wallbox_charging"> Entladen sperren, solange die Wallbox lädt
-              <small class="field-hint">verhindert, dass das Auto den Hausspeicher leerzieht (alle Lademodi)</small></label>
             <label class="check"><input type="checkbox" name="zendure.control_enabled"> <b>Steuerung aktiv</b> (Laden aus PV-Überschuss, Entladen bei Netzbezug)
               <small class="field-hint">erst einschalten, wenn der Verbindungstest und das acMode-Mapping (1 = Laden, 2 = Entladen) am Gerät geprüft sind. Bei Dry-Run (runtime) wird nur geloggt, nicht geschrieben. Die Kaskade muss aktiv sein.</small></label>
             <p class="note" style="margin-top:4px">Lokale API aktivieren: In der Zendure-App „HEMS hinzufügen" und wieder verlassen.</p>
@@ -1035,7 +1036,7 @@
     </form>
   </div>
 
-  <script src="/static/app.js?v=20261016a" defer></script>
+  <script src="/static/app.js?v=20261016b" defer></script>
   <script src="/static/heating.js?v=20261014a" defer></script>
   <script src="/static/shutters.js?v=20261013j" defer></script>
 </body>

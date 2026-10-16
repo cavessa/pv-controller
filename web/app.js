@@ -3408,7 +3408,6 @@ async function loadSettings() {
     setFormValue(f, "zendure.max_discharge_w", zc.max_discharge_w ?? 2400);
     setFormValue(f, "zendure.min_soc", zc.min_soc ?? 10);
     setFormValue(f, "zendure.target_soc", zc.target_soc ?? 100);
-    setFormValue(f, "zendure.block_discharge_while_wallbox_charging", zc.block_discharge_while_wallbox_charging ?? true);
     setFormValue(f, "zendure.control_enabled", zc.control_enabled ?? false);
     setFormValue(f, "location.latitude",  lastConfig.latitude  ?? "");
     setFormValue(f, "location.longitude", lastConfig.longitude ?? "");
@@ -3532,7 +3531,6 @@ async function saveSettings(e) {
       max_discharge_w: numField("zendure.max_discharge_w"),
       min_soc: numField("zendure.min_soc"),
       target_soc: numField("zendure.target_soc"),
-      block_discharge_while_wallbox_charging: boolField("zendure.block_discharge_while_wallbox_charging"),
       control_enabled: boolField("zendure.control_enabled"),
     },
     location: {
@@ -3562,6 +3560,12 @@ async function saveSettings(e) {
     });
     msg.textContent = "Gespeichert (Backup: " + res.backup + ")";
     msg.className = "form-msg ok";
+    const ms = res.zendure_min_soc;
+    if (ms) {
+      if (ms.dry_run) msg.textContent += " · Mindest-Ladestand: Dry-Run, nicht ans Gerät geschrieben";
+      else if (ms.ok) msg.textContent += ` · Mindest-Ladestand am Gerät bestätigt (${ms.read / 10} %)`;
+      else { msg.textContent += ` · Mindest-Ladestand NICHT am Gerät: ${ms.error}`; msg.className = "form-msg error"; }
+    }
     await refreshStatus();
   } catch (e) {
     msg.textContent = "Fehler: " + e.message;

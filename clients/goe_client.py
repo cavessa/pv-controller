@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Optional, Any
 
 import requests
 
@@ -78,3 +78,30 @@ class GoeClient:
         except requests.RequestException as e:
             raise GoeError(f"go-e set frc={value} failed: {e}") from e
 
+
+CHARGING_MIN_W = 100.0     # Ladeleistung, ab der die Wallbox als „lädt“ gilt (auch ohne car=2)
+BATTERY_CHECK_TIMEOUT_S = 2.0
+
+
+def car_charging(status: Optional[dict]) -> bool:
+    """Lädt die Wallbox? car=2 ODER Ladeleistung (nrg[11]) > 100 W; ohne Status → True
+    (unbekannt gilt als „lädt“: die Batterie darf dann nie entladen)."""
+    if not isinstance(status, dict) or not status:
+        return True
+    nrg = status.get("nrg")
+    try:
+        power = float(nrg[11]) if isinstance(nrg, list) and len(nrg) >= 12 else 0.0
+    except (TypeError, ValueError):
+        power = 0.0
+    return status.get("car") == 2 or power > CHARGING_MIN_W
+
+
+def charging_now(client: Optional["GoeClient"]) -> bool:
+    """go-e frisch lesen (für die Batterie-Sperre). Ohne Wallbox-URL False; Lesefehler → True."""
+    if client is None:
+        return False
+    try:
+        return car_charging(client.get_status())
+    except Exception:
+        log.warning("go-e nicht lesbar – gilt für die Batterie als „lädt“")
+        return True

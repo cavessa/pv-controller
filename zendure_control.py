@@ -11,8 +11,11 @@ Regeln:
 - Entladen nur ohne Laden, mit SoC > Mindest-SoC und Netzbezug; geregelt auf
   Bezug ≈ 0 (Ziel = aktuelle Abgabe + Bezug), begrenzt auf die **Grundlast**
   (Haus ohne Heizstab und Wallbox) – die Batterie heizt nie das Wasser.
-- Wallbox lädt (Auto im Zustand „lädt", > 100 W) -> Entladen hart gesperrt,
-  wenn `block_discharge_while_wallbox_charging` (Default an).
+- Wallbox lädt (go-e car=2 oder > 100 W, nicht lesbar = lädt) -> Entladen hart gesperrt
+  (fest, nicht abschaltbar). Vor jedem Entlade-Befehl wird go-e unter dem Schreib-Lock neu
+  gelesen; der Wächter (zendure_watchdog.py) prüft beim Entladen alle 3 s.
+- Mindest-SoC: Entladen stoppt bei `min_soc`, Freigabe erst ab `min_soc` + 2 %; SoC
+  unbekannt -> kein Entladen. Am Gerät zusätzlich `minSoc` (Flash) als Schutz ohne Pi.
 - Laden <-> Entladen wechselt direkt (Gerät stellt in < 5 s um, geprüft 16.10.2026);
   Flattern verhindern die Schwellen (Laden ab 100 W + Hysterese, Entladen ab 50 W Bezug).
   Die frühere 2-min-Pause ließ die Batterie bei Netzbezug bzw. Einspeisung im Standby
@@ -30,10 +33,13 @@ Regeln:
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Iterator, Optional
 
 import db
 from clients.zendure_client import (
@@ -51,6 +57,37 @@ WRITE_DELTA_W = 50              # Limit nur bei größerer Änderung schreiben
 DISCHARGE_START_IMPORT_W = 50   # Netzbezug, ab dem entladen wird
 MIN_DIRECTION_S = 0             # Mindestzeit vor Laden <-> Entladen (0 = direkt)
 MAX_FAILS = 3
+MIN_SOC_HYST = 2                # Entladen nach Erreichen des Mindest-SoC erst ab Mindest-SoC + 2 % wieder
+MIN_SOC_CHOICES = (5, 10, 15, 20)
+WRITE_LOCK_PATH = "/tmp/pvc-zendure-write.lock"   # gemeinsam für Minutenlauf und Wächter
+WRITE_LOCK_WAIT_S = 10.0
+
+
+@contextlib.contextmanager
+def write_guard(wait_s: float = WRITE_LOCK_WAIT_S) -> Iterator[bool]:
+    """Exklusives Schreib-Lock für alle Zendure-Befehle (Minutenlauf, Wächter, Settings).
+
+    Liefert True, wenn das Lock gehalten wird; nach ``wait_s`` ohne Lock False (der Aufrufer
+    schreibt dann trotzdem nur Standby, nie Entladen)."""
+    f = open(WRITE_LOCK_PATH, "a+")
+    got = False
+    try:
+        end = time.monotonic() + wait_s
+        while True:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                got = True
+                break
+            except BlockingIOError:
+                if time.monotonic() >= end:
+                    log.warning("Zendure: Schreib-Lock nach %.0f s nicht erhalten", wait_s)
+                    break
+                time.sleep(0.1)
+        yield got
+    finally:
+        if got:
+            fcntl.flock(f, fcntl.LOCK_UN)
+        f.close()
 DEVICE_MAX_W = 2400
 UNLIMITED = float("inf")        # Grundlast nicht begrenzt (Tests/Aufrufer ohne Grundlast-Angabe)
 
@@ -108,7 +145,7 @@ def plan(
     blocked_code = ""
     if override == "off":
         blocked_reason, blocked_code = "Entladen gesperrt (manuell, 30 min)", "manual_override"
-    elif zc.block_discharge_while_wallbox_charging and wallbox_charging:
+    elif wallbox_charging:                      # fest, nicht abschaltbar: nie ins Auto entladen
         blocked_reason, blocked_code = "Batterie-Entladung gesperrt: Wallbox lädt", "wallbox_lock"
     nums = {"soc": _w(soc), "avail_w": _w(avail_w), "import_w": _w(import_w)}
 
@@ -152,10 +189,15 @@ def plan(
         if blocked_reason:
             desired = Plan("idle", 0, False, blocked_reason, "blocked", hard=True, code=blocked_code,
                            data={**nums, "mode": "Entladen gesperrt"})
-        elif soc <= zc.min_soc:
+        elif st.soc is None:
+            desired = Plan("idle", 0, False, "SoC unbekannt – kein Entladen", "idle",
+                           code="battery_empty", data={**nums, "min_soc": zc.min_soc})
+        elif soc <= zc.min_soc or (ctl_mode != "discharge" and soc < zc.min_soc + MIN_SOC_HYST):
+            # stoppt bei Mindest-SoC, Freigabe erst wieder ab Mindest-SoC + Hysterese
+            again = "" if soc <= zc.min_soc else f", Freigabe ab {zc.min_soc + MIN_SOC_HYST:.0f} %"
             desired = Plan("idle", 0, False,
-                           f"Batterie leer (SoC {soc:.0f} % ≤ Mindest-SoC {zc.min_soc:.0f} %)"
-                           + (", Netzbezug" if import_w > DISCHARGE_START_IMPORT_W else ""), "idle",
+                           f"Batterie leer (SoC {soc:.0f} % ≤ Mindest-SoC {zc.min_soc:.0f} %{again})"
+                           if not again else f"Batterie fast leer (SoC {soc:.0f} %{again})", "idle",
                            code="battery_empty", data={**nums, "min_soc": zc.min_soc})
         elif base_load_w is None:
             desired = Plan("idle", 0, False, "Grundlast unbekannt (PV/Hauszähler nicht lesbar) – kein Entladen", "idle",
@@ -252,7 +294,10 @@ class ZendureControl:
         base_load_w: Optional[float] = UNLIMITED,
         failsafe: Optional[str] = None,
         export_cap_w: Optional[float] = None,
+        wallbox_check: Optional[Callable[[], bool]] = None,
     ) -> Plan:
+        """``wallbox_check``: liest go-e frisch (True = lädt oder nicht lesbar); wird unter dem
+        Schreib-Lock unmittelbar vor jedem Entlade-Befehl aufgerufen."""
         ctl = db.get_zendure_ctl()
         now = datetime.now()
 
@@ -260,9 +305,15 @@ class ZendureControl:
             fails = ctl["fail_count"] + 1
             db.set_zendure_ctl(fail_count=fails)
             text = f"Batterie nicht erreichbar ({min(fails, MAX_FAILS)}/{MAX_FAILS})"
-            if fails >= MAX_FAILS and (ctl["mode"] != "idle" or ctl["limit_w"] != 0):
+            if wallbox_charging and ctl["mode"] == "discharge":
+                # Wallbox lädt: nicht auf den 3. Fehler warten – Standby blind schreiben
+                force_standby(self.client, "Wallbox lädt, Batterie nicht lesbar", self.dry_run)
+                text += " – Wallbox lädt: Standby geschrieben"
+            elif fails >= MAX_FAILS and (ctl["mode"] != "idle" or ctl["limit_w"] != 0):
                 # neutral stellen; schlägt das fehl, wird beim nächsten Lauf erneut versucht
-                if not self.dry_run and self.client.set_mode(None, input_limit=0, output_limit=0):
+                with write_guard():
+                    ok = not self.dry_run and self.client.set_mode(None, input_limit=0, output_limit=0)
+                if ok:
                     db.set_zendure_ctl(mode="idle", limit_w=0, changed_at=now.isoformat(timespec="seconds"))
                     text += " – neutral gestellt (Limits 0)"
             db.set_zendure_ctl(decision=text, decided_at=now.isoformat(timespec="seconds"))
@@ -286,12 +337,21 @@ class ZendureControl:
             if self.dry_run:
                 reason = f"[Dry-Run] {reason} (würde {p.mode} {p.limit_w} W schreiben)"
             else:
-                if p.mode == "charge":
-                    ok = self.client.set_mode(AC_MODE_CHARGE, input_limit=p.limit_w, output_limit=0)
-                elif p.mode == "discharge":
-                    ok = self.client.set_mode(AC_MODE_DISCHARGE, input_limit=0, output_limit=p.limit_w)
-                else:
-                    ok = self.client.set_mode(None, input_limit=0, output_limit=0)
+                with write_guard() as locked:
+                    if p.mode == "discharge" and (not locked or (wallbox_check is not None and wallbox_check())):
+                        # Auto hat zwischen Planung und Schreiben angefangen (oder go-e nicht lesbar,
+                        # oder kein Lock): nie entladen – Standby
+                        why = "Wallbox lädt (vor dem Schreiben geprüft)" if locked else "Schreib-Lock belegt"
+                        log.warning("Zendure: Entladen verworfen – %s → Standby", why)
+                        p = Plan("idle", 0, True, f"Batterie-Entladung gesperrt: {why}", "blocked", hard=True,
+                                 code="wallbox_lock", data={**p.data, "mode": "Entladen gesperrt"})
+                        reason = p.reason
+                    if p.mode == "charge":
+                        ok = self.client.set_mode(AC_MODE_CHARGE, input_limit=p.limit_w, output_limit=0)
+                    elif p.mode == "discharge":
+                        ok = self.client.set_mode(AC_MODE_DISCHARGE, input_limit=0, output_limit=p.limit_w)
+                    else:
+                        ok = self.client.set_mode(None, input_limit=0, output_limit=0)
                 if ok:
                     upd = dict(mode=p.mode, limit_w=p.limit_w)
                     if p.mode != ctl["mode"]:
@@ -316,7 +376,8 @@ def force_standby(client: ZendureClient, reason: str, dry_run: bool = False) -> 
     if dry_run:
         log.warning("[Dry-Run] Zendure: würde Standby schreiben – %s", reason)
         return True
-    ok = client.set_mode(None, input_limit=0, output_limit=0)
+    with write_guard():
+        ok = client.set_mode(None, input_limit=0, output_limit=0)
     try:
         if ok:
             db.set_zendure_ctl(mode="idle", limit_w=0, changed_at=now)
@@ -341,3 +402,31 @@ def control_age_s(now: Optional[datetime] = None) -> Optional[float]:
     except Exception:
         log.warning("Zendure: Regelzustand nicht lesbar", exc_info=True)
         return None
+
+
+def apply_min_soc(client: ZendureClient, pct: float) -> dict:
+    """Mindest-SoC ans Gerät (``minSoc`` in 0,1 %, in den Flash: smartMode 0) und zurücklesen.
+
+    Nur bei Änderung in den Settings aufrufen (Flash-Schreibzyklen). Liefert
+    {"ok": bool, "written": int, "read": int|None, "error": str|None}."""
+    want = int(round(float(pct) * 10))
+    with write_guard():
+        ok = client.write_props({"smartMode": 0, "minSoc": want})
+    if not ok:
+        return {"ok": False, "written": want, "read": None, "error": "Schreiben fehlgeschlagen"}
+    time.sleep(READBACK_WAIT_S)
+    st = client.get_status(fresh=True)
+    have = None
+    if st is not None:
+        try:
+            have = int(float(st.props.get("minSoc")))
+        except (TypeError, ValueError):
+            have = None
+    res = {"ok": have == want, "written": want, "read": have,
+           "error": None if have == want else f"Gerät meldet minSoc={have} statt {want}"}
+    (log.info if res["ok"] else log.error)("Zendure: Mindest-SoC %s %% ans Gerät – %s", pct,
+                                           "bestätigt" if res["ok"] else res["error"])
+    return res
+
+
+READBACK_WAIT_S = 3.0

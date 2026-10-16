@@ -23,8 +23,7 @@
     "max_discharge_w": 2400,
     "min_soc": 10,
     "target_soc": 100,
-    "control_enabled": false,
-    "block_discharge_while_wallbox_charging": true
+    "control_enabled": false
   },
   "shelly": {
     "ph1_url": "http://192.168.x.x",

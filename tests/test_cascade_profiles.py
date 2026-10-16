@@ -257,6 +257,9 @@ class ServiceIntegrationTest(unittest.TestCase):
         svc.solax = SimpleNamespace(get_pv_power_w=lambda: pv)
         svc.solax2 = None
         st = zd or ZendureStatus(soc=soc)
+        # go-e: keine Netzanfragen im Test – Wallbox steht (car=1, 0 W), Tests überschreiben bei Bedarf
+        self.goe_status = {"car": 1, "nrg": [0] * 16}
+        svc.goe_battery = SimpleNamespace(get_status=lambda: self.goe_status)
         if svc.zendure_ctl is not None:
             svc.zendure_client = SimpleNamespace(get_status=lambda: st)
             svc.zendure_ctl.client = svc.zendure_client

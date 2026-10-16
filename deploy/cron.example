@@ -1,5 +1,6 @@
 # Produktion: Shared-Lock, damit deploy.sh (exklusiv) nie mitten in einem Lauf umschaltet
 * * * * * cd /home/openhabian/pvcontroller-prod && flock -s /tmp/pvc-code.lock .venv/bin/python main.py >> cron.log 2>&1
-# Zendure-Watchdog: Regelung seit 5 min nicht gelaufen → Batterie Standby; beim Pi-Start sofort Standby
-* * * * * cd /home/openhabian/pvcontroller-prod && flock -s -w 50 /tmp/pvc-code.lock .venv/bin/python zendure_watchdog.py >> cron.log 2>&1
-@reboot sleep 30; cd /home/openhabian/pvcontroller-prod && flock -s -w 120 /tmp/pvc-code.lock .venv/bin/python zendure_watchdog.py --boot >> cron.log 2>&1
+# Zendure-Watchdog + Wallbox-Wächter (läuft bis Sekunde 58, Takt 3 s): eigener Lock (flock -n → nie zwei
+# Instanzen), NICHT pvc-code.lock (den nimmt das Skript selbst nur beim Start; beendet sich bei Deploy/Code-Wechsel)
+* * * * * cd /home/openhabian/pvcontroller-prod && flock -n /tmp/pvc-zendure-watch.lock .venv/bin/python zendure_watchdog.py >> cron.log 2>&1
+@reboot sleep 30; cd /home/openhabian/pvcontroller-prod && flock -w 120 /tmp/pvc-zendure-watch.lock .venv/bin/python zendure_watchdog.py --boot >> cron.log 2>&1

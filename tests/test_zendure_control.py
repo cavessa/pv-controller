@@ -67,10 +67,13 @@ class PlanTest(unittest.TestCase):
         p = plan(self.zc, self.st, **mk(avail_w=1500, wallbox_charging=True))
         self.assertEqual(p.mode, "charge")
 
-    def test_wallbox_block_can_be_disabled(self):
-        self.zc.block_discharge_while_wallbox_charging = False
-        p = plan(self.zc, self.st, **mk(import_w=500, wallbox_charging=True))
-        self.assertEqual(p.mode, "discharge")
+    def test_wallbox_block_cannot_be_disabled(self):
+        # früherer Schalter block_discharge_while_wallbox_charging: alter Config-Eintrag wird ignoriert
+        from config import parse_zendure
+        zc = parse_zendure({"zendure": {"enabled": True, "ip": "x", "block_discharge_while_wallbox_charging": False}})
+        self.assertFalse(hasattr(zc, "block_discharge_while_wallbox_charging"))
+        p = plan(zc, self.st, **mk(import_w=500, wallbox_charging=True))
+        self.assertEqual((p.mode, p.code), ("idle", "wallbox_lock"))
 
     def test_direct_switch_without_pause(self):
         # Laden → Entladen und Entladen → Laden direkt im nächsten Lauf (keine Standby-Pause)

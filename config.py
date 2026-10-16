@@ -38,8 +38,8 @@ class ZendureConfig:
     min_soc: float = 10.0
     target_soc: float = 100.0
     control_enabled: bool = False  # Master-Schalter für Phase 2 (Steuerung)
-    # Phase 2: Entladen hart sperren, solange die Wallbox lädt (alle Lademodi)
-    block_discharge_while_wallbox_charging: bool = True
+    # Entladen ist fest gesperrt, solange die Wallbox lädt (früherer Schalter
+    # block_discharge_while_wallbox_charging entfällt; alter Config-Eintrag wird ignoriert)
 
 
 METER_TYPES = ("shelly_3em_gen1", "shelly_pro_3em")

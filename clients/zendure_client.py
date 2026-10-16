@@ -85,10 +85,11 @@ class ZendureClient:
         r.raise_for_status()
         return r.json()
 
-    def get_status(self) -> Optional[ZendureStatus]:
-        """Aktueller Zustand oder None (nicht erreichbar). Kein Fail-safe-Auslöser."""
+    def get_status(self, fresh: bool = False) -> Optional[ZendureStatus]:
+        """Aktueller Zustand oder None (nicht erreichbar). Kein Fail-safe-Auslöser.
+        ``fresh``: die Pause nach einem Lesefehler ignorieren (Rücklesen nach dem Schreiben)."""
         with _lock:
-            if time.monotonic() < _fail_until.get(self.ip, 0.0):
+            if not fresh and time.monotonic() < _fail_until.get(self.ip, 0.0):
                 return None
         try:
             j = self._report()
@@ -137,6 +138,10 @@ class ZendureClient:
             props["inputLimit"] = int(input_limit)
         if output_limit is not None:
             props["outputLimit"] = int(output_limit)
+        return self.write_props(props)
+
+    def write_props(self, props: dict) -> bool:
+        """Properties schreiben (zenSDK /properties/write); True bei HTTP 200."""
         try:
             r = requests.post(
                 f"{self.base_url}/properties/write",
@@ -144,10 +149,17 @@ class ZendureClient:
                 timeout=self.timeout,
             )
             r.raise_for_status()
-            return True
         except requests.RequestException as e:
             log.error("Zendure %s write failed: %s", self.ip, e)
             return False
+        try:
+            j = r.json()
+        except ValueError:
+            return True
+        if isinstance(j, dict) and j.get("success") is False:      # Gerät lehnt ab (z. B. Wertebereich)
+            log.error("Zendure %s write abgelehnt: %s", self.ip, str(j)[:200])
+            return False
+        return True
 
     # ---- Verbindungstest (Settings) -------------------------------------
 

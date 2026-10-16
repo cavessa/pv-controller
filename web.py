@@ -922,13 +922,16 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
     if patch.zendure:
         allowed = {"enabled", "ip", "sn", "name", "capacity_wh", "max_charge_w", "max_discharge_w",
                    "min_soc", "target_soc", "control_enabled",
-                   "block_discharge_while_wallbox_charging"}
+                   "block_discharge_while_wallbox_charging"}      # alt: wird ignoriert (Sperre ist fest)
         bad = set(patch.zendure) - allowed
         if bad:
             raise HTTPException(400, f"zendure keys not allowed: {sorted(bad)}")
         block = new_cfg.setdefault("zendure", {})
+        block.pop("block_discharge_while_wallbox_charging", None)
         for k, v in patch.zendure.items():
-            if k in {"enabled", "control_enabled", "block_discharge_while_wallbox_charging"}:
+            if k == "block_discharge_while_wallbox_charging":
+                continue
+            if k in {"enabled", "control_enabled"}:
                 if not isinstance(v, bool):
                     raise HTTPException(400, f"zendure.{k} must be boolean")
             elif k in {"ip", "sn", "name"}:
@@ -941,6 +944,10 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
                        "min_soc": (0, 50), "target_soc": (70, 100)}[k]
                 if not lim[0] <= v <= lim[1]:
                     raise HTTPException(400, f"zendure.{k} must be between {lim[0]} and {lim[1]}")
+                if k == "min_soc":
+                    from zendure_control import MIN_SOC_CHOICES
+                    if v not in MIN_SOC_CHOICES:
+                        raise HTTPException(400, f"zendure.min_soc muss einer von {list(MIN_SOC_CHOICES)} sein")
             block[k] = v
         if block.get("enabled") and not block.get("ip", "").strip():
             raise HTTPException(400, "zendure: ip erforderlich wenn aktiviert")
@@ -1024,7 +1031,31 @@ def api_config_put(patch: ConfigUpdate) -> dict[str, Any]:
     new_cfg = _validated_update(current, patch)
     backup_name = _write_config(new_cfg)
     _poll_wakeup.set()
-    return {"ok": True, "backup": backup_name, "config": _masked(new_cfg)}
+    out = {"ok": True, "backup": backup_name, "config": _masked(new_cfg)}
+    min_soc_res = _apply_min_soc_change(current, new_cfg)
+    if min_soc_res is not None:
+        out["zendure_min_soc"] = min_soc_res
+    return out
+
+
+def _apply_min_soc_change(old: dict[str, Any], new: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Mindest-SoC geändert → ans Gerät schreiben (Flash) und zurücklesen. Nur mit aktiver Batterie
+    und ohne dry_run; Fehler werden gemeldet, die Config bleibt gespeichert."""
+    oz, nz = old.get("zendure") or {}, new.get("zendure") or {}
+    if not nz.get("enabled") or not str(nz.get("ip", "")).strip():
+        return None
+    if oz.get("min_soc") == nz.get("min_soc") or nz.get("min_soc") is None:
+        return None
+    if (new.get("runtime") or {}).get("dry_run"):
+        return {"ok": True, "dry_run": True, "written": None, "read": None,
+                "error": None, "note": "dry_run – nicht ans Gerät geschrieben"}
+    try:
+        from clients.zendure_client import ZendureClient
+        from zendure_control import apply_min_soc
+        return apply_min_soc(ZendureClient(nz["ip"], nz.get("sn", "")), nz["min_soc"])
+    except Exception as e:
+        log.exception("Mindest-SoC ans Gerät fehlgeschlagen")
+        return {"ok": False, "written": None, "read": None, "error": str(e)}
 
 
 def _write_config(new_cfg: dict[str, Any]) -> str:

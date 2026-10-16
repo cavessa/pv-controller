@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Optional
 
-from clients.goe_client import GoeClient, GoeError
+from clients.goe_client import BATTERY_CHECK_TIMEOUT_S, GoeClient, GoeError, car_charging, charging_now
 from clients.shelly_cascade_client import ShellyCascadeClient, ShellyCascadeError
 from cascade_plan import BATTERY, HEATER_MAX, HEATER_MIN, HEATER_STAGES, HeaterCtx, walk
 from clients.shelly_client import Shelly3EMClient, ShellyPlugClient, ShellyStorageTempClient
@@ -81,6 +81,10 @@ class CascadeService:
         self._goe_cache: Optional[dict] = None
         if config.wallbox.enabled and config.wallbox.url:
             self.goe = GoeClient(config.wallbox.url, config.wallbox.request_timeout_seconds)
+        # Batterie-Sperre liest go-e immer, wenn eine URL eingetragen ist (auch bei wallbox.enabled=false:
+        # ein Auto kann z. B. im Basic-Modus laden), kurzes Timeout
+        self.goe_battery: Optional[GoeClient] = (
+            GoeClient(config.wallbox.url, BATTERY_CHECK_TIMEOUT_S) if config.wallbox.url else None)
         # Batterie-Regelung (Phase 2): nur mit aktivem Gerät UND Master-Schalter
         # Grund-Code der letzten Geräte-Entscheidung: (action, code, data) – nur Protokoll
         self._last_code: tuple[str, str, dict] = ("", "", {})
@@ -385,11 +389,12 @@ class CascadeService:
 
     def _goe_raw(self) -> Optional[dict]:
         """go-e-Status, einmal pro Kaskadenlauf gelesen (None bei Fehler/ohne Wallbox)."""
-        if self.goe is None:
+        client = self.goe or self.goe_battery
+        if client is None:
             return None
         if self._goe_cache is None:
             try:
-                self._goe_cache = self.goe.get_status() or {}
+                self._goe_cache = client.get_status() or {}
             except Exception:
                 log.warning("Kaskade: Wallbox-Status nicht lesbar", exc_info=True)
                 self._goe_cache = {"_error": True}
@@ -403,15 +408,15 @@ class CascadeService:
         return max(0.0, float(nrg[11])) if isinstance(nrg, list) and len(nrg) >= 12 else 0.0
 
     def _wallbox_charging(self) -> bool:
-        """Lädt gerade ein Auto (go-e car=2, > 100 W)? Bei Lesefehler konservativ True,
-        damit die Batterie nicht ungeprüft entladen wird."""
-        if self.goe is None:
+        """Lädt gerade ein Auto (go-e car=2 ODER > 100 W)? Bei Lesefehler konservativ True,
+        damit die Batterie nicht ungeprüft entladen wird (Wert dieses Laufs, gecacht)."""
+        if self.goe is None and self.goe_battery is None:
             return False
         raw = self._goe_raw()
         if raw is None:
             log.warning("Kaskade: Wallbox-Status für Batterie unbekannt – Entladen vorsichtshalber gesperrt")
             return True
-        return raw.get("car") == 2 and (self._wallbox_power_w() or 0.0) > 100
+        return car_charging(raw)
 
     def _read_storage_temp(self) -> Optional[float]:
         try:
@@ -441,7 +446,7 @@ class CascadeService:
     ) -> tuple[float, str]:
         """Batterie regeln; liefert (gewünschte Ladeleistung W, Begründung) – gewünscht, nicht
         gedeckelt, damit der Heizstab (dahinter) für die Batterie Platz macht."""
-        wb = self._wallbox_charging() if self.cfg.zendure.block_discharge_while_wallbox_charging else False
+        wb = self._wallbox_charging()             # Sperre fest (nicht abschaltbar)
         # Netzbezug ohne die eigene Ladeleistung der Batterie (Laden zieht ja selbst am Zähler)
         if st is not None:
             import_w -= st.charge_w
@@ -449,6 +454,7 @@ class CascadeService:
             st, avail_w=max(0, avail_w), import_w=import_w, base_load_w=base_load_w,
             wallbox_charging=wb, override=override,
             hysteresis_w=int(device["hysteresis_watts"]), failsafe=failsafe, export_cap_w=export_cap_w,
+            wallbox_check=lambda: charging_now(self.goe_battery),
         )
         charge_w = (p.want_w if p.want_w is not None else p.limit_w) if (p.mode == "charge" and st is not None) else 0
 
