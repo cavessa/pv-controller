@@ -2557,6 +2557,57 @@ function renderHouseMonthChart(d) {
   }
 }
 
+// Batterie-Chart (Dashboard + Verlauf → Tag): Füllstand als Fläche (oben, 0–100 %, Mindest-SoC
+// gestrichelt), darunter Laden (grün, nach oben) und Entladen (orange, nach unten) als
+// 5-Minuten-Balken mit eigener Skala. raw = [[Minute, SoC, Laden W, Entladen W], …]
+function zendureChartSvg(raw, opts = {}) {
+  const buckets = new Map();
+  for (const [m, , c, dis] of raw) {
+    const b = Math.floor(m / 5) * 5;
+    const e = buckets.get(b) ?? { n: 0, c: 0, d: 0 };
+    e.n++; e.c += c || 0; e.d += dis || 0; buckets.set(b, e);
+  }
+  const bars = [...buckets].map(([m, e]) => ({ m, c: e.c / e.n, d: e.d / e.n }));
+  const maxP = Math.max(500, ...bars.map(b => Math.max(b.c, b.d)));
+  const VW = 360, VH = opts.height ?? 170;
+  const pad = { l: 34, r: 8, t: 8, b: 18 };
+  const cw = VW - pad.l - pad.r;
+  const socH = Math.round((VH - pad.t - pad.b) * 0.52), gap = 10, pwrTop = pad.t + socH + gap, pwrH = VH - pad.b - pwrTop;
+  const sx = m => pad.l + (m / 1440) * cw;
+  const sy = v => pad.t + socH - (v / 100) * socH;
+  const y0 = pwrTop + pwrH / 2;
+  const sp = w => (w / maxP) * (pwrH / 2);
+  const hm = m => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  const kw = w => w >= 1000 ? (w / 1000).toFixed(2) + " kW" : Math.round(w) + " W";
+  let g = "";
+  for (const v of [0, 50, 100]) {
+    g += `<line x1="${pad.l}" y1="${sy(v)}" x2="${pad.l + cw}" y2="${sy(v)}" class="grid-line"/>`;
+    g += `<text x="${pad.l - 4}" y="${sy(v)}" text-anchor="end" dominant-baseline="middle" font-size="8">${v}%</text>`;
+  }
+  if (opts.minSoc > 0) {
+    g += `<line x1="${pad.l}" y1="${sy(opts.minSoc)}" x2="${pad.l + cw}" y2="${sy(opts.minSoc)}" stroke="rgba(232,164,53,0.55)" stroke-width="0.8" stroke-dasharray="3 3"><title>Mindest-SoC ${opts.minSoc} %</title></line>`;
+  }
+  for (let h = 0; h <= 24; h += 4) {
+    g += `<text x="${sx(h * 60)}" y="${VH - 4}" text-anchor="${h === 24 ? "end" : h === 0 ? "start" : "middle"}" font-size="8">${h}h</text>`;
+  }
+  const line = raw.map((p, i) => `${i ? "L" : "M"}${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`).join(" ");
+  const last = raw[raw.length - 1];
+  g += `<path d="${line} L${sx(last[0]).toFixed(1)},${sy(0)} L${sx(raw[0][0]).toFixed(1)},${sy(0)} Z" fill="rgba(167,139,250,0.15)" stroke="none"/>`;
+  g += `<path d="${line}" fill="none" stroke="#a78bfa" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  g += `<circle cx="${sx(last[0]).toFixed(1)}" cy="${sy(last[1]).toFixed(1)}" r="3.5" fill="#a78bfa" stroke="#14161b" stroke-width="1.5"><title>${hm(last[0])}: ${Math.round(last[1])} %</title></circle>`;
+  // Leistung: Laden nach oben (grün), Entladen nach unten (orange), eigene Skala ± maxP
+  g += `<line x1="${pad.l}" y1="${y0}" x2="${pad.l + cw}" y2="${y0}" stroke="rgba(255,255,255,0.25)" stroke-width="0.8"/>`;
+  g += `<text x="${pad.l - 4}" y="${pwrTop + 4}" text-anchor="end" font-size="7" style="fill:#2ed8a3">+${(maxP / 1000).toFixed(1)}k</text>`;
+  g += `<text x="${pad.l - 4}" y="${pwrTop + pwrH}" text-anchor="end" font-size="7" style="fill:#e8a435">−${(maxP / 1000).toFixed(1)}k</text>`;
+  const bw = Math.max(1, (cw / 288) * 1.1);
+  for (const b of bars) {
+    const t = `${hm(b.m)}–${hm(b.m + 5)}`;
+    if (b.c > 20) g += `<rect x="${(sx(b.m)).toFixed(1)}" y="${(y0 - sp(b.c)).toFixed(1)}" width="${bw.toFixed(1)}" height="${sp(b.c).toFixed(1)}" fill="#2ed8a3" opacity="0.75"><title>${t}: lädt ${kw(b.c)}</title></rect>`;
+    if (b.d > 20) g += `<rect x="${(sx(b.m)).toFixed(1)}" y="${y0}" width="${bw.toFixed(1)}" height="${sp(b.d).toFixed(1)}" fill="#e8a435" opacity="0.75"><title>${t}: entlädt ${kw(b.d)}</title></rect>`;
+  }
+  return `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">${g}</svg>`;
+}
+
 // ---------- Batterie: Verlauf Tag + Monat ----------
 async function loadZendureDay(dateStr) {
   const card = document.getElementById("zd-day-card");
@@ -2572,45 +2623,8 @@ async function loadZendureDay(dateStr) {
     foot.textContent = "";
     return;
   }
-  // 5-Minuten-Buckets für die Leistungsbalken
-  const buckets = new Map();
-  for (const [m, soc, c, dis] of raw) {
-    const b = Math.floor(m / 5) * 5;
-    const e = buckets.get(b) ?? { n: 0, c: 0, d: 0 };
-    e.n++; e.c += c; e.d += dis; buckets.set(b, e);
-  }
-  const bars = [...buckets].map(([m, e]) => ({ m, c: e.c / e.n, d: e.d / e.n }));
-  const maxP = Math.max(500, ...bars.map(b => Math.max(b.c, b.d)));
-  const VW = 360, VH = 160;
-  const pad = { l: 34, r: 8, t: 8, b: 18 };
-  const cw = VW - pad.l - pad.r;
-  const socH = 78, gap = 8, pwrTop = pad.t + socH + gap, pwrH = VH - pad.b - pwrTop;
-  const sx = m => pad.l + (m / 1440) * cw;
-  const sy = v => pad.t + socH - (v / 100) * socH;
-  const y0 = pwrTop + pwrH / 2;
-  const sp = w => (w / maxP) * (pwrH / 2);
-  let g = "";
-  for (const v of [0, 50, 100]) {
-    g += `<line x1="${pad.l}" y1="${sy(v)}" x2="${pad.l + cw}" y2="${sy(v)}" class="grid-line"/>`;
-    g += `<text x="${pad.l - 4}" y="${sy(v)}" text-anchor="end" dominant-baseline="middle" font-size="8">${v}%</text>`;
-  }
-  for (let h = 0; h <= 24; h += 4) {
-    g += `<text x="${sx(h * 60)}" y="${VH - 4}" text-anchor="${h === 24 ? "end" : h === 0 ? "start" : "middle"}" font-size="8">${h}h</text>`;
-  }
-  const line = raw.map((p, i) => `${i ? "L" : "M"}${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`).join(" ");
+  wrap.innerHTML = zendureChartSvg(raw, { minSoc: lastZendure?.min_soc });
   const last = raw[raw.length - 1];
-  g += `<path d="${line} L${sx(last[0]).toFixed(1)},${sy(0)} L${sx(raw[0][0]).toFixed(1)},${sy(0)} Z" fill="rgba(167,139,250,0.15)" stroke="none"/>`;
-  g += `<path d="${line}" fill="none" stroke="#a78bfa" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
-  // Leistung: Laden nach oben (grün), Entladen nach unten (orange), eigene Skala ± maxP
-  g += `<line x1="${pad.l}" y1="${y0}" x2="${pad.l + cw}" y2="${y0}" stroke="rgba(255,255,255,0.25)" stroke-width="0.8"/>`;
-  g += `<text x="${pad.l - 4}" y="${pwrTop + 4}" text-anchor="end" font-size="7" style="fill:#6a6d75">${(maxP / 1000).toFixed(1)}k</text>`;
-  g += `<text x="${pad.l - 4}" y="${pwrTop + pwrH}" text-anchor="end" font-size="7" style="fill:#6a6d75">-${(maxP / 1000).toFixed(1)}k</text>`;
-  const bw = Math.max(1, (cw / 288) * 1.1);
-  for (const b of bars) {
-    if (b.c > 20) g += `<rect x="${(sx(b.m)).toFixed(1)}" y="${(y0 - sp(b.c)).toFixed(1)}" width="${bw.toFixed(1)}" height="${sp(b.c).toFixed(1)}" fill="#2ed8a3" opacity="0.7"/>`;
-    if (b.d > 20) g += `<rect x="${(sx(b.m)).toFixed(1)}" y="${y0}" width="${bw.toFixed(1)}" height="${sp(b.d).toFixed(1)}" fill="#e8a435" opacity="0.7"/>`;
-  }
-  wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">${g}</svg>`;
   const k = v => v == null ? "–" : v.toFixed(1) + " kWh";
   foot.innerHTML = `Geladen <b>${k(d.charged_kwh)}</b> · Entladen <b>${k(d.discharged_kwh)}</b> · SoC jetzt <b>${Math.round(last[1])} %</b>`;
 }
@@ -2683,6 +2697,20 @@ function renderZendureCard(z) {
   $("#zd-charged").textIfChanged = k(z.charged_kwh);
   $("#zd-discharged").textIfChanged = k(z.discharged_kwh);
   $("#zd-temp").textIfChanged = z.temp_c != null ? Math.round(z.temp_c) + " °C" : "–";
+  // Nutzbarer Inhalt (über Mindest-SoC) und Reichweite bei der aktuellen Leistung
+  const capWh = z.capacity_wh ?? 0;
+  const usable = z.soc != null && capWh ? Math.max(0, (z.soc - (z.min_soc ?? 0)) / 100 * capWh) : null;
+  $("#zd-usable").textIfChanged = usable != null ? `${(usable / 1000).toFixed(1)} von ${(capWh / 1000).toFixed(1)} kWh` : "–";
+  const dur = h => h >= 24 ? "> 24 h" : h >= 1 ? `${Math.floor(h)} h ${String(Math.round((h % 1) * 60)).padStart(2, "0")} min` : `${Math.max(1, Math.round(h * 60))} min`;
+  let rng = "–", rngLabel = "Reichweite";
+  if (z.reachable && z.state === "discharging" && z.discharge_w > 0 && usable != null) {
+    rng = `${dur(usable / z.discharge_w)} bei ${kw(z.discharge_w)}`; rngLabel = "Reicht noch";
+  } else if (z.reachable && z.state === "charging" && z.charge_w > 0 && z.soc != null && capWh) {
+    const toFull = Math.max(0, ((z.target_soc ?? 100) - z.soc) / 100 * capWh);
+    rng = `${dur(toFull / z.charge_w)} bei ${kw(z.charge_w)}`; rngLabel = "Voll in";
+  }
+  $("#zd-range-label").textIfChanged = rngLabel;
+  $("#zd-range").textIfChanged = rng;
   const dec = $("#zd-decision");
   dec.textIfChanged = z.control_enabled && z.decision ? z.decision : "";
   dec.classList.toggle("hidden", !(z.control_enabled && z.decision));
@@ -2695,24 +2723,7 @@ async function loadZendureChart() {
   const d = await api("/api/zendure/history");
   const pts = (d.points || []).filter(p => p[1] != null);
   if (pts.length < 2) { wrap.htmlIfChanged = '<div class="chart-empty">Noch keine Verlaufsdaten.</div>'; return; }
-  const VW = 360, VH = 110;
-  const pad = { l: 30, r: 8, t: 8, b: 18 };
-  const cw = VW - pad.l - pad.r, ch = VH - pad.t - pad.b;
-  const sx = m => pad.l + (m / 1440) * cw, sy = v => pad.t + ch - (v / 100) * ch;
-  let g = "";
-  for (const v of [0, 50, 100]) {
-    g += `<line x1="${pad.l}" y1="${sy(v)}" x2="${pad.l + cw}" y2="${sy(v)}" class="grid-line"/>`;
-    g += `<text x="${pad.l - 4}" y="${sy(v)}" text-anchor="end" dominant-baseline="middle" font-size="8">${v}%</text>`;
-  }
-  for (let h = 0; h <= 24; h += 4) {
-    g += `<text x="${sx(h * 60)}" y="${VH - 4}" text-anchor="${h === 24 ? "end" : h === 0 ? "start" : "middle"}" font-size="8">${h}h</text>`;
-  }
-  const line = pts.map((p, i) => `${i ? "L" : "M"}${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`).join(" ");
-  const last = pts[pts.length - 1];
-  g += `<path d="${line} L${sx(last[0]).toFixed(1)},${sy(0)} L${sx(pts[0][0]).toFixed(1)},${sy(0)} Z" fill="rgba(167,139,250,0.18)" stroke="none"/>`;
-  g += `<path d="${line}" fill="none" stroke="#a78bfa" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
-  g += `<circle cx="${sx(last[0]).toFixed(1)}" cy="${sy(last[1]).toFixed(1)}" r="3.5" fill="#a78bfa" stroke="#14161b" stroke-width="1.5"/>`;
-  wrap.htmlIfChanged = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">${g}</svg>`;
+  wrap.htmlIfChanged = zendureChartSvg(pts, { minSoc: lastZendure?.min_soc });
 }
 
 // ---------- Wasserspeicher: Tagesverlauf + letzte Stunde + 7 Tage ----------

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-16 – Batterie: direkter Wechsel Laden/Entladen, Winterprofil, Charts im Dashboard
+
+Anlass: Erste 15 min Regelbetrieb in Prod (12:00–12:15). Die 2-min-Pause nach jedem Moduswechsel ließ die Batterie im Standby, obwohl 400–740 W aus dem Netz kamen (12:06–12:08) bzw. 3 kW eingespeist wurden (12:13–12:15).
+- **Kein Standby mehr zwischen Laden und Entladen** (`zendure_control.MIN_DIRECTION_S` 120 → 0): Das Gerät stellt in < 5 s um (Schreibtest). Flattern verhindern weiter die Schwellen: Laden ab 100 W + Hysterese (100 W) Überschuss, Entladen ab 50 W Bezug. Tests: `test_direct_switch_without_pause`, `test_small_surplus_no_flapping` (ersetzen `test_pause_after_mode_change`), `test_direct_switch_respects_wallbox_lock` (Laden → Auto lädt + Bezug → Standby), `test_direct_switch_never_feeds_heater_or_car` (Laden → Bezug: Entladen nur bis zur Grundlast bzw. gar nicht); `test_decisions` prüft `mode_change_pause` mit gepatchtem `MIN_DIRECTION_S`.
+- **Winterprofil (Prod, DB):** `eBike → Batterie → Wasserspeicher bis 40 °C → Wasserspeicher bis Max → Wallbox` (Batterie vor dem Wasserspeicher, im Winter heizt das Öl). Sommer unverändert: `eBike → Wasserspeicher bis 52 °C → Batterie → Wasserspeicher bis Max → Wallbox`.
+- **Dashboard-Card „Batterie“:** Chart heute mit Füllstand (Fläche, Mindest-SoC gestrichelt) und darunter Laden (grün, nach oben) / Entladen (orange, nach unten) als 5-Minuten-Balken mit Tooltip (Uhrzeit, Leistung); Legende. Neue Zeilen „Nutzbar“ (Inhalt über Mindest-SoC, z. B. „4.6 von 8.6 kWh“) und „Reicht noch“ (beim Entladen, bis Mindest-SoC) bzw. „Voll in“ (beim Laden, bis Ziel-SoC) bei der aktuellen Leistung. Verlauf → Tag nutzt dieselbe Zeichenfunktion (`zendureChartSvg`), jetzt auch mit Mindest-SoC-Linie und Tooltips. `app.js?v=20261016a`, `styles.css?v=86`.
+- Dev: `zendure` in der Dev-Config nur lesend eingetragen (`control_enabled=false`, `dry_run`), heutige Minutenwerte aus Prod in die Dev-DB kopiert – zum Ansehen auf Port 8001.
+
 ## 2026-10-16 – Zendure SolarFlow 2400 AC+: am echten Gerät geprüft, Abgleich, Fail-safe, Watchdog
 
 Anlass: Der SolarFlow 2400 AC+ (192.168.2.134, 3 Akkupacks, 8,64 kWh) ist eingebaut. Im Lieferzustand entlud er per App fest 200 W – auch bei 1,5 kW Einspeisung, also Akku → Netz.

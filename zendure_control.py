@@ -13,8 +13,10 @@ Regeln:
   (Haus ohne Heizstab und Wallbox) – die Batterie heizt nie das Wasser.
 - Wallbox lädt (Auto im Zustand „lädt", > 100 W) -> Entladen hart gesperrt,
   wenn `block_discharge_while_wallbox_charging` (Default an).
-- Ein neuer Lade-/Entlademodus startet frühestens 2 min nach dem letzten
-  Moduswechsel (dazwischen Standby); Limits werden nur bei > 50 W Änderung
+- Laden <-> Entladen wechselt direkt (Gerät stellt in < 5 s um, geprüft 16.10.2026);
+  Flattern verhindern die Schwellen (Laden ab 100 W + Hysterese, Entladen ab 50 W Bezug).
+  Die frühere 2-min-Pause ließ die Batterie bei Netzbezug bzw. Einspeisung im Standby
+  (``MIN_DIRECTION_S`` = 0, Mechanismus bleibt); Limits werden nur bei > 50 W Änderung
   geschrieben.
 - 3 Lesefehler in Folge -> neutral (inputLimit = outputLimit = 0).
 - Ladesollwert höchstens „jetzige Ladeleistung + jetzige Einspeisung“ (`export_cap_w`):
@@ -47,7 +49,7 @@ log = logging.getLogger(__name__)
 MIN_START_CHARGE_W = 100        # + Hysterese des Kaskaden-Geräts
 WRITE_DELTA_W = 50              # Limit nur bei größerer Änderung schreiben
 DISCHARGE_START_IMPORT_W = 50   # Netzbezug, ab dem entladen wird
-MIN_DIRECTION_S = 120           # Mindestzeit vor Laden <-> Entladen
+MIN_DIRECTION_S = 0             # Mindestzeit vor Laden <-> Entladen (0 = direkt)
 MAX_FAILS = 3
 DEVICE_MAX_W = 2400
 UNLIMITED = float("inf")        # Grundlast nicht begrenzt (Tests/Aufrufer ohne Grundlast-Angabe)

@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=85">
+  <link rel="stylesheet" href="/static/styles.css?v=86">
 </head>
 <body>
   <div class="app-shell">
@@ -144,9 +144,16 @@
           <div><span>Status</span><b id="zd-status" class="badge">–</b></div>
           <div><span>Geladen heute</span><b id="zd-charged">–</b></div>
           <div><span>Entladen heute</span><b id="zd-discharged">–</b></div>
+          <div><span>Nutzbar</span><b id="zd-usable">–</b></div>
+          <div><span id="zd-range-label">Reichweite</span><b id="zd-range">–</b></div>
           <div><span>Temperatur</span><b id="zd-temp">–</b></div>
         </div>
         <div class="zd-decision hidden" id="zd-decision"></div>
+        <div class="chart-legend-inline zd-legend">
+          <span class="cl-zd-soc">Füllstand</span>
+          <span class="cl-str3">Laden</span>
+          <span class="cl-zd-dis">Entladen</span>
+        </div>
         <div id="zd-chart-wrap" class="temp-chart-wrap"></div>
       </div>
 
@@ -352,6 +359,7 @@
           <div class="card-head">
             <h2>Batterie</h2>
             <div class="chart-legend-inline">
+              <span class="cl-zd-soc">Füllstand</span>
               <span class="cl-str3">Laden</span>
               <span class="cl-zd-dis">Entladen</span>
             </div>
@@ -1027,7 +1035,7 @@
     </form>
   </div>
 
-  <script src="/static/app.js?v=20261014b" defer></script>
+  <script src="/static/app.js?v=20261016a" defer></script>
   <script src="/static/heating.js?v=20261014a" defer></script>
   <script src="/static/shutters.js?v=20261013j" defer></script>
 </body>

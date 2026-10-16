@@ -72,13 +72,37 @@ class PlanTest(unittest.TestCase):
         p = plan(self.zc, self.st, **mk(import_w=500, wallbox_charging=True))
         self.assertEqual(p.mode, "discharge")
 
-    def test_pause_after_mode_change(self):
+    def test_direct_switch_without_pause(self):
+        # Laden → Entladen und Entladen → Laden direkt im nächsten Lauf (keine Standby-Pause)
+        self.st.home_out_w = 0
         p = plan(self.zc, self.st, **mk(import_w=500, ctl_mode="charge", ctl_limit_w=1000, seconds_since_change=30))
-        self.assertEqual((p.mode, p.limit_w, p.write), ("idle", 0, True))   # Laden endet sofort
-        p = plan(self.zc, self.st, **mk(import_w=500, ctl_mode="idle", seconds_since_change=30))
-        self.assertEqual((p.mode, p.write), ("idle", False))
-        p = plan(self.zc, self.st, **mk(import_w=500, ctl_mode="idle", seconds_since_change=130))
+        self.assertEqual((p.mode, p.limit_w, p.write), ("discharge", 500, True))
+        p = plan(self.zc, self.st, **mk(avail_w=3000, ctl_mode="discharge", ctl_limit_w=600, seconds_since_change=30))
+        self.assertEqual((p.mode, p.limit_w, p.write), ("charge", 2400, True))
+        p = plan(self.zc, self.st, **mk(import_w=500, ctl_mode="idle", seconds_since_change=5))
         self.assertEqual(p.mode, "discharge")
+
+    def test_direct_switch_respects_wallbox_lock(self):
+        # Laden → (Wolke, Auto lädt, 2 kW Bezug): kein Entladen, Standby
+        p = plan(self.zc, self.st, **mk(import_w=2000, wallbox_charging=True, ctl_mode="charge", ctl_limit_w=1000,
+                                         seconds_since_change=30))
+        self.assertEqual((p.mode, p.limit_w, p.write, p.code), ("idle", 0, True, "wallbox_lock"))
+
+    def test_direct_switch_never_feeds_heater_or_car(self):
+        # Laden → 3 kW Bezug, davon Grundlast nur 300 W (Rest Heizstab/Wallbox): höchstens 300 W
+        p = plan(self.zc, self.st, **mk(import_w=3000, ctl_mode="charge", ctl_limit_w=1000, seconds_since_change=30,
+                                         base_load_w=300))
+        self.assertEqual((p.mode, p.limit_w), ("discharge", 300))
+        # Bezug gehört ganz zu Heizstab/Wallbox → gar kein Entladen
+        p = plan(self.zc, self.st, **mk(import_w=3000, ctl_mode="charge", ctl_limit_w=1000, seconds_since_change=30,
+                                         base_load_w=20))
+        self.assertEqual((p.mode, p.code), ("idle", "no_discharge_controlled_load"))
+
+    def test_small_surplus_no_flapping(self):
+        # Entladen läuft, 150 W Einspeisung: unter Ladeschwelle (100 + 100 Hysterese) → kein Laden
+        self.st.home_out_w = 400
+        p = plan(self.zc, self.st, **mk(avail_w=150, import_w=-150, ctl_mode="discharge", ctl_limit_w=400))
+        self.assertEqual((p.mode, p.limit_w), ("discharge", 250))
 
     def test_override_force_charge_and_block_discharge(self):
         p = plan(self.zc, self.st, **mk(override="on", seconds_since_change=5, ctl_mode="discharge", ctl_limit_w=300))

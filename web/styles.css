@@ -1580,6 +1580,8 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 .zd-decision { margin-top: 10px; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
 .zd-decision.hidden, #zd-day-card.hidden, #zd-month-card.hidden { display: none; }
 .cl-zd-dis { color: #e8a435; background: rgba(232,164,53,0.1); }
+.cl-zd-soc { color: #a78bfa; background: rgba(167,139,250,0.12); }
+.zd-legend { margin: 12px 0 4px; flex-wrap: wrap; }
 
 /* deaktivierte Heizstab-Phase */
 .phase-dot.disabled { background: transparent; border: 1px dashed rgba(255,255,255,0.22); box-shadow: none; opacity: 0.6; }

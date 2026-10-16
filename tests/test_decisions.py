@@ -5,6 +5,7 @@ import re
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -178,7 +179,10 @@ class BatteryCodeTest(unittest.TestCase):
         self.assertEqual(self.code(override="off", import_w=500), "manual_override")
         self.assertEqual(self.code(override="on"), "manual_override")
         self.assertEqual(self.code(import_w=500, ctl_mode="charge", ctl_limit_w=1000, seconds_since_change=30),
-                         "mode_change_pause")
+                         "discharging_base_load")                      # direkter Wechsel (MIN_DIRECTION_S = 0)
+        with mock.patch("zendure_control.MIN_DIRECTION_S", 120):       # Mechanismus bleibt nutzbar
+            self.assertEqual(self.code(import_w=500, ctl_mode="charge", ctl_limit_w=1000, seconds_since_change=30),
+                             "mode_change_pause")
         self.st.soc = 100
         self.assertEqual(self.code(avail_w=2000), "soc_target_reached")
         self.st.soc = 8
