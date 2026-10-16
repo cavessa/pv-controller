@@ -17,6 +17,14 @@ Regeln:
   Moduswechsel (dazwischen Standby); Limits werden nur bei > 50 W Änderung
   geschrieben.
 - 3 Lesefehler in Folge -> neutral (inputLimit = outputLimit = 0).
+- Ladesollwert höchstens „jetzige Ladeleistung + jetzige Einspeisung“ (`export_cap_w`):
+  die Batterie nimmt nur, was tatsächlich ins Netz geht – braucht der Heizstab die Leistung
+  noch (Mindestlaufzeit), wartet sie. Absenkungen werden immer geschrieben (Wolke → höchstens
+  bis zum nächsten Lauf aus dem Netz).
+- Fail-safe (Hauptzähler/WR nicht lesbar, Kaskade abgestürzt) → sofort Standby (Limits 0).
+- Watchdog (`zendure_watchdog.py`, eigener Cron): Regelung seit 5 min nicht gelaufen → Standby.
+- Meldet das Gerät andere Sollwerte als den Regelzustand (App/HEMS, Neustart:
+  smartMode=1 schreibt nur ins RAM), wird der Zustand erneut geschrieben.
 """
 from __future__ import annotations
 
@@ -55,6 +63,7 @@ class Plan:
     hard: bool = False         # Sicherheits-/Override-Fall, ignoriert Wechselsperre
     code: str = ""             # Grund-Code (reasons.py) – nur Protokoll, ohne Einfluss auf die Regelung
     data: dict = field(default_factory=dict)
+    want_w: Optional[int] = None   # gewünschte Ladeleistung vor dem Einspeise-Deckel (für das Heizstab-Budget)
 
 
 def _w(v: Optional[float]) -> Optional[int]:
@@ -82,8 +91,13 @@ def plan(
     seconds_since_change: float,
     hysteresis_w: int = 100,
     base_load_w: Optional[float] = UNLIMITED,
+    failsafe: Optional[str] = None,
+    export_cap_w: Optional[float] = None,
 ) -> Plan:
-    """Gewünschte Betriebsart bestimmen (siehe Modul-Docstring)."""
+    """Gewünschte Betriebsart bestimmen (siehe Modul-Docstring).
+
+    ``failsafe``: Text, was nicht lesbar ist → Standby (hart). ``export_cap_w``: jetzige
+    Ladeleistung + jetzige Einspeisung am Hauptzähler – Obergrenze für den Ladesollwert."""
     max_c = int(min(zc.max_charge_w, DEVICE_MAX_W))
     max_d = int(min(zc.max_discharge_w, DEVICE_MAX_W))
     soc = st.soc if st.soc is not None else 0.0
@@ -116,9 +130,21 @@ def plan(
             reason_c = f"Überschuss {avail_w:.0f} W < {need} W – kein Laden"
             code_c, data_c = "below_start_threshold", {"rest_w": _w(avail_w), "threshold_w": need}
 
-    if target_c > 0:
+    want_c = target_c
+    if target_c > 0 and override != "on" and export_cap_w is not None:
+        cap = max(0, int(export_cap_w // 10 * 10))
+        if cap < target_c:
+            target_c = cap
+            reason_c = (f"Batterie lädt mit {target_c / 1000:.2f} kW (wartet auf {want_c} W – "
+                        f"nur was gerade eingespeist wird)")
+            data_c = {**data_c, "watts": target_c, "want_w": want_c}
+
+    if failsafe:
+        desired = Plan("idle", 0, False, f"Fail-safe: {failsafe} nicht lesbar – Batterie im Standby", "blocked",
+                       hard=True, code="failsafe_global", data={**nums, "unreadable": failsafe})
+    elif want_c > 0:
         desired = Plan("charge", target_c, False, reason_c, "override" if override == "on" else "charge",
-                       hard=override == "on", code=code_c, data={**nums, **data_c})
+                       hard=override == "on", code=code_c, data={**nums, **data_c}, want_w=want_c)
     else:
         # --- Entladen -------------------------------------------------------
         if blocked_reason:
@@ -169,12 +195,40 @@ def plan(
                              "next_mode": "Laden" if desired.mode == "charge" else "Entladen"})
 
     changed = desired.mode != ctl_mode or abs(desired.limit_w - ctl_limit_w) > WRITE_DELTA_W
+    if desired.mode == "charge" == ctl_mode and desired.limit_w < ctl_limit_w:
+        changed = True                       # weniger Laden sofort schreiben (sonst Netzbezug)
     if desired.mode == "idle" and ctl_limit_w != 0:
         changed = True
     desired.write = changed
     if not changed:
         desired.limit_w = ctl_limit_w if ctl_mode == desired.mode else desired.limit_w
+        drift = device_drift(st, desired.mode, desired.limit_w)
+        if drift:
+            # App/HEMS oder Geräte-Neustart (smartMode=1 schreibt nur ins RAM) hat die Werte geändert
+            log.warning("Zendure: Gerät weicht vom Regelzustand ab (%s) – schreibe %s %d W erneut",
+                        drift, desired.mode, desired.limit_w)
+            desired.write = True
+            desired.data = {**desired.data, "drift": drift}
     return desired
+
+
+def device_drift(st: ZendureStatus, mode: str, limit_w: int) -> str:
+    """Abweichung der am Gerät gemeldeten Sollwerte (acMode/inputLimit/outputLimit) vom
+    Regelzustand; leer = passt oder Gerät meldet die Werte nicht."""
+    props = st.props or {}
+    want_in, want_out = (limit_w, 0) if mode == "charge" else (0, limit_w) if mode == "discharge" else (0, 0)
+    out = []
+    for key, want in (("inputLimit", want_in), ("outputLimit", want_out)):
+        try:
+            have = float(props[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if abs(have - want) > WRITE_DELTA_W:
+            out.append(f"{key} {have:.0f} statt {want}")
+    want_mode = {"charge": AC_MODE_CHARGE, "discharge": AC_MODE_DISCHARGE}.get(mode)
+    if want_mode is not None and props.get("acMode") is not None and props.get("acMode") != want_mode:
+        out.append(f"acMode {props.get('acMode')} statt {want_mode}")
+    return ", ".join(out)
 
 
 class ZendureControl:
@@ -194,6 +248,8 @@ class ZendureControl:
         override: Optional[str],
         hysteresis_w: int = 100,
         base_load_w: Optional[float] = UNLIMITED,
+        failsafe: Optional[str] = None,
+        export_cap_w: Optional[float] = None,
     ) -> Plan:
         ctl = db.get_zendure_ctl()
         now = datetime.now()
@@ -220,6 +276,7 @@ class ZendureControl:
             self.zc, st, avail_w=avail_w, import_w=import_w, wallbox_charging=wallbox_charging,
             override=override, ctl_mode=ctl["mode"], ctl_limit_w=ctl["limit_w"],
             seconds_since_change=since, hysteresis_w=hysteresis_w, base_load_w=base_load_w,
+            failsafe=failsafe, export_cap_w=export_cap_w,
         )
 
         reason = p.reason
@@ -246,3 +303,39 @@ class ZendureControl:
         db.set_zendure_ctl(decision=reason, decided_at=now.isoformat(timespec="seconds"))
         p.reason = reason
         return p
+
+
+def force_standby(client: ZendureClient, reason: str, dry_run: bool = False) -> bool:
+    """Batterie sofort in Standby (inputLimit = outputLimit = 0) und Regelzustand auf idle.
+
+    Für Fail-safe außerhalb der normalen Regelung (Kaskade abgestürzt, Watchdog, Pi-Start).
+    Bei dry_run nur Log. Liefert True, wenn geschrieben (oder dry_run)."""
+    now = datetime.now().isoformat(timespec="seconds")
+    if dry_run:
+        log.warning("[Dry-Run] Zendure: würde Standby schreiben – %s", reason)
+        return True
+    ok = client.set_mode(None, input_limit=0, output_limit=0)
+    try:
+        if ok:
+            db.set_zendure_ctl(mode="idle", limit_w=0, changed_at=now)
+        # decided_at bleibt: das ist der Herzschlag der Regelung, den der Watchdog prüft
+        db.set_zendure_ctl(decision=f"Standby: {reason}" if ok else f"Standby fehlgeschlagen: {reason}")
+    except Exception:
+        log.warning("Zendure: Regelzustand nicht speicherbar", exc_info=True)
+    if ok:
+        log.warning("Zendure: Standby geschrieben (Limits 0) – %s", reason)
+    else:
+        log.error("Zendure: Standby konnte nicht geschrieben werden – %s", reason)
+    return ok
+
+
+def control_age_s(now: Optional[datetime] = None) -> Optional[float]:
+    """Sekunden seit dem letzten Lauf der Regelung (zendure_ctl.decided_at); None = nie/unlesbar."""
+    try:
+        ts = db.get_zendure_ctl().get("decided_at")
+        if not ts:
+            return None
+        return ((now or datetime.now()) - datetime.fromisoformat(ts)).total_seconds()
+    except Exception:
+        log.warning("Zendure: Regelzustand nicht lesbar", exc_info=True)
+        return None

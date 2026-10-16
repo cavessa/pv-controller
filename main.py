@@ -88,6 +88,18 @@ def run_shutter_schedules(config_path: str, dry_run: bool, budget_s: float | Non
                   "pv-controller.shutters", "Rollladen-Zeitpläne", "Rollladen-Zeitpläne", "shutter-schedules")
 
 
+def _battery_standby(config, reason: str) -> None:
+    """Fail-safe: Batterie in Standby, wenn die Regelung in diesem Lauf nicht zustande kam."""
+    if not (config.zendure_active and config.zendure.control_enabled):
+        return
+    try:
+        from clients.zendure_client import ZendureClient
+        from zendure_control import force_standby
+        force_standby(ZendureClient(config.zendure.ip, config.zendure.sn), reason, config.runtime.dry_run)
+    except Exception:
+        logging.getLogger("pv-controller.main").exception("Batterie-Standby fehlgeschlagen")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="PV-Überschuss Heizstab-Controller")
     parser.add_argument(
@@ -115,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
         cascade_res = CascadeService(config).run_cascade()
     except Exception:
         log.exception("Unerwarteter Fehler im Kaskaden-Durchlauf")
+        _battery_standby(config, "Kaskade abgebrochen")
 
     rc = 0
     result = None

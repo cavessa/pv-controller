@@ -3,7 +3,7 @@ import unittest
 
 from clients.zendure_client import ZendureStatus
 from config import ZendureConfig
-from zendure_control import plan
+from zendure_control import device_drift, plan
 
 
 def mk(**kw):
@@ -85,6 +85,44 @@ class PlanTest(unittest.TestCase):
         self.assertEqual((p.mode, p.limit_w), ("charge", 2400))
         p = plan(self.zc, self.st, **mk(override="off", import_w=900))
         self.assertEqual((p.mode, p.action), ("idle", "blocked"))
+
+
+class DriftTest(unittest.TestCase):
+    """Gerät meldet andere Sollwerte als der Regelzustand (App/HEMS, Neustart) → erneut schreiben."""
+
+    def setUp(self):
+        self.zc = ZendureConfig(enabled=True, ip="x", min_soc=10, target_soc=100,
+                                max_charge_w=2400, max_discharge_w=2400)
+
+    def st(self, **props):
+        return ZendureStatus(soc=64, home_out_w=props.get("outputLimit", 0), props=props)
+
+    def test_idle_but_device_discharges_fixed_200(self):
+        st = self.st(acMode=2, inputLimit=0, outputLimit=200)      # Zustand nach Inbetriebnahme (App)
+        with self.assertLogs("zendure_control", level="WARNING") as logs:
+            p = plan(self.zc, st, **mk(import_w=-1500))
+        self.assertEqual((p.mode, p.limit_w, p.write), ("idle", 0, True))
+        self.assertIn("outputLimit 200 statt 0", p.data["drift"])
+        self.assertIn("erneut", logs.output[0])
+
+    def test_matching_device_no_write(self):
+        st = self.st(acMode=1, inputLimit=1000, outputLimit=0)
+        p = plan(self.zc, st, **mk(avail_w=1030, ctl_mode="charge", ctl_limit_w=1000))
+        self.assertFalse(p.write)
+        st = self.st(acMode=2, inputLimit=0, outputLimit=0)          # idle: acMode egal
+        self.assertFalse(plan(self.zc, st, **mk()).write)
+
+    def test_charge_overwritten_by_app(self):
+        st = self.st(acMode=2, inputLimit=0, outputLimit=200)
+        with self.assertLogs("zendure_control", level="WARNING"):
+            p = plan(self.zc, st, **mk(avail_w=1030, ctl_mode="charge", ctl_limit_w=1000))
+        self.assertEqual((p.mode, p.limit_w, p.write), ("charge", 1000, True))
+
+    def test_small_difference_and_missing_props_ignored(self):
+        self.assertEqual(device_drift(self.st(acMode=2, inputLimit=0, outputLimit=430), "discharge", 400), "")
+        self.assertEqual(device_drift(ZendureStatus(soc=50), "charge", 800), "")
+        self.assertEqual(device_drift(self.st(acMode=1, inputLimit=0, outputLimit=400), "discharge", 400),
+                         "acMode 1 statt 2")
 
 
 if __name__ == "__main__":

@@ -207,10 +207,17 @@ class CascadeService:
         results: list[dict] = []
         battery_plan: dict = {}
 
+        # Fail-safe Batterie: ohne Hauptzähler oder WR kein Laden/Entladen (Standby, nicht halten)
+        battery_failsafe = ", ".join(
+            n for n, bad in (("Hauptzähler", main_feed_in is None), ("Wechselrichter", pv_total_w is None)) if bad
+        ) or None
+        # Laden höchstens bis „jetzige Ladung + jetzige Einspeisung“ (nie Leistung, die gerade aus dem Netz käme)
+        export_cap_w = (zd_status.charge_w + raw_feed_in) if zd_status is not None else None
+
         def battery_fn(avail_w: float) -> float:
             charge_w, reason = self._handle_zendure(
                 battery_dev, avail_w, surplus, zd_status, -raw_feed_in, base_load_w,
-                self._active_override(battery_dev),
+                self._active_override(battery_dev), failsafe=battery_failsafe, export_cap_w=export_cap_w,
             )
             p = self._last_plan
             code = p.code
@@ -430,8 +437,10 @@ class CascadeService:
     def _handle_zendure(
         self, device: dict, avail_w: float, surplus: int, st, import_w: float,
         base_load_w: Optional[float], override: Optional[str],
+        failsafe: Optional[str] = None, export_cap_w: Optional[float] = None,
     ) -> tuple[float, str]:
-        """Batterie regeln; liefert (geplante Ladeleistung W, Begründung)."""
+        """Batterie regeln; liefert (gewünschte Ladeleistung W, Begründung) – gewünscht, nicht
+        gedeckelt, damit der Heizstab (dahinter) für die Batterie Platz macht."""
         wb = self._wallbox_charging() if self.cfg.zendure.block_discharge_while_wallbox_charging else False
         # Netzbezug ohne die eigene Ladeleistung der Batterie (Laden zieht ja selbst am Zähler)
         if st is not None:
@@ -439,9 +448,9 @@ class CascadeService:
         p = self.zendure_ctl.run(
             st, avail_w=max(0, avail_w), import_w=import_w, base_load_w=base_load_w,
             wallbox_charging=wb, override=override,
-            hysteresis_w=int(device["hysteresis_watts"]),
+            hysteresis_w=int(device["hysteresis_watts"]), failsafe=failsafe, export_cap_w=export_cap_w,
         )
-        charge_w = p.limit_w if (p.mode == "charge" and st is not None) else 0
+        charge_w = (p.want_w if p.want_w is not None else p.limit_w) if (p.mode == "charge" and st is not None) else 0
 
         now = datetime.now()
         active = p.mode != "idle" and st is not None

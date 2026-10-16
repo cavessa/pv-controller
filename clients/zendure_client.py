@@ -3,9 +3,11 @@
 GET  http://{ip}/properties/report   -> alle Properties (JSON)
 POST http://{ip}/properties/write    -> {"sn": ..., "properties": {...}}
 
-Lesen: `get_status`. Schreiben (`set_mode`) nur über zendure_control (Phase 2). Die Bedeutung von `acMode` / `packState` ist in der
-Zendure-Doku nicht eindeutig: Mapping beim ersten Test gegen das echte Gerät
-verifizieren und hier in den Konstanten festhalten.
+Lesen: `get_status`. Schreiben (`set_mode`) nur über zendure_control (Phase 2).
+Mapping am echten Gerät geprüft (SolarFlow 2400 AC+, 16.10.2026): acMode 1 + inputLimit
+lädt aus dem Hausnetz (gridInputPower = outputPackPower), acMode 2 + outputLimit entlädt
+(packInputPower = outputHomePower), inputLimit = outputLimit = 0 stoppt; Umstellung < 5 s.
+packState 0 Standby / 1 lädt / 2 entlädt (folgt ~5 s verzögert).
 """
 from __future__ import annotations
 
@@ -25,10 +27,10 @@ PROP_CHARGE_W = "outputPackPower"      # Leistung ins Akkupaket = Laden
 PROP_DISCHARGE_W = "packInputPower"    # Leistung aus dem Akkupaket = Entladen
 PROP_GRID_IN_W = "gridInputPower"
 PROP_HOME_OUT_W = "outputHomePower"
-PROP_PACK_STATE = "packState"          # laut Vorgabe 0 idle / 1 laden / 2 entladen (unverifiziert)
+PROP_PACK_STATE = "packState"          # 0 Standby / 1 lädt / 2 entlädt
 PROP_TEMP = "hyperTmp"
 
-# acMode (W) – UNVERIFIZIERT: vor dem ersten Regelbetrieb am echten Gerät prüfen
+# acMode (W) – am Gerät geprüft (16.10.2026)
 AC_MODE_CHARGE = 1
 AC_MODE_DISCHARGE = 2
 
@@ -118,7 +120,7 @@ class ZendureClient:
             props=props,
         )
 
-    # ---- Schreiben (Phase 2, noch ungenutzt) ----------------------------
+    # ---- Schreiben (Phase 2) --------------------------------------------
 
     def set_mode(
         self,
