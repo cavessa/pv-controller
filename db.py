@@ -1722,3 +1722,41 @@ def get_cascade_permission(device_type: str) -> Optional[bool]:
 
 init_cascade_tables()
 init_cascade_settings_table()
+
+
+# ── Heizstab-Thermostat (Relais an, Heizstab zieht nichts) ───────────────────
+# open_since: erste Minute „Relais an, Heizstab-3EM < 50 W“ (None = zieht / Relais aus);
+# full_since/full_temp: „Speicher praktisch voll“ (Thermostat lange offen nahe Max) – Freigabe,
+# wenn der Speicher 2 °C unter full_temp gefallen ist.
+
+def _thermostat_table(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS heater_thermostat (
+            id          INTEGER PRIMARY KEY CHECK (id = 1),
+            open_since  TEXT,
+            open_temp   REAL,
+            full_since  TEXT,
+            full_temp   REAL
+        )
+    """)
+    conn.execute("INSERT OR IGNORE INTO heater_thermostat (id) VALUES (1)")
+
+
+def get_heater_thermostat() -> dict:
+    with sqlite3.connect(DB_PATH) as conn:
+        _thermostat_table(conn)
+        r = conn.execute(
+            "SELECT open_since, open_temp, full_since, full_temp FROM heater_thermostat WHERE id = 1"
+        ).fetchone()
+    return {"open_since": r[0], "open_temp": r[1], "full_since": r[2], "full_temp": r[3]}
+
+
+def set_heater_thermostat(**kw) -> None:
+    allowed = {"open_since", "open_temp", "full_since", "full_temp"}
+    kw = {k: v for k, v in kw.items() if k in allowed}
+    if not kw:
+        return
+    with sqlite3.connect(DB_PATH) as conn:
+        _thermostat_table(conn)
+        conn.execute(f"UPDATE heater_thermostat SET {', '.join(f'{k} = ?' for k in kw)} WHERE id = 1",
+                     list(kw.values()))

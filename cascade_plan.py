@@ -108,8 +108,12 @@ class HeaterCtx:
     comfort_min: float = 52.0
     max_temp: float = 63.0
     actual_w: float = 0.0                 # gemessene Heizstab-Leistung (für Folge-Geräte)
+    thermostat_open: bool = False         # Relais an, Heizstab zieht nichts → beansprucht nur Gemessenes
+    practically_full: bool = False        # Thermostat lange offen nahe Max → Stufen inaktiv
 
     def stage_active(self, key: str) -> bool:
+        if self.practically_full:
+            return False
         if self.temp is None:
             return key == HEATER_MAX
         if key == HEATER_MIN:
@@ -182,6 +186,8 @@ def walk(
                 # vorgelagerte Stufe: beansprucht nur ihre ganzen Phasen, Rest geht weiter
                 n = phases_for(remaining, heater.phase_w, heater.grid_assist_w, heater.n_phases)
                 claim = n * heater.phase_w
+                if heater.thermostat_open:             # Thermostat offen: nur was er gerade zieht
+                    n, claim = 0, min(claim, heater.actual_w)
                 remaining -= claim
                 res.trace.append(f"{key}: {n} Phase(n) = {claim:.0f} W, weiter {remaining:.0f} W")
         else:

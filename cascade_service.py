@@ -28,6 +28,7 @@ from clients.shelly_client import Shelly3EMClient, ShellyPlugClient, ShellyStora
 from clients.solax_client import SolaxClient
 from clients.zendure_client import ZendureClient
 from zendure_control import WRITE_DELTA_W
+from heater_phases import RELEASE_DROP_C, THERMOSTAT_OPEN_W
 from config import Config
 from heater_power import PhaseRead
 from heater_power import resolve as resolve_heater_power
@@ -41,6 +42,7 @@ from db import (
     get_cascade_profile,
     get_cascade_devices_due_for_retry,
     get_cascade_settings,
+    get_heater_thermostat,
     get_last_phase_states,
     increment_cascade_device_errors,
     reset_cascade_device_errors,
@@ -205,10 +207,20 @@ class CascadeService:
         n_ph = self.cfg.heater.enabled_phase_count
         h = self.cfg.heater
         actual_heater_w = float(actual_device_w.get(heater_dev["id"], 0.0)) if heater_dev else 0.0
+        # Thermostat im Heizstab (Zustand vom Controller des Vorlaufs + jetzige Messung): offen →
+        # gemessene statt Relais-Leistung; praktisch voll → Heizstab-Stufen inaktiv
+        thermo = {}
+        try:
+            thermo = get_heater_thermostat()
+        except Exception:
+            log.warning("Heizstab-Thermostat-Zustand nicht lesbar", exc_info=True)
         ctx = HeaterCtx(
             phase_w=h.phase_power_w, grid_assist_w=h.grid_assist_w, n_phases=n_ph, temp=temp,
             comfort_min=comfort_min if comfort_min is not None else 0.0, max_temp=h.storage_max_temp, actual_w=actual_heater_w,
+            thermostat_open=bool(thermo.get("open_since")) and actual_heater_w < THERMOSTAT_OPEN_W,
+            practically_full=bool(thermo.get("full_since")),
         )
+        self._thermo = thermo
         results: list[dict] = []
         battery_plan: dict = {}
 
@@ -332,9 +344,24 @@ class CascadeService:
                 "temp_c": None if temp is None else round(temp, 1)}
         if battery_waiting:
             data["battery_waiting"] = True
+        thermo = getattr(self, "_thermo", {}) or {}
         if force:
             code = "manual_override"
             data["mode"] = "an" if force == "on" else "aus"
+        elif ctx.practically_full and thermo.get("full_temp") is not None:
+            code = "storage_practically_full"
+            data.update(open_min=15, temp_c=thermo["full_temp"],
+                        release_c=round(float(thermo["full_temp"]) - RELEASE_DROP_C, 1))
+            reason += f"; Speicher praktisch voll – Freigabe ab {data['release_c']} °C"
+        elif ctx.thermostat_open:
+            code = "heater_thermostat_open"
+            try:
+                age = (now - datetime.fromisoformat(thermo["open_since"])).total_seconds()
+            except (KeyError, TypeError, ValueError):
+                age = 60.0
+            data["open_min"] = max(1, int(round(age / 60)))
+            reason += (f"; Thermostat im Heizstab offen (Relais an, {int(actual_w)} W seit {data['open_min']} min) "
+                       "– Überschuss geht an Batterie/Wallbox")
         elif target >= 1:
             code = "grid_assist" if budget < target * h.phase_power_w else "budget_available"
         elif gross_w - battery_w >= start_w:

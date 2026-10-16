@@ -12,6 +12,10 @@ jemand einen neuen schreibt.
   Gerätewerte in zwei Takten hintereinander vom Regelzustand ab, ohne dass pvcontroller in den
   letzten ``FOREIGN_GRACE_S`` geschrieben hat (App-Energieplan/HEMS), → Hinweis + sofort
   Standby (höchstens alle ``FOREIGN_STANDBY_MIN_S``).
+- Lade-Drosselung (gleicher Takt): lädt die Batterie und misst der Hauptzähler zwei Takte in
+  Folge Netzbezug > ``THROTTLE_IMPORT_W`` → Ladesollwert sofort um den Bezug senken (bis 0).
+  Nur senken, nie erhöhen (das macht der Minutenlauf); Zähler nicht lesbar → nichts tun.
+  Fälle: Heizstab-Thermostat schließt wieder, Wolke, Herd an.
 - ``--boot`` (Cron ``@reboot``): Standby unbedingt, mit Wiederholung bis das Gerät antwortet.
 
 Prozess-Regeln (Cron: ``flock -n /tmp/pvc-zendure-watch.lock`` → nie zwei Instanzen):
@@ -41,6 +45,9 @@ TICK_S = 3.0
 LOOP_END_S = 58.0          # Schleife endet bei Sekunde 58 der Minute (Cron startet zur vollen Minute neu)
 FOREIGN_TICKS = 2           # so viele Takte in Folge, bevor ein Fremdeingriff gilt
 FOREIGN_STANDBY_MIN_S = 30.0
+THROTTLE_IMPORT_W = 100.0   # Netzbezug, ab dem das Laden sofort gesenkt wird
+THROTTLE_TICKS = 2
+THROTTLE_SETTLE_S = 6.0     # nach einer Senkung so lange warten (Gerät stellt in < 5 s um)
 BOOT_TRIES = 12
 BOOT_WAIT_S = 15.0
 
@@ -148,7 +155,7 @@ def guard_tick(cfg, client, goe, device_discharging: bool = False, state: Option
         mode = None                                       # DB nicht lesbar → vorsichtshalber prüfen
     if mode != "discharge" and not (device_discharging and not state.get("stopped")) and mode is not None:
         return "idle"
-    if not charging_now(goe):
+    if goe is None or not charging_now(goe):              # keine Wallbox konfiguriert: nichts zu sperren
         return "ok"
     if cfg.runtime.dry_run and state.get("stopped"):
         return "standby"                                  # dry_run: nur einmal pro Lauf loggen
@@ -186,6 +193,60 @@ def foreign_tick(cfg, client, st, state: dict, clock: Callable[[], float] = time
     return "foreign_standby"
 
 
+def throttle_tick(cfg, client, meter, state: dict, clock: Callable[[], float] = time.time) -> Optional[str]:
+    """Lädt die Batterie und bezieht das Haus Strom → Ladesollwert sofort um den Bezug senken.
+
+    ``meter``: Hauptzähler (``get_total_power_w()``, + = Bezug, None = nicht lesbar). Liefert
+    "throttle" nach einer Senkung, sonst None."""
+    import db
+    from clients.zendure_client import AC_MODE_CHARGE
+    from zendure_control import _round10, write_guard
+    if meter is None:
+        return None
+    ctl = db.get_zendure_ctl()
+    if ctl["mode"] != "charge" or not ctl["limit_w"]:
+        state.pop("imports", None)
+        return None
+    now = clock()
+    if now < state.get("throttle_settle_until", 0.0):
+        return None
+    try:
+        grid = meter.get_total_power_w()
+    except Exception:
+        grid = None
+    if grid is None or grid <= THROTTLE_IMPORT_W:
+        state.pop("imports", None)                         # nicht lesbar oder kein Bezug: nichts tun
+        return None
+    imports = state.setdefault("imports", [])
+    imports.append(float(grid))
+    if len(imports) < THROTTLE_TICKS:
+        return None
+    cut = min(imports[-THROTTLE_TICKS:])                   # nur den anhaltenden Bezug abziehen
+    state["imports"] = []
+    old = int(ctl["limit_w"])
+    new = max(0, _round10(old - cut))
+    if new >= old:
+        return None
+    if cfg.runtime.dry_run:
+        log.info("[Dry-Run] Zendure-Wächter: Netzbezug %.0f W – würde Laden von %d auf %d W senken", cut, old, new)
+        state["throttle_settle_until"] = now + THROTTLE_SETTLE_S
+        return "throttle"
+    with write_guard() as locked:
+        ctl = db.get_zendure_ctl()                         # unter dem Lock neu: Minutenlauf könnte geschrieben haben
+        if not locked or ctl["mode"] != "charge" or int(ctl["limit_w"] or 0) != old:
+            return None
+        ok = client.set_mode(AC_MODE_CHARGE, input_limit=new, output_limit=0)
+        if ok:
+            from datetime import datetime
+            db.set_zendure_ctl(limit_w=new, written_at=datetime.now().isoformat(timespec="seconds"))
+    state["throttle_settle_until"] = now + THROTTLE_SETTLE_S
+    if ok:
+        log.info("Zendure-Wächter: Netzbezug %.0f W beim Laden – Ladung sofort von %d auf %d W gesenkt", cut, old, new)
+        return "throttle"
+    log.warning("Zendure-Wächter: Senken des Ladens auf %d W fehlgeschlagen", new)
+    return None
+
+
 def _out_limit(st) -> float:
     try:
         return float(st.props.get("outputLimit", 0) or 0) if st is not None else 0.0
@@ -195,7 +256,8 @@ def _out_limit(st) -> float:
 
 def guard_loop(cfg, client, goe, *, end_at: float, tick_s: float = TICK_S,
                stop: Callable[[], Optional[str]] = lambda: None,
-               sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.time) -> list[str]:
+               sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.time,
+               meter=None) -> list[str]:
     """Wächter-Schleife bis ``end_at`` (Unix-Zeit); ``stop()`` → Grund zum Beenden oder None.
 
     Liest das Gerät in jedem Takt (Wallbox-Wächter: entlädt es gerade? Fremdregler-Wächter)."""
@@ -212,6 +274,8 @@ def guard_loop(cfg, client, goe, *, end_at: float, tick_s: float = TICK_S,
             res = guard_tick(cfg, client, goe, _out_limit(st) > 0, state)
             if res != "standby":
                 res = foreign_tick(cfg, client, st, state, clock) or res
+            if res not in ("standby", "foreign_standby"):
+                res = throttle_tick(cfg, client, meter, state, clock) or res
             out.append(res)
         except Exception:
             log.exception("Zendure-Wächter: Fehler im Takt")
@@ -262,9 +326,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.boot:
         return 0 if boot(cfg, client) else 1
     check(cfg, client)
-    if args.once or not cfg.wallbox.url:
+    if args.once:
         return 0
-    goe = GoeClient(cfg.wallbox.url, BATTERY_CHECK_TIMEOUT_S)
+    from clients.shelly_client import Shelly3EMClient
+    goe = GoeClient(cfg.wallbox.url, BATTERY_CHECK_TIMEOUT_S) if cfg.wallbox.url else None
+    meter = Shelly3EMClient(cfg.shelly.main_meter_url, 1.5, name="main_meter",
+                            type_=cfg.shelly.main_meter_type) if cfg.shelly.main_meter_url else None
     end_at = started - (started % 60) + LOOP_END_S
 
     def stop() -> Optional[str]:
@@ -274,7 +341,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return "Code-Stand geändert"
         return None
 
-    guard_loop(cfg, client, goe, end_at=end_at, stop=stop)
+    guard_loop(cfg, client, goe, end_at=end_at, stop=stop, meter=meter)
     return 0
 
 

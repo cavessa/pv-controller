@@ -281,6 +281,18 @@ function renderStatus(s) {
     </div>`;
   }
 
+  // Thermostat im Heizstab (Relais an, 0 W) bzw. „Speicher praktisch voll“
+  const th = $("#heater-thermo");
+  if (th) {
+    const t = h.thermostat ?? {};
+    th.classList.toggle("hidden", !t.state);
+    th.textIfChanged = t.state === "full"
+      ? `Speicher praktisch voll – Thermostat im Heizstab ${t.open_min} min offen bei ${t.temp_c} °C, wieder frei ab ${t.release_c} °C`
+      : t.state === "open"
+        ? `Thermostat im Heizstab hat abgeschaltet – Relais an, 0 W seit ${t.open_min} min (${t.temp_c} °C). Überschuss geht an Batterie/Wallbox.`
+        : "";
+  }
+
   // Wallbox
   const wb = s.wallbox;
   const wbStatus = wb.status ?? {};

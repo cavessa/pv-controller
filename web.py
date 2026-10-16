@@ -191,6 +191,18 @@ def _wallbox_decision_to_dict(
     }
 
 
+def _heater_thermostat(result: ControllerResult) -> dict[str, Any]:
+    """Thermostat im Heizstab aus den Phasen-Entscheidungen dieses Laufs: offen (Relais an, 0 W)
+    oder „Speicher praktisch voll“; leer = nichts davon."""
+    for d in result.decisions or []:
+        if d.code == "storage_practically_full":
+            return {"state": "full", **(d.data or {})}
+    for d in result.decisions or []:
+        if d.code == "heater_thermostat_open":
+            return {"state": "open", **(d.data or {})}
+    return {"state": None}
+
+
 def _battery_priority(cfg: Config, temp: Optional[float]) -> Optional[int]:
     """Ladesollwert der Batterie, wenn sie gerade lädt (oder auf Leistung wartet) und im aktiven
     Profil vor dem Heizstab-Schritt steht, der jetzt zählt („bis Min“ unterhalb Min, sonst „bis
@@ -262,7 +274,15 @@ def _summary(result: ControllerResult, cfg: Config) -> dict[str, str]:
             "severity": "error",
         }
 
-    if result.summer_mode_heating:
+    thermo = _heater_thermostat(result)
+    if thermo["state"] == "full":
+        state = "Wasserspeicher praktisch voll"
+        reason = (
+            f"Thermostat im Heizstab war {thermo.get('open_min')} min offen bei {thermo.get('temp_c')} °C – "
+            f"Heizstab aus, wieder frei ab {thermo.get('release_c')} °C."
+        )
+        severity = "ok"
+    elif result.summer_mode_heating:
         sm = cfg.summer_mode
         state = "Netzbezug-Heizung"
         reason = (
@@ -301,6 +321,10 @@ def _summary(result: ControllerResult, cfg: Config) -> dict[str, str]:
             "Heizstab darf per PV-Überschuss laden."
         )
         severity = "ok"
+
+    if thermo["state"] == "open":
+        reason += (f" Thermostat im Heizstab hat abgeschaltet (Relais an, 0 W seit {thermo.get('open_min')} min) – "
+                   "Überschuss geht an Batterie/Wallbox.")
 
     if wd is not None:
         if wd.action is WallboxAction.SKIPPED and ws is not None and not ws.pv_surplus_active:
@@ -439,6 +463,7 @@ def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
             "phases_disabled": {
                 f"ph{i + 1}": bool(x) for i, x in enumerate(cfg.heater.disabled_phases)
             },
+            "thermostat": _heater_thermostat(result),
             "decisions": [_decision_to_dict(d) for d in result.decisions],
             "errors": list(r.errors),
         },

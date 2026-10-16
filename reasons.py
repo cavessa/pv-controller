@@ -39,6 +39,10 @@ REASONS: dict[str, str] = {
     "hysteresis_band": "Speicher {temp_c} °C liegt über der Wiedereinschalt-Temperatur {resume_temp_c} °C – "
                        "kein neuer Heizzyklus",
     "temp_unknown": "Speichertemperatur nicht lesbar – Heizstab aus",
+    "heater_thermostat_open": "Thermostat im Heizstab hat abgeschaltet (Relais an, 0 W seit {open_min} min, "
+                              "Speicher {temp_c} °C) – Überschuss geht an Batterie/Wallbox",
+    "storage_practically_full": "Speicher praktisch voll: Thermostat im Heizstab {open_min} min offen bei "
+                                "{temp_c} °C – Heizstab aus, Freigabe ab {release_c} °C",
     "summer_mode_grid_heat": "Sommermodus: Speicher {temp_c} °C unter Mindesttemperatur – Heizen aus dem Netz",
     "summer_mode_stop": "Sommermodus: Netz-Heizen beendet",
     "phase_disabled": "Phase ist in den Einstellungen stillgelegt",

@@ -13,7 +13,12 @@ Phasen (``disabled``) werden ignoriert und zählen weder im Budget noch als lauf
 höchstens eine Phase pro Lauf.
 
 Über allem stehen (dürfen jederzeit abschalten, auch innerhalb der Mindestlaufzeit):
-Speichertemperatur ≥ Max, Speichertemperatur unbekannt, Sommermodus-Stopp, manuelles AUS.
+Speichertemperatur ≥ Max, Speichertemperatur unbekannt, Sommermodus-Stopp, manuelles AUS,
+„Speicher praktisch voll“ (``practically_full``: Thermostat im Heizstab ≥ 15 min offen nahe Max).
+
+Thermostat offen (``thermostat_open``: Relais an, Heizstab zieht seit ≥ 2 Messungen nichts): die
+Relais bleiben wie sie sind – keine neue Phase (zöge ja nichts), kein Abschalten übers Budget (keine
+Schaltspiele; der Heizstab kommt von selbst wieder). Die Leistung bucht die Kaskade nach Messung.
 Eine nicht erreichbare Phase (``state is None``) wird im Budget vorsichtshalber als laufend gezählt.
 **AUS darf auch an eine Phase mit unbekanntem Zustand gesendet werden („blind“), AN nie**: bei allen
 Abschaltgründen (Max-Temp, Temperatur unbekannt, Sommermodus-Stopp, manuell AUS) und wenn das
@@ -97,6 +102,8 @@ def decide_phases(
     summer: Optional[str] = None,         # "heat" | "stop"
     summer_reason: str = "",
     surplus_fail_safe: bool = False,      # Hauptzähler/Wechselrichter nicht lesbar
+    thermostat_open: Optional[dict] = None,   # {"open_min", "temp_c"}: Relais an, Heizstab zieht nichts
+    practically_full: Optional[dict] = None,  # {"open_min", "temp_c", "release_c"}
 ) -> list[PhaseOut]:
     n_active = sum(1 for ph in phases if not ph.disabled)
     p = replace(p, n_phases=min(p.n_phases, n_active))
@@ -136,6 +143,14 @@ def decide_phases(
         return all_reachable(PhaseAction.TURN_OFF, summer_reason, "summer_mode_stop", {"temp_c": round(temp, 1)})
     if force == "off":
         return all_reachable(PhaseAction.TURN_OFF, "Manuell AUS (Kaskade)", "manual_override", {"mode": "aus"})
+    if practically_full is not None and force != "on":
+        pf = practically_full
+        return all_reachable(
+            PhaseAction.TURN_OFF,
+            f"Speicher praktisch voll (Thermostat im Heizstab {pf.get('open_min')} min offen bei "
+            f"{pf.get('temp_c')} °C) – Heizstab aus, Freigabe ab {pf.get('release_c')} °C",
+            "storage_practically_full", dict(pf),
+        )
     if summer == "heat":
         return all_reachable(PhaseAction.TURN_ON, summer_reason, "summer_mode_grid_heat", {"temp_c": round(temp, 1)})
 
@@ -145,6 +160,14 @@ def decide_phases(
                          "deaktiviert" if ph.disabled
                          else "Hauptzähler/Wechselrichter nicht lesbar – Fail-safe, keine Änderung",
                          code="phase_disabled" if ph.disabled else "failsafe_global")
+                for ph in phases]
+    if thermostat_open is not None and force != "on":
+        to = {"open_min": thermostat_open.get("open_min"), "temp_c": round(temp, 1)}
+        text = (f"Thermostat im Heizstab hat abgeschaltet (Relais an, 0 W seit {to['open_min']} min) – "
+                "Relais bleiben, keine neue Phase")
+        return [PhaseOut(PhaseAction.UNCHANGED, "deaktiviert", code="phase_disabled") if ph.disabled
+                else PhaseOut(PhaseAction.UNCHANGED, text + ("; bleibt EIN" if ph.state else "; bleibt AUS"),
+                              code="heater_thermostat_open", data=dict(to))
                 for ph in phases]
     if force == "on":
         budget_w = budget_down_w = p.n_phases * p.phase_w
@@ -233,3 +256,63 @@ def decide_phases(
                                     f"{head}; " + ("bleibt EIN" if ph.state else "bleibt AUS")),
                            on_code if ph.state else off_code))
     return out
+
+
+# ---- Thermostat im Heizstab ------------------------------------------------------------
+THERMOSTAT_OPEN_W = 50.0        # Relais an, Heizstab-3EM darunter → Thermostat offen
+THERMOSTAT_MIN_TEMP = 50.0      # nur bei warmem Speicher (kalt: eher Defekt, nicht Thermostat)
+FULL_AFTER_S = 15 * 60          # so lange offen …
+FULL_MARGIN_C = 2.0             # … und Speicher ≥ Max − 2 °C → „praktisch voll“
+RELEASE_DROP_C = 2.0            # Freigabe, wenn der Speicher 2 °C unter den Wert beim Abschalten fällt
+
+
+def thermostat_step(
+    st: dict, now: datetime, relay_on: bool, heater_w: Optional[float], temp: Optional[float], max_temp: float,
+) -> tuple[dict, Optional[dict], Optional[dict], str]:
+    """Thermostat-Zustand fortschreiben (reine Logik).
+
+    ``st``: gespeicherter Zustand (open_since, open_temp, full_since, full_temp). Liefert
+    (DB-Updates, thermostat_open-Info oder None, practically_full-Info oder None, Log-Text).
+    Offen gilt erst ab der **zweiten** Messung in Folge (erste setzt nur open_since) – kein
+    Fehlalarm, wenn ein Relais gerade erst geschaltet hat."""
+    upd: dict = {}
+    msg = ""
+    full_since, full_temp = st.get("full_since"), st.get("full_temp")
+    if full_since and temp is not None and full_temp is not None and temp <= full_temp - RELEASE_DROP_C:
+        upd.update(full_since=None, full_temp=None)
+        msg = (f"Heizstab-Thermostat: Speicher {temp:.1f} °C ist {RELEASE_DROP_C:.0f} °C unter {full_temp:.1f} °C "
+               "gefallen – „praktisch voll“ aufgehoben, Heizstab wieder frei")
+        full_since = full_temp = None
+    is_open = (relay_on and heater_w is not None and heater_w < THERMOSTAT_OPEN_W
+               and temp is not None and temp >= THERMOSTAT_MIN_TEMP)
+    open_info: Optional[dict] = None
+    since = st.get("open_since")
+    if full_since:
+        if since:
+            upd.update(open_since=None, open_temp=None)
+    elif is_open:
+        if not since:
+            upd.update(open_since=now.isoformat(timespec="seconds"), open_temp=round(temp, 1))
+        else:
+            age = (now - datetime.fromisoformat(since)).total_seconds()
+            open_info = {"open_min": max(1, int(round(age / 60))), "temp_c": round(temp, 1)}
+            if age >= FULL_AFTER_S - 30 and temp >= max_temp - FULL_MARGIN_C:
+                full_since, full_temp = now.isoformat(timespec="seconds"), round(temp, 1)
+                upd.update(full_since=full_since, full_temp=full_temp, open_since=None, open_temp=None)
+                msg = (f"Heizstab-Thermostat seit {open_info['open_min']} min offen bei {temp:.1f} °C "
+                       f"(≥ Max − {FULL_MARGIN_C:.0f} °C) – Speicher praktisch voll, Heizstab aus bis "
+                       f"{temp - RELEASE_DROP_C:.1f} °C")
+                open_info = None
+            elif open_info["open_min"] == 1:
+                msg = (f"Heizstab-Thermostat offen: Relais an, Heizstab zieht {heater_w:.0f} W bei "
+                       f"{temp:.1f} °C – Relais bleiben, Überschuss geht an Batterie/Wallbox")
+    elif since:
+        upd.update(open_since=None, open_temp=None)
+        if relay_on and heater_w is not None and heater_w >= THERMOSTAT_OPEN_W:
+            age = (now - datetime.fromisoformat(since)).total_seconds()
+            msg = f"Heizstab zieht wieder ({heater_w:.0f} W) nach {age / 60:.0f} min Thermostat-Pause"
+    full_info = None
+    if full_since:
+        full_info = {"open_min": int(FULL_AFTER_S // 60), "temp_c": full_temp,
+                     "release_c": round(float(full_temp) - RELEASE_DROP_C, 1)}
+    return upd, open_info, full_info, msg

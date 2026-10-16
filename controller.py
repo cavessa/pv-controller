@@ -38,14 +38,16 @@ from db import (
     device_health_clear,
     device_health_update,
     get_cascade_budget,
+    get_heater_thermostat,
     get_last_phase_changes,
     get_last_phase_states,
     log_phase_change,
     mark_device_alerted,
     note_blind_off,
+    set_heater_thermostat,
     smooth_heater_budgets,
 )
-from heater_phases import HeaterParams, PhaseIn, decide_phases
+from heater_phases import HeaterParams, PhaseIn, decide_phases, thermostat_step
 from heater_power import PhaseRead
 from heater_power import resolve as resolve_heater_power
 from models import (
@@ -828,6 +830,22 @@ class Controller:
         last = get_last_phase_changes()
         plugs = (self.ph1, self.ph2, self.ph3)
         states = (readings.ph1_on, readings.ph2_on, readings.ph3_on)
+
+        # Thermostat im Heizstab: Relais an, Heizstab zieht nichts (Schichtung) → Relais halten bzw.
+        # nach 15 min nahe Max „praktisch voll“ (siehe heater_phases.thermostat_step)
+        thermo_open = thermo_full = None
+        try:
+            upd, thermo_open, thermo_full, msg = thermostat_step(
+                get_heater_thermostat(), now,
+                any(st is True for i, st in enumerate(states) if not h.disabled_phases[i]),
+                readings.heater_meter_power_w, readings.storage_temp_c, h.storage_max_temp,
+            )
+            if msg:
+                log.info(msg)
+            if upd and not self._read_only:
+                set_heater_thermostat(**upd)
+        except Exception:
+            log.warning("Heizstab-Thermostat-Zustand nicht verfügbar", exc_info=True)
         outs = decide_phases(
             [PhaseIn(f"PH{i + 1}", states[i], last.get(i + 1), disabled=h.disabled_phases[i])
              for i in range(3)],
@@ -845,6 +863,8 @@ class Controller:
             summer="stop" if sm_stop else "heat" if sm_heating else None,
             summer_reason=sm_reason,
             surplus_fail_safe=bool(critical),
+            thermostat_open=thermo_open,
+            practically_full=thermo_full,
         )
         for i, out in enumerate(outs):
             d = PhaseDecision(f"PH{i + 1}", states[i], out.action, out.reason, blind=out.blind,
