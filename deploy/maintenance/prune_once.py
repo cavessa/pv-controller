@@ -65,6 +65,7 @@ def plan() -> tuple[dict[str, int], dict[str, tuple[int, int]]]:
     after = dict((t, (b, b)) for t, b in before.items())
     per_table = {"cascade_log": once + rules["cascade_log (Ereignisse)"], "pv_hourly_log": rules["pv_hourly_log"],
                  "main_meter_min": rules["main_meter_min"], "zendure_min": rules["zendure_min"],
+                 "load_min": rules["load_min"],
                  "heater_budget_log": rules["heater_budget_log"]}
     for t, n in per_table.items():
         if t in after:

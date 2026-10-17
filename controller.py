@@ -783,6 +783,15 @@ class Controller:
                 readings.wallbox_power_w = (
                     wallbox_status.power_w if wallbox_status.pv_surplus_active else 0.0
                 )
+        # Große Verbraucher pro Minute für die Nachtbedarf-Auswertung (echte Wallbox-Leistung, auch
+        # außerhalb des Eco-Modus); nicht kritisch, nicht in der Simulation
+        if not self.cfg.simulation.enabled:
+            try:
+                from db import record_loads
+                record_loads(wallbox_status.power_w if wallbox_status is not None else None,
+                             readings.heater_meter_power_w)
+            except Exception:
+                log.warning("Wallbox/Heizstab-Minutenwerte nicht gespeichert", exc_info=True)
 
         temp_status: Optional[TempStatus] = None
         if readings.storage_temp_c is not None:

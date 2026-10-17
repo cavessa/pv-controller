@@ -165,6 +165,15 @@ def init_pv_logging_tables() -> None:
                 n      INTEGER NOT NULL
             )
         """)
+        # Große Verbraucher pro Minute (Momentwert je Minutenlauf): Wallbox und Heizstab, damit die
+        # Nachtbedarf-Auswertung (night_need.py) sie aus dem Hausverbrauch herausrechnen kann
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS load_min (
+                ts         TEXT PRIMARY KEY,   -- YYYY-MM-DD HH:MM
+                wallbox_w  REAL,
+                heater_w   REAL
+            )
+        """)
         # Lastspitze (Netzbezug am Hauptzähler) pro Tag; eigene Tabelle, damit das
         # das Schreiben von pv_daily_log sie nicht berührt
         conn.execute("""
@@ -567,6 +576,14 @@ def record_zendure(soc, charge_w: float, discharge_w: float) -> None:
             conn.execute("DELETE FROM zendure_min WHERE ts < date('now', ?)", (f"-{RETENTION_DAYS['minute_tables']} days",))
 
 
+def record_loads(wallbox_w: Optional[float], heater_w: Optional[float]) -> None:
+    """Wallbox- und Heizstab-Leistung (W, None = unbekannt) der aktuellen Minute speichern."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("INSERT OR REPLACE INTO load_min (ts, wallbox_w, heater_w) VALUES (?,?,?)",
+                     (ts, wallbox_w, heater_w))
+
+
 def get_zendure_day(date_str: str) -> list[list]:
     """[[Minute, SoC, Laden W, Entladen W], …] eines Tages."""
     with sqlite3.connect(DB_PATH) as conn:
@@ -756,7 +773,7 @@ RETENTION_DAYS = {
     "cascade_events": 365,     # cascade_log: Schaltvorgänge und Ereignisse
     "cascade_verbose": 2,      # cascade_log: keep_*/budget (nur mit cascade.log_verbose)
     "pv_hourly_log": 90,
-    "minute_tables": 35,       # main_meter_min, zendure_min (Tagesverlauf-Ansicht reicht so weit zurück)
+    "minute_tables": 35,       # main_meter_min, zendure_min, load_min (Tagesverlauf-Ansicht reicht so weit zurück)
     "heater_budget_log": 14,
     "heating_schedule_once": 7,   # einmalige Heizungs-Zeitpläne: 7 Tage nach ihrem Datum
     "decision_snapshot": 2,       # Entscheidungs-Schnappschuss je Minuten-Lauf (48 h)
@@ -786,6 +803,7 @@ def _prune_rules(now: datetime) -> list[tuple[str, str, str, tuple]]:
         ("pv_hourly_log", "pv_hourly_log", "timestamp < ?", (cut(R["pv_hourly_log"], "%Y-%m-%d %H:00", now),)),
         ("main_meter_min", "main_meter_min", "ts < ?", (cut(R["minute_tables"], "%Y-%m-%d %H:%M", now),)),
         ("zendure_min", "zendure_min", "ts < ?", (cut(R["minute_tables"], "%Y-%m-%d %H:%M", now),)),
+        ("load_min", "load_min", "ts < ?", (cut(R["minute_tables"], "%Y-%m-%d %H:%M", now),)),
         ("heater_budget_log", "heater_budget_log", "ts < ?", (cut(R["heater_budget_log"], "%Y-%m-%d %H:%M", now),)),
         ("heating_schedule (einmalig)", "heating_schedule", "date IS NOT NULL AND date < ?",
          (cut(R["heating_schedule_once"], "%Y-%m-%d", now),)),

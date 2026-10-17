@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-10-17 – Dashboard: „Batterie – Bedarf pro Nacht“ (wie groß müsste der Speicher sein?)
+
+Anlass: Die Batterie (8,64 kWh, ~7,5 kWh nutzbar) war in der Nacht 16./17.10. um 02:02 leer. Gesucht ist, wie groß sie sein müsste, um die ganze Nacht zu überbrücken, und ob die PV einen größeren Speicher überhaupt füllen könnte.
+- **Berechnung** (`night_need.py`, aus den vorhandenen Minutenwerten, keine neuen Messungen):
+  - Je Minute: Haus-Netto = Zähler + Entladen − Laden (= Verbrauch − PV).
+  - Nacht = vom letzten Überschuss am Abend bis zum ersten Überschuss am Morgen (15-min-Mittel). Ohne Überschuss gelten Sonnenunter-/-aufgang (`estimated`).
+  - Bedarf = positives Haus-Netto in der Nacht, **ohne Wallbox und Heizstab** (Auto lädt nie aus der Batterie). Aufgeteilt in: aus Batterie, Netz weil Speicher zu klein, Netz über der Entladeleistung (2,4 kW; kommt immer aus dem Netz).
+  - Tag = Überschuss zwischen Morgen- und Abendgrenze (eingespeist + geladen). Mehr kann kein Speicher füllen.
+  - Laufende Nacht/heutiger Tag als `ongoing` bzw. unvollständig. Nächte mit Lücken (< 90 % Minuten) zählen nicht in die Kennzahlen.
+  - Speichergröße = nutzbarer Bedarf ÷ SoC-Fenster (Mindest-SoC bis Ziel-SoC) ÷ 0,95 (gemessen 16./17.10.: 7,5 von 7,8 kWh).
+- **Neue Minutentabelle `load_min`** (Wallbox- und Heizstab-Leistung je Minutenlauf, echte Wallbox-Leistung auch außerhalb des Eco-Modus, nicht in der Simulation; Aufbewahrung 35 Tage wie die anderen Minutentabellen). Für Minuten davor wird der Stundenwert aus `pv_hourly_log` genommen und die Nacht als „geschätzt“ markiert.
+- **API** `GET /api/history/battery-nights?days=14` (2–34): Nächte, Tage, Kennzahlen (`summary`), `enabled`.
+- **Dashboard ganz unten**, nur bei aktivierter Batterie: Balken pro Nacht (Batterie / Netz: Speicher zu klein / Netz: über 2,4 kW), Raute = PV-Überschuss am Vortag, gestrichelte Linie = jetzt nutzbare Kapazität (Beschriftung oberhalb des Diagramms, überdeckt keinen Balken), y-Achse in kWh, kompakte Legende (mobil 1–2 Zeilen). Angeschnittene Nächte (Daten beginnen oder enden > 30 min nach/vor der Nachtgrenze, z. B. Datenbeginn mitten in der Nacht) werden gar nicht angezeigt. Darunter ø/max Bedarf, nötige Speichergröße, wie oft der jetzige gereicht hätte und wie viel die PV höchstens hätte füllen können. Antippen eines Balkens zeigt die Details.
+- Erster Stand mit Prod-Daten (5 vollständige Nächte, 11.–15.10., noch ohne Batterie): ø 17,7 kWh Bedarf pro Nacht, ø 3,2 kWh davon über 2,4 kW; für jede Nacht ≈ 19,6 kWh Speicher, der Überschuss am Vortag hätte aber höchstens 12,8 kWh gefüllt ≈ 15 kWh Speicher.
+- Tests `tests/test_night_need.py` (21): Grenzen, angeschnittene Nächte (Datenbeginn/-ende), trüber Tag, laufende Nacht, vor Sonnenuntergang keine Nacht, Spitze über Entladeleistung, Batterie-Entladen/-Laden, Wallbox aus Minuten- und Stundenwerten, Last größer als Netto, Lücken, Kennzahlen, `record_loads`, Aufbewahrung, API.
+
 ## 2026-10-16 – Batterie: Entlade-Drosselung im Wächter, 60-s-Mittel statt Einzelmessung (kein Minuten-Hin-und-Her)
 
 Anlass: Nach dem Deploy um 15:51 wechselte die Batterie jede Minute zwischen Laden und Entladen, 15:51–16:01 sechsmal. Pulsierende Lasten (Herd/Backofen: ~2 kW für ~7 s, Spitzen bis 10 kW) bestimmten, was der Minutenlauf gerade sah; zeitweise entlud die Batterie ins Netz (15:52:31: 1530 W Entladung bei −3398 W am Zähler).

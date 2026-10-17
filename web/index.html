@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=89">
+  <link rel="stylesheet" href="/static/styles.css?v=91">
 </head>
 <body>
   <div class="app-shell">
@@ -304,6 +304,20 @@
         </div>
         <div class="house-foot" id="house-dash-foot"></div>
       </div>
+        <div class="card hidden" id="nights-card">
+          <div class="card-head">
+            <h2>Batterie – Bedarf pro Nacht</h2>
+            <span class="house-max" id="nights-range"></span>
+          </div>
+          <div class="chart-legend-inline nights-legend">
+            <span class="nl-bat">&#9632; Batterie</span>
+            <span class="nl-grid">&#9632; Netz: Speicher zu klein</span>
+            <span class="nl-peak" id="nights-legend-peak">&#9632; Netz: über 2,4 kW</span>
+            <span class="nl-sur">&#9670; PV-Überschuss Vortag</span>
+          </div>
+          <div id="chart-nights-wrap" class="temp-chart-wrap"><div class="skeleton skeleton-chart"></div></div>
+          <div class="house-foot" id="nights-foot"></div>
+        </div>
       </div>
     </section>
 
@@ -1039,7 +1053,7 @@
     </form>
   </div>
 
-  <script src="/static/app.js?v=20261016e" defer></script>
+  <script src="/static/app.js?v=20261017b" defer></script>
   <script src="/static/heating.js?v=20261014a" defer></script>
   <script src="/static/shutters.js?v=20261013j" defer></script>
 </body>

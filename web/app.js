@@ -1489,6 +1489,115 @@ function renderPeakTimeChart(entries, wrapId, days) {
   </svg>`;
 }
 
+// ---------- Batterie – Bedarf pro Nacht (Speichergröße) ----------
+async function loadBatteryNights() {
+  const card = document.getElementById("nights-card");
+  if (!card) return;
+  let d;
+  try {
+    d = await api("/api/history/battery-nights?days=14");
+  } catch (e) {
+    console.error("Nachtbedarf konnte nicht geladen werden:", e);
+    return;
+  }
+  card.classList.toggle("hidden", !d.enabled);
+  if (d.enabled) renderBatteryNights(d);
+}
+
+function renderBatteryNights(d) {
+  const wrap = document.getElementById("chart-nights-wrap");
+  const foot = document.getElementById("nights-foot");
+  const nights = d.nights || [];
+  const s = d.summary || {};
+  document.getElementById("nights-range").textContent =
+    s.nights ? `${s.nights} ${s.nights === 1 ? "Nacht" : "Nächte"}` : "";
+  if (!nights.length) {
+    wrap.innerHTML = '<div class="chart-empty">Noch keine Nachtdaten.</div>';
+    foot.textContent = "";
+    return;
+  }
+  const kwh = wh => (wh / 1000).toFixed(1).replace(".", ",");
+  const maxKw = kwh(d.max_discharge_w || 2400);
+  const peakLegend = document.getElementById("nights-legend-peak");
+  if (peakLegend) peakLegend.textContent = `■ Netz: über ${maxKw} kW`;
+  const surplus = Object.fromEntries((d.days || []).map(x => [x.date, x]));
+  const usable = s.usable_now_wh || 0;
+  const top = Math.max(1000, usable, ...nights.map(n => n.need_wh),
+                       ...nights.map(n => surplus[n.date]?.surplus_wh || 0)) / 1000;
+
+  const VW = 480, VH = 158;
+  const pad = { t: 20, r: 6, b: 22, l: 30 };
+  const cw = VW - pad.l - pad.r, ch = VH - pad.t - pad.b;
+  const yStep = niceStep(top, 4), yMax = Math.ceil(top / yStep) * yStep;
+  const sy = v => pad.t + ch - (v / yMax) * ch;
+  const slot = cw / nights.length, bw = Math.min(26, slot * 0.6);
+  const weekdays = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"];
+
+  let g = "";
+  for (let v = 0; v <= yMax + 1e-9; v += yStep) {
+    g += `<line x1="${pad.l}" y1="${sy(v).toFixed(1)}" x2="${pad.l + cw}" y2="${sy(v).toFixed(1)}" class="grid-line"/>`;
+    g += `<text x="${pad.l - 4}" y="${sy(v).toFixed(1)}" text-anchor="end" dominant-baseline="middle">${+v.toFixed(1)}</text>`;
+  }
+  nights.forEach((n, i) => {
+    const cx = pad.l + slot * (i + 0.5), x = (cx - bw / 2).toFixed(1);
+    const bat = Math.min(n.battery_wh, n.capacity_wh);
+    const segs = [
+      [bat, "#e8a435", 0.85, "Batterie"],
+      [n.capacity_wh - bat, "var(--c-grid)", 0.85, "Netz: Speicher zu klein"],
+      [n.need_wh - n.capacity_wh, "var(--c-grid)", 0.35, `Netz: über ${maxKw} kW`],
+    ];
+    const faded = n.ongoing || !n.complete;
+    const dt = new Date(n.date + "T12:00:00");
+    const label = `${weekdays[dt.getDay()]} ${dt.getDate()}.`;
+    const tip = `Nacht ${label} ${n.start}–${n.end}${n.ongoing ? " (läuft)" : n.complete ? "" : " (unvollständig)"}\n`
+      + `Bedarf ${kwh(n.need_wh)} kWh` + segs.filter(sg => sg[0] > 0).map(sg => `\n· ${sg[3]}: ${kwh(sg[0])} kWh`).join("")
+      + (n.excluded_wh > 0 ? `\nnicht eingerechnet (Wallbox/Heizstab): ${kwh(n.excluded_wh)} kWh${n.loads_estimated ? " (geschätzt)" : ""}` : "")
+      + (surplus[n.date] ? `\nPV-Überschuss am Tag davor: ${kwh(surplus[n.date].surplus_wh)} kWh` : "");
+    let acc = 0;
+    g += `<g opacity="${faded ? 0.45 : 1}"><title>${tip}</title>`;
+    for (const [wh, color, op] of segs) {
+      if (wh <= 0) continue;
+      const y0 = sy((acc + wh) / 1000), y1 = sy(acc / 1000);
+      g += `<rect x="${x}" y="${y0.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0.5, y1 - y0).toFixed(1)}" fill="${color}" opacity="${op}"/>`;
+      acc += wh;
+    }
+    g += `<rect x="${x}" y="${pad.t}" width="${bw.toFixed(1)}" height="${ch}" fill="transparent"/></g>`;
+    const sur = surplus[n.date];
+    if (sur) {
+      const sy0 = sy(sur.surplus_wh / 1000), r = 3.2;
+      g += `<path d="M${cx.toFixed(1)} ${(sy0 - r).toFixed(1)} l${r} ${r} l${-r} ${r} l${-r} ${-r} z" fill="var(--c-pv)" opacity="${sur.complete ? 0.95 : 0.5}"><title>${tip}</title></path>`;
+    }
+    g += `<text x="${cx.toFixed(1)}" y="${VH - 4}" text-anchor="middle">${label}</text>`;
+  });
+  g += `<text x="${pad.l - 4}" y="${pad.t - 9}" text-anchor="end">kWh</text>`;
+  if (usable > 0) {
+    // Linie über die Balken, Beschriftung oberhalb des Diagramms (überdeckt keinen Balken)
+    const yu = sy(usable / 1000).toFixed(1), ly = pad.t - 9;
+    g += `<line x1="${pad.l}" y1="${yu}" x2="${pad.l + cw}" y2="${yu}" stroke="#2ed8a3" stroke-width="1" stroke-dasharray="4 3"/>`;
+    g += `<line x1="${pad.l + 2}" y1="${ly}" x2="${pad.l + 18}" y2="${ly}" stroke="#2ed8a3" stroke-width="1" stroke-dasharray="4 3"/>`;
+    g += `<text x="${pad.l + 22}" y="${ly}" dominant-baseline="middle" fill="#2ed8a3">Akku nutzbar ${kwh(usable)} kWh</text>`;
+  }
+  wrap.innerHTML = `<svg class="temp-chart" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet">${g}</svg>`;
+
+  if (!s.nights) {
+    foot.innerHTML = "Noch keine vollständige Nacht – die erste Auswertung gibt es morgen früh.";
+    return;
+  }
+  const lines = [
+    `Ø Bedarf <b>${kwh(s.need_avg_wh)} kWh</b> pro Nacht, höchstens <b>${kwh(Math.max(...nights.filter(n => n.complete).map(n => n.need_wh)))} kWh</b>`
+      + ` (ohne Wallbox und Heizstab; ø ${kwh(s.peak_avg_wh)} kWh davon über ${maxKw} kW – kommt immer aus dem Netz)`,
+    `Für jede dieser Nächte bräuchte es <b>${kwh(s.capacity_max_wh)} kWh</b> nutzbar ≈ <b>${kwh(s.size_for_max_wh)} kWh</b> Speicher`
+      + ` (jetzt ${kwh(s.capacity_now_wh)} kWh; gereicht hätte er in ${s.nights_covered} von ${s.nights} Nächten)`,
+  ];
+  if (s.fillable_max_wh != null) {
+    lines.push(`Der PV-Überschuss am Tag davor hätte aber höchstens <b>${kwh(s.fillable_max_wh)} kWh</b> gefüllt ≈ <b>${kwh(s.size_fillable_wh)} kWh</b> Speicher – mehr bringt zurzeit nichts`);
+  }
+  if (nights.some(n => n.loads_estimated)) {
+    lines.push(`<span style="opacity:.7">Wallbox/Heizstab in älteren Nächten aus Stundenwerten geschätzt (Details beim Antippen eines Balkens).</span>`);
+  }
+  foot.innerHTML = lines.join("<br>");
+}
+
 function _renderKpiRow(elemId, entries, round0 = false) {
   const wrap = document.getElementById(elemId);
   if (!wrap) return;
@@ -3396,6 +3505,7 @@ async function runOnce() {
     }).catch(() => {});
     loadPhaseLogs();
     loadPeakTimeChart();
+    loadBatteryNights();
   } catch (e) {
     showError("Lauf fehlgeschlagen: " + e.message);
   } finally {
@@ -3913,6 +4023,7 @@ function boot() {
   setInterval(refreshPvPill, PV_PILL_MS);
   $("#pill-pv")?.addEventListener("click", () => { activateTab("dashboard"); window.scrollTo({ top: 0 }); });
   loadPeakTimeChart();
+  loadBatteryNights();
 }
 
 document.addEventListener("DOMContentLoaded", boot);

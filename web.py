@@ -681,6 +681,26 @@ def api_zendure_month(year_month: str, response: Response) -> dict[str, Any]:
     }
 
 
+@app.get("/api/history/battery-nights")
+def api_battery_nights(response: Response, days: int = 14) -> dict[str, Any]:
+    """Batterie-Größe: Bedarf pro Nacht (ohne Wallbox/Heizstab) und PV-Überschuss pro Tag (night_need.py)."""
+    response.headers["Cache-Control"] = "no-store"
+    import night_need
+    days = max(2, min(int(days), 34))
+    cfg = _load_cfg()
+    z = cfg.zendure
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            loc = _ssched.location(json.load(f))
+    except (OSError, ValueError):
+        loc = None
+    max_w = z.max_discharge_w if z is not None else 2400.0
+    res = night_need.compute(days, loc=loc, max_discharge_w=max_w)
+    summ = night_need.summary(res, z.capacity_wh if z is not None else 0.0,
+                              z.min_soc if z is not None else 10.0, z.target_soc if z is not None else 100.0)
+    return {**res, "summary": summ, "max_discharge_w": max_w, "enabled": bool(z is not None and z.enabled)}
+
+
 @app.get("/api/speicher/history")
 def api_speicher_history(
     response: Response,
