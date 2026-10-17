@@ -10,7 +10,9 @@ D+1 (Haus-Netto über 15 min gemittelt, damit kurze Spitzen die Grenze nicht ver
 
 Wallbox und Heizstab zählen nicht zum Bedarf: das Auto lädt nie aus der Batterie, der Heizstab läuft
 nachts nur im Sommermodus aus dem Netz. Ihre Leistung kommt aus load_min; Minuten davor (vor Einführung
-der Tabelle) nehmen den Stundenwert aus pv_hourly_log (``loads_estimated``).
+der Tabelle) nehmen den Stundenwert aus pv_hourly_log (``loads_estimated``). Der Whirlpool bleibt im
+Bedarf; sein Anteil (``whirlpool_wh``) und sein Anteil an den Spitzen über der Entladeleistung
+(``whirlpool_peak_wh``) kommen aus load_min.whirlpool_w (None ohne Messwerte).
 
 - ``need_wh``: Bedarf in der Nacht ohne Wallbox/Heizstab.
 - ``capacity_wh``: davon, was ein Speicher mit der Entladegrenze (``max_discharge_w``) hätte liefern
@@ -50,16 +52,19 @@ def load_data(first: Date, last: Date) -> dict[str, dict]:
         meter = dict(conn.execute("SELECT ts, avg_w FROM main_meter_min WHERE ts BETWEEN ? AND ?", (lo, hi)))
         bat = {r[0]: (r[1] or 0.0, r[2] or 0.0) for r in conn.execute(
             "SELECT ts, charge_w, discharge_w FROM zendure_min WHERE ts BETWEEN ? AND ?", (lo, hi))}
-        loads = {r[0]: (r[1] or 0.0) + (r[2] or 0.0) for r in conn.execute(
-            "SELECT ts, wallbox_w, heater_w FROM load_min WHERE ts BETWEEN ? AND ?", (lo, hi))}
+        rows = conn.execute(
+            "SELECT ts, wallbox_w, heater_w, whirlpool_w FROM load_min WHERE ts BETWEEN ? AND ?", (lo, hi)).fetchall()
+        loads = {r[0]: (r[1] or 0.0) + (r[2] or 0.0) for r in rows}
+        whirl = {r[0]: r[3] for r in rows if r[3] is not None}
         hourly = {r[0][:13]: (r[1] or 0.0) + (r[2] or 0.0) for r in conn.execute(
             "SELECT timestamp, wallbox_w, heater_w FROM pv_hourly_log WHERE timestamp BETWEEN ? AND ?", (lo, hi))}
-    return {"meter": meter, "bat": bat, "loads": loads, "hourly": hourly}
+    return {"meter": meter, "bat": bat, "loads": loads, "hourly": hourly, "whirl": whirl}
 
 
 def _series(days: list[Date], data: dict) -> tuple[list[str], list, list]:
     """Minutenreihe: ts, Haus-Netto (oder None) und (Zähler, Laden, Entladen, Verbraucher, geschätzt)."""
     meter, bat, loads, hourly = data["meter"], data["bat"], data.get("loads", {}), data.get("hourly", {})
+    whirl = data.get("whirl", {})
     ts_all, net, raw = [], [], []
     for d in days:
         for ts in _minutes(d):
@@ -76,7 +81,7 @@ def _series(days: list[Date], data: dict) -> tuple[list[str], list, list]:
                 ld = hourly.get(ts[:13], 0.0)
                 est = ld > 0
             net.append(m + dis - ch)
-            raw.append((m, ch, dis, ld, est))
+            raw.append((m, ch, dis, ld, est, whirl.get(ts)))
     return ts_all, net, raw
 
 
@@ -161,8 +166,8 @@ def compute(days_back: int = 14, now: Optional[datetime] = None, loc=None,
         stop = min(end, now_idx + 1)
         if stop <= start:
             continue
-        need = cap = batt = excl = 0.0
-        have = 0
+        need = cap = batt = excl = wh_all = wh_peak = 0.0
+        have = wh_min = 0
         first_i = last_i = None
         loads_est = False
         for i in range(start, stop):
@@ -172,14 +177,20 @@ def compute(days_back: int = 14, now: Optional[datetime] = None, loc=None,
             have += 1
             first_i = i if first_i is None else first_i
             last_i = i
-            _m, _ch, dis, ld, est = raw[i]
+            _m, _ch, dis, ld, est, wp = raw[i]
             batt += dis
+            if wp is not None:
+                wh_min += 1
             if v > 0:
                 base_w = max(0.0, v - ld)
                 excl += v - base_w
                 need += base_w
                 cap += min(base_w, max_discharge_w)
                 loads_est = loads_est or (est and ld > 0)
+                if wp is not None and wp > 0:            # Whirlpool ist Teil des Bedarfs (nicht herausgerechnet)
+                    w_in = min(wp, base_w)
+                    wh_all += w_in
+                    wh_peak += min(w_in, max(0.0, base_w - max_discharge_w))
         if not have or first_i - start > CUT_MIN or (not ongoing and stop - 1 - last_i > CUT_MIN):
             continue                                # keine Daten oder angeschnitten (Datenbeginn/-ende mitten in der Nacht)
         nights.append({
@@ -187,6 +198,10 @@ def compute(days_back: int = 14, now: Optional[datetime] = None, loc=None,
             "start": ts_all[start][11:], "end": ts_all[stop - 1][11:] if ongoing else ts_all[end][11:],
             "need_wh": round(need / 60), "capacity_wh": round(cap / 60),
             "battery_wh": round(batt / 60), "excluded_wh": round(excl / 60),
+            # Whirlpool-Anteil am Bedarf / an den Spitzen über der Entladeleistung; None ohne Messwerte
+            "whirlpool_wh": round(wh_all / 60) if wh_min else None,
+            "whirlpool_peak_wh": round(wh_peak / 60) if wh_min else None,
+            "whirlpool_coverage": round(wh_min / have, 2),
             "estimated": est_s or est_e, "loads_estimated": loads_est, "ongoing": ongoing,
             "complete": not ongoing and have >= MIN_COVERAGE * (stop - start),
         })

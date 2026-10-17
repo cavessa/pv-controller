@@ -46,6 +46,29 @@ class ZendureConfig:
 
 
 METER_TYPES = ("shelly_3em_gen1", "shelly_pro_3em")
+HEATER_PHASES = ("", "L1", "L2", "L3")
+
+
+@dataclass
+class WhirlpoolMeterConfig:
+    """Whirlpool-Zähler (eigener Shelly 3EM, nur lesen – nichts wird geschaltet).
+
+    ``subtract_heater_phase``: läuft eine Heizstab-Phase durch diesen Zähler ("L1"/"L2"/"L3"), wird
+    deren Leistung (Heizstab-3EM, gleiche Phase, gleicher Zeitpunkt) abgezogen; "" = nichts abziehen.
+    """
+    enabled: bool = False
+    url: str = ""
+    type: str = "shelly_3em_gen1"
+    name: str = "Whirlpool"
+    subtract_heater_phase: str = ""
+
+    def __post_init__(self) -> None:
+        if self.type not in METER_TYPES:
+            raise ValueError(f"whirlpool_meter.type must be one of {METER_TYPES}")
+        if self.subtract_heater_phase not in HEATER_PHASES:
+            raise ValueError("whirlpool_meter.subtract_heater_phase must be '', 'L1', 'L2' or 'L3'")
+        if self.enabled and not self.url.strip():
+            raise ValueError("whirlpool_meter.url required when enabled")
 
 
 @dataclass
@@ -250,6 +273,11 @@ class Config:
     house_max_load_kw: float = 11.0
     zendure: Optional[ZendureConfig] = None
     cascade: CascadeConfig = field(default_factory=CascadeConfig)
+    whirlpool_meter: Optional[WhirlpoolMeterConfig] = None
+
+    @property
+    def whirlpool_active(self) -> bool:
+        return self.whirlpool_meter is not None and self.whirlpool_meter.enabled
 
     @property
     def comfort_min_temp(self) -> float:
@@ -278,6 +306,14 @@ class Config:
     @property
     def solax2_active(self) -> bool:
         return self.solax2 is not None and self.solax2.enabled and bool(self.solax2.url)
+
+
+def parse_whirlpool_meter(raw: dict) -> Optional[WhirlpoolMeterConfig]:
+    block = raw.get("whirlpool_meter")
+    if not block:
+        return None
+    return WhirlpoolMeterConfig(**{k: v for k, v in block.items()
+                                   if k in WhirlpoolMeterConfig.__dataclass_fields__})
 
 
 def parse_zendure(raw: dict) -> Optional[ZendureConfig]:
@@ -328,6 +364,7 @@ def load_config(path: str | Path) -> Config:
         solax2=parse_solax2(raw),
         house_max_load_kw=float(raw.get("house_max_load_kw", 11.0)),
         zendure=parse_zendure(raw),
+        whirlpool_meter=parse_whirlpool_meter(raw),
         cascade=CascadeConfig(**{
             k: v for k, v in raw.get("cascade", {}).items() if k in CascadeConfig.__dataclass_fields__
         }),

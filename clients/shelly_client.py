@@ -168,6 +168,25 @@ class Shelly3EMClient:
             log.error("Shelly %s read /status failed: %s", self.name, e)
             return None
 
+    def get_phase_powers_w(self) -> Optional[list[float]]:
+        """Leistung je Phase [L1, L2, L3] in W oder None (Gen1: emeters[i].power, Pro: a/b/c_act_power).
+        Teilt sich bei Gen1 den /status-Abruf mit get_total_power_w (2 s)."""
+        if self.is_pro:
+            try:
+                j = self._rpc("EM.GetStatus")
+                return [float(j[f"{p}_act_power"]) for p in "abc"]
+            except (requests.RequestException, KeyError, ValueError, TypeError) as e:
+                log.error("Shelly %s read /rpc/EM.GetStatus failed: %s", self.name, e)
+                return None
+        try:
+            em = self._status()["emeters"]
+            if not isinstance(em, list) or len(em) != 3:
+                raise ValueError("emeters fehlt oder nicht 3 Phasen")
+            return [float(e["power"]) for e in em]
+        except (requests.RequestException, KeyError, ValueError, TypeError) as e:
+            log.error("Shelly %s read /status failed: %s", self.name, e)
+            return None
+
     def get_energy_wh(self) -> Optional[tuple[float, float]]:
         """(Bezug, Einspeisung) als Lifetime-Zähler in Wh oder None."""
         if self.is_pro:

@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-10-17 – Whirlpool-Zähler (eigener Shelly 3EM, nur lesen)
+
+Anlass: Der Whirlpool hängt an einem eigenen Shelly 3EM (SHEM-3, MAC 244CAB41ACF6, jetzt 192.168.2.164; das Balboa-Skript verliert zu oft die Verbindung). Er soll im Dashboard, in der Nacht-Auswertung und im Warum-Chat erscheinen.
+- **Config `whirlpool_meter`** (`enabled`, `url`, `type` Gen1/Pro, `name`, `subtract_heater_phase` "" | L1 | L2 | L3), in den Settings editierbar. Es wird **nichts geschaltet**, auch nicht das Relais des 3EM.
+- **Rechnung** (`whirlpool.py`): Whirlpool = Summe der 3 Phasen; mit `subtract_heater_phase` minus Heizstab-3EM auf dieser Phase (gleicher /status-Abruf), nicht unter 0. Heizstab-3EM nicht lesbar → Wert **unsicher** (None, Hinweis), nicht falsch gerechnet. Whirlpool-3EM offline → None, kein Fail-safe.
+- **Phasentest 17.10.** (je 30 s mit Shelly-Auto-Aus, 3-s-Messreihe beider 3EM): PH1 (.93) → Heizstab-3EM L2 ~1555 W (10:58:40–10:59:01), PH2 (.231) → L3 ~1550 W (11:00:47–11:01:02), PH3 (.200) → L1 ~1570 W (11:02:53–11:03:02). Der Whirlpool-3EM blieb dabei auf allen Phasen bei −6 … +5 W: **keine Heizstab-Phase läuft durch seine Messung** → `subtract_heater_phase` bleibt leer.
+- `Shelly3EMClient.get_phase_powers_w()` (Gen1 emeters[i].power, Pro a/b/c_act_power).
+- **Minutenwerte** in `load_min.whirlpool_w` (Spalte wird bei bestehenden Datenbanken ergänzt; NULL = offline/unsicher).
+- **Dashboard:** Kachel „Whirlpool“ im Energiefluss (unten, antippbar) und kleine Card (Leistung, Rohwert/Abzug, Hinweis unsicher/offline).
+- **Nacht-Card:** Whirlpool-Anteil am Bedarf und an den Spitzen über der Entladeleistung im Tooltip (`whirlpool_wh`, `whirlpool_peak_wh`, Abdeckung der Messwerte); der Whirlpool bleibt im Bedarf.
+- **Warum-Chat:** Whirlpool-Leistung im Erklär-Kontext (Schnappschuss `whirlpool_w`/`whirlpool_uncertain`).
+- Tests `tests/test_whirlpool.py` (20): Abzug, nie unter 0, unsicher ohne Heizstab-3EM (kein zweiter Abruf, kein Fail-safe), offline, Config-Prüfung, Client Gen1/Pro, Migration der Spalte, Nachtanteil inkl. Spitzen, Settings, Status-Block, Warum-Kontext.
+
 ## 2026-10-17 – Batterie: Entlade-Puffer 40 W Rest-Netzbezug statt Regelung auf 0 W
 
 Anlass: Beim Entladen auf genau 0 W ging bei jedem Lastabfall kurz Batterie-Strom ins Netz (16./17.10. 17–02 Uhr: ~270 Wh, rund 4 % der entladenen 6,9 kWh), bis Minutenlauf oder Wächter nachregelten.

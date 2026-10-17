@@ -148,6 +148,12 @@ class Controller:
         self.heater_meter = Shelly3EMClient(
             config.shelly.heater_meter_url, SHELLY_READ_TIMEOUT_S, name="heater_meter"
         )
+        # Whirlpool-3EM: nur lesen (Anzeige, Nachtbedarf), kein Fail-safe, nichts schalten
+        self.whirlpool_meter: Optional[Shelly3EMClient] = None
+        if config.whirlpool_active:
+            wm = config.whirlpool_meter
+            self.whirlpool_meter = Shelly3EMClient(wm.url, SHELLY_READ_TIMEOUT_S, name="whirlpool_meter",
+                                                   type_=wm.type)
         self.goe: Optional[GoeClient] = None
         if config.wallbox.enabled and config.wallbox.url:
             self.goe = GoeClient(
@@ -252,6 +258,21 @@ class Controller:
         except Exception:
             log.debug("Geräte-Status nicht fortgeschrieben", exc_info=True)
 
+    def _apply_whirlpool(self, r: Readings, whirl_phases: Optional[list[float]]) -> None:
+        """Whirlpool-Leistung (minus mitlaufende Heizstab-Phase); Heizstab-3EM nicht lesbar → unsicher.
+        Die Heizstab-Phasen kommen aus demselben /status-Abruf wie heater_meter_power_w (Cache)."""
+        import whirlpool
+        sub = self.cfg.whirlpool_meter.subtract_heater_phase
+        heater_phases = None
+        if sub and r.heater_meter_power_w is not None:       # 3EM offline → nicht erneut anfragen
+            heater_phases = self.heater_meter.get_phase_powers_w()
+        w = whirlpool.compute(whirl_phases, heater_phases, sub)
+        r.whirlpool_power_w, r.whirlpool_raw_w = w["power_w"], w["raw_w"]
+        r.whirlpool_uncertain, r.whirlpool_reachable = w["uncertain"], w["reachable"]
+        if w["uncertain"]:
+            log.info("Whirlpool: Heizstab-3EM nicht lesbar – Wert unsicher (Rohwert %.0f W inkl. %s)",
+                     w["raw_w"], sub)
+
     def _read_all(self) -> Readings:
         """Liest alle Geräte parallel (Lauf ≈ langsamstes Gerät, nicht Summe der Timeouts)."""
         if self.cfg.simulation.enabled:
@@ -264,6 +285,7 @@ class Controller:
             f_main = ex.submit(self._read_main_meter, r)
             f_heat = ex.submit(self.heater_meter.get_total_power_w)
             f_temp = ex.submit(self.storage.get_temperature_c)
+            f_whirl = ex.submit(self.whirlpool_meter.get_phase_powers_w) if self.whirlpool_meter else None
             disabled = self.cfg.heater.disabled_phases
             f_ph = [
                 None if disabled[i] else ex.submit(p.get_status)
@@ -274,7 +296,10 @@ class Controller:
             r.heater_meter_power_w = f_heat.result()
             r.storage_temp_c = f_temp.result()
             ph_reads = [None if f is None else PhaseRead(*f.result()) for f in f_ph]
+            whirl_phases = f_whirl.result() if f_whirl is not None else None
         ph_states = [None if ph is None else ph.on for ph in ph_reads]
+        if self.whirlpool_meter is not None:
+            self._apply_whirlpool(r, whirl_phases)
 
         r.ph1_on, r.ph2_on, r.ph3_on = ph_states
 
@@ -789,7 +814,7 @@ class Controller:
             try:
                 from db import record_loads
                 record_loads(wallbox_status.power_w if wallbox_status is not None else None,
-                             readings.heater_meter_power_w)
+                             readings.heater_meter_power_w, readings.whirlpool_power_w)
             except Exception:
                 log.warning("Wallbox/Heizstab-Minutenwerte nicht gespeichert", exc_info=True)
 

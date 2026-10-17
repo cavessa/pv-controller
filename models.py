@@ -57,6 +57,12 @@ class Readings:
     ph2_on: Optional[bool] = None
     ph3_on: Optional[bool] = None
     wallbox_power_w: Optional[float] = None
+    # Whirlpool (eigener 3EM, nur Anzeige/Auswertung, nie Fail-safe): Leistung nach Abzug einer
+    # mitlaufenden Heizstab-Phase; None = offline oder unsicher (whirlpool_uncertain)
+    whirlpool_power_w: Optional[float] = None
+    whirlpool_raw_w: Optional[float] = None
+    whirlpool_uncertain: bool = False
+    whirlpool_reachable: bool = False
     errors: list[str] = field(default_factory=list)
     # Phasen, deren Shelly nicht antwortet (state None) – nicht kritisch, nur nicht schaltbar
     unreachable_phases: list[str] = field(default_factory=list)

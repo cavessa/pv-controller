@@ -138,6 +138,22 @@ def _load_cfg() -> Config:
     return load_config(CONFIG_PATH)
 
 
+def _whirlpool_status_block(cfg: Config, r) -> dict[str, Any]:
+    """Whirlpool-3EM (nur lesen): Leistung nach Abzug der mitlaufenden Heizstab-Phase."""
+    wm = cfg.whirlpool_meter
+    if wm is None or not wm.enabled:
+        return {"enabled": False}
+    return {
+        "enabled": True,
+        "name": wm.name,
+        "power_w": r.whirlpool_power_w,
+        "raw_w": r.whirlpool_raw_w,
+        "uncertain": r.whirlpool_uncertain,
+        "reachable": r.whirlpool_reachable,
+        "subtract_heater_phase": wm.subtract_heater_phase,
+    }
+
+
 def _decision_to_dict(d: PhaseDecision) -> dict[str, Any]:
     return {
         "phase": d.name,
@@ -486,6 +502,7 @@ def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
         "summary": _summary(result, cfg),
         "meter_today": compute_meter_today(r),
         "zendure": _zendure_status_block(cfg, r),
+        "whirlpool": _whirlpool_status_block(cfg, r),
         "device_alerts": _device_alerts(cfg),
         "house_peak_watts": hp["peak_w"],
         "house_peak_time": hp["peak_time"],
@@ -855,6 +872,7 @@ class ConfigUpdate(BaseModel):
     summer_mode: dict[str, Any] | None = None
     house: dict[str, Any] | None = None
     zendure: dict[str, Any] | None = None
+    whirlpool_meter: dict[str, Any] | None = None
 
 
 def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str, Any]:
@@ -1053,6 +1071,23 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
             raise HTTPException(400, "house.max_load_kw must be a number between 1 and 100")
         new_cfg["house_max_load_kw"] = float(v)
 
+    if patch.whirlpool_meter:
+        allowed = {"enabled", "url", "type", "name", "subtract_heater_phase"}
+        bad = set(patch.whirlpool_meter) - allowed
+        if bad:
+            raise HTTPException(400, f"whirlpool_meter keys not allowed: {sorted(bad)}")
+        block = new_cfg.setdefault("whirlpool_meter", {})
+        for k, v in patch.whirlpool_meter.items():
+            if k == "enabled":
+                if not isinstance(v, bool):
+                    raise HTTPException(400, "whirlpool_meter.enabled must be boolean")
+            elif not isinstance(v, str):
+                raise HTTPException(400, f"whirlpool_meter.{k} must be a string")
+            else:
+                v = v.strip()
+            block[k] = v
+        # Typ, Phase und URL prüft WhirlpoolMeterConfig in der Final-Validierung
+
     if patch.summer_mode:
         bad = set(patch.summer_mode) - _ALLOWED_SUMMER_MODE_KEYS
         if bad:
@@ -1088,6 +1123,7 @@ def load_config_from_dict(raw: dict[str, Any]) -> Config:
         SummerModeConfig,
         WallboxConfig,
         parse_solax2,
+        parse_whirlpool_meter,
         parse_zendure,
     )
 
@@ -1110,6 +1146,7 @@ def load_config_from_dict(raw: dict[str, Any]) -> Config:
         solax2=parse_solax2(raw),
         house_max_load_kw=float(raw.get("house_max_load_kw", 11.0)),
         zendure=parse_zendure(raw),
+        whirlpool_meter=parse_whirlpool_meter(raw),
     )
 
 

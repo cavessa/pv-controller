@@ -159,6 +159,15 @@
         <div id="zd-chart-wrap" class="temp-chart-wrap"></div>
       </div>
 
+      <div class="card hidden" id="whirlpool-card">
+        <div class="card-head">
+          <h2><span id="wp-title">Whirlpool</span></h2>
+          <span class="badge" id="wp-status">–</span>
+        </div>
+        <div class="big-temp" id="wp-power">–</div>
+        <div class="house-foot" id="wp-foot"></div>
+      </div>
+
       <div class="card">
         <div class="card-head">
           <h2>Tageshoch – Verlauf (kW)</h2>
@@ -749,6 +758,17 @@
             <legend>Hausanschluss</legend>
             <label>Max. Last (kW, Warnmarke)<input type="number" step="0.5" min="1" max="100" name="house.max_load_kw" placeholder="11"></label>
           </fieldset>
+          <fieldset>
+            <legend>Whirlpool-Zähler (Shelly 3EM, nur lesen)</legend>
+            <label class="check"><input type="checkbox" name="whirlpool_meter.enabled"> Aktiviert</label>
+            <label>URL<input type="text" name="whirlpool_meter.url" placeholder="http://192.168.x.x"></label>
+            <label>Typ<select name="whirlpool_meter.type">
+                <option value="shelly_3em_gen1">Shelly 3EM (Gen1)</option><option value="shelly_pro_3em">Shelly Pro 3EM</option></select></label>
+            <label>Bezeichnung<input type="text" name="whirlpool_meter.name" placeholder="Whirlpool"></label>
+            <label>Heizstab-Phase abziehen<select name="whirlpool_meter.subtract_heater_phase">
+                <option value="">keine</option><option value="L1">L1</option><option value="L2">L2</option><option value="L3">L3</option></select>
+              <small class="field-hint">Läuft eine Heizstab-Phase durch diesen Zähler, wird ihre Leistung (Heizstab-3EM, gleiche Phase) abgezogen. Nach dem Umklemmen auf „keine“ stellen. Es wird nichts geschaltet.</small></label>
+          </fieldset>
 
           <fieldset>
             <legend>Shelly IPs</legend>
@@ -1055,7 +1075,7 @@
     </form>
   </div>
 
-  <script src="/static/app.js?v=20261017c" defer></script>
+  <script src="/static/app.js?v=20261017d" defer></script>
   <script src="/static/heating.js?v=20261014a" defer></script>
   <script src="/static/shutters.js?v=20261013j" defer></script>
 </body>

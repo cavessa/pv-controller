@@ -174,6 +174,10 @@ def init_pv_logging_tables() -> None:
                 heater_w   REAL
             )
         """)
+        try:                                   # Whirlpool (17.10.2026): NULL = offline/unsicher
+            conn.execute("ALTER TABLE load_min ADD COLUMN whirlpool_w REAL")
+        except sqlite3.OperationalError:
+            pass
         # Lastspitze (Netzbezug am Hauptzähler) pro Tag; eigene Tabelle, damit das
         # das Schreiben von pv_daily_log sie nicht berührt
         conn.execute("""
@@ -576,12 +580,13 @@ def record_zendure(soc, charge_w: float, discharge_w: float) -> None:
             conn.execute("DELETE FROM zendure_min WHERE ts < date('now', ?)", (f"-{RETENTION_DAYS['minute_tables']} days",))
 
 
-def record_loads(wallbox_w: Optional[float], heater_w: Optional[float]) -> None:
-    """Wallbox- und Heizstab-Leistung (W, None = unbekannt) der aktuellen Minute speichern."""
+def record_loads(wallbox_w: Optional[float], heater_w: Optional[float],
+                 whirlpool_w: Optional[float] = None) -> None:
+    """Wallbox-, Heizstab- und Whirlpool-Leistung (W, None = unbekannt/unsicher) der aktuellen Minute."""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("INSERT OR REPLACE INTO load_min (ts, wallbox_w, heater_w) VALUES (?,?,?)",
-                     (ts, wallbox_w, heater_w))
+        conn.execute("INSERT OR REPLACE INTO load_min (ts, wallbox_w, heater_w, whirlpool_w) VALUES (?,?,?,?)",
+                     (ts, wallbox_w, heater_w, whirlpool_w))
 
 
 def get_zendure_day(date_str: str) -> list[list]:

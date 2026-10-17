@@ -151,6 +151,7 @@ function fitChart(svg) {
 })();
 
 let lastZendure = null;
+let lastWhirlpool = null;
 let lastPhasesDisabled = {};
 
 function renderStatus(s) {
@@ -158,6 +159,8 @@ function renderStatus(s) {
   lastZendure = s.zendure ?? null;
   lastPhasesDisabled = s.heater?.phases_disabled ?? {};
   renderZendureCard(lastZendure);
+  lastWhirlpool = s.whirlpool ?? null;
+  renderWhirlpoolCard(lastWhirlpool);
 
   // Geräte, die seit ≥ 10 min nicht antworten (z. B. ein Phasen-Shelly)
   const devBanner = $("#device-banner");
@@ -413,13 +416,13 @@ function renderStatus(s) {
 
   const wbCard = document.getElementById("wallbox-card");
   if (wbCard) wbCard.style.display = wb.enabled ? "" : "none";
-  renderEnergyFlow(h, wb, lastCascadeStatus, lastZendure);
+  renderEnergyFlow(h, wb, lastCascadeStatus, lastZendure, lastWhirlpool);
 }
 
 // ══════════════════════════════════════════════════════════════════
 // Energiefluss – haus-zentriertes Layout
 // ══════════════════════════════════════════════════════════════════
-function renderEnergyFlow(heater, wb, cs, zd) {
+function renderEnergyFlow(heater, wb, cs, zd, wp) {
   const el = document.getElementById("flow-diagram");
   if (!el) return;
 
@@ -523,6 +526,17 @@ function renderEnergyFlow(heater, wb, cs, zd) {
       }
     }
     bots.push({ icon: "🚗", label: "WALLBOX", value: wbV, sub: wbS, aktiv: wbOn, flow: wbOn, target: "wallbox-card" });
+  }
+  if (wp?.enabled) {
+    // Whirlpool: eigener 3EM, nur Anzeige (Teil des Hausverbrauchs)
+    const w = wp.power_w;
+    const on = w != null && w > 50;
+    bots.push({
+      icon: "🛁", label: (wp.name || "Whirlpool").toUpperCase().slice(0, 11),
+      value: !wp.reachable ? "n/a" : w == null ? "?" : kwOrW(w),
+      sub: !wp.reachable ? "offline" : wp.uncertain ? "unsicher" : on ? "heizt/läuft" : "aus",
+      aktiv: on, flow: on, target: "whirlpool-card",
+    });
   }
   shellys.forEach(d => {
     const pw    = d.last_status_power_w ?? 0;
@@ -1551,6 +1565,9 @@ function renderBatteryNights(d) {
     const label = `${weekdays[dt.getDay()]} ${dt.getDate()}.`;
     const tip = `Nacht ${label} ${n.start}–${n.end}${n.ongoing ? " (läuft)" : n.complete ? "" : " (unvollständig)"}\n`
       + `Bedarf ${kwh(n.need_wh)} kWh` + segs.filter(sg => sg[0] > 0).map(sg => `\n· ${sg[3]}: ${kwh(sg[0])} kWh`).join("")
+      + (n.whirlpool_wh != null ? `\ndavon Whirlpool: ${kwh(n.whirlpool_wh)} kWh`
+          + (n.whirlpool_peak_wh > 0 ? `, über ${maxKw} kW: ${kwh(n.whirlpool_peak_wh)} kWh` : "")
+          + (n.whirlpool_coverage < 0.9 ? ` (Messwerte nur ${Math.round(n.whirlpool_coverage * 100)} % der Nacht)` : "") : "")
       + (n.excluded_wh > 0 ? `\nnicht eingerechnet (Wallbox/Heizstab): ${kwh(n.excluded_wh)} kWh${n.loads_estimated ? " (geschätzt)" : ""}` : "")
       + (surplus[n.date] ? `\nPV-Überschuss am Tag davor: ${kwh(surplus[n.date].surplus_wh)} kWh` : "");
     let acc = 0;
@@ -2826,6 +2843,35 @@ async function loadZendureMonth(monthStr) {
     + (d.cycles != null ? `<br>≈ <b>${d.cycles.toFixed(1)}</b> Zyklen (Σ geladen / ${d.capacity_kwh.toFixed(1)} kWh)` : "");
 }
 
+// ---------- Whirlpool (eigener 3EM, nur lesen) ----------
+function renderWhirlpoolCard(wp) {
+  const card = document.getElementById("whirlpool-card");
+  if (!card) return;
+  const on = wp?.enabled === true;
+  card.classList.toggle("hidden", !on);
+  if (!on) return;
+  const kw = w => Math.abs(w) >= 1000 ? (w / 1000).toFixed(2).replace(".", ",") + " kW" : Math.round(w) + " W";
+  $("#wp-title").textIfChanged = wp.name || "Whirlpool";
+  const st = $("#wp-status"), pw = $("#wp-power"), foot = $("#wp-foot");
+  if (!wp.reachable) {
+    st.textIfChanged = "nicht erreichbar"; st.classIfChanged = "badge error";
+    pw.textIfChanged = "–"; foot.textIfChanged = "";
+    return;
+  }
+  if (wp.uncertain) {
+    st.textIfChanged = "unsicher"; st.classIfChanged = "badge warn";
+    pw.textIfChanged = "?";
+    foot.textIfChanged = `Heizstab-Zähler nicht lesbar – Phase ${wp.subtract_heater_phase} kann nicht abgezogen werden (Rohwert ${kw(wp.raw_w ?? 0)})`;
+    return;
+  }
+  const w = wp.power_w ?? 0;
+  st.textIfChanged = w > 50 ? "läuft" : "aus"; st.classIfChanged = w > 50 ? "badge ok" : "badge";
+  pw.textIfChanged = kw(w);
+  foot.textIfChanged = wp.subtract_heater_phase
+    ? `Zähler ${kw(wp.raw_w ?? 0)} abzüglich Heizstab-Phase ${wp.subtract_heater_phase}`
+    : "";
+}
+
 // ---------- Batterie (Zendure SolarFlow) ----------
 function renderZendureCard(z) {
   const card = document.getElementById("zendure-card");
@@ -3576,6 +3622,12 @@ async function loadSettings() {
     // Gesetztes Passwort kommt maskiert ("********"); unverändert zurückgeschickt bleibt es erhalten
     setFormValue(f, "auth.password", lastConfig.auth_password ?? "");
     setFormValue(f, "house.max_load_kw", lastConfig.house_max_load_kw ?? 11);
+    const wmc = lastConfig.whirlpool_meter ?? {};
+    setFormValue(f, "whirlpool_meter.enabled", wmc.enabled ?? false);
+    setFormValue(f, "whirlpool_meter.url", wmc.url ?? "");
+    setFormValue(f, "whirlpool_meter.type", wmc.type ?? "shelly_3em_gen1");
+    setFormValue(f, "whirlpool_meter.name", wmc.name ?? "Whirlpool");
+    setFormValue(f, "whirlpool_meter.subtract_heater_phase", wmc.subtract_heater_phase ?? "");
     const zc = lastConfig.zendure ?? {};
     setFormValue(f, "zendure.enabled", zc.enabled ?? false);
     setFormValue(f, "zendure.ip", zc.ip ?? "");
@@ -3699,6 +3751,13 @@ async function saveSettings(e) {
     },
     house: {
       max_load_kw: numField("house.max_load_kw"),
+    },
+    whirlpool_meter: {
+      enabled: boolField("whirlpool_meter.enabled"),
+      url: f.elements.namedItem("whirlpool_meter.url")?.value?.trim() ?? "",
+      type: f.elements.namedItem("whirlpool_meter.type")?.value ?? "shelly_3em_gen1",
+      name: strField("whirlpool_meter.name") ?? "Whirlpool",
+      subtract_heater_phase: f.elements.namedItem("whirlpool_meter.subtract_heater_phase")?.value ?? "",
     },
     zendure: {
       enabled: boolField("zendure.enabled"),

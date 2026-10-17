@@ -243,6 +243,8 @@ def build(config: Any, cascade: Optional[dict], result: Optional[ControllerResul
         "house_w": _i(r.house_consumption_w) if r else None,
         "heater_w": _i(r.heater_meter_power_w) if r else None,
         "wallbox_w": _i(wb.power_w) if wb else None,
+        "whirlpool_w": _i(r.whirlpool_power_w) if r is not None and r.whirlpool_reachable else None,
+        "whirlpool_uncertain": bool(r.whirlpool_uncertain) if r is not None else False,
         "battery_charge_w": _i(zd.charge_w) if zd is not None else None,
         "battery_discharge_w": _i(zd.discharge_w) if zd is not None else None,
         "battery_soc": _i(zd.soc) if zd is not None else None,

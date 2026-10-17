@@ -13,6 +13,13 @@
     "name": "Pergola",
     "max_w": 1000
   },
+  "whirlpool_meter": {
+    "enabled": false,
+    "url": "",
+    "type": "shelly_3em_gen1",
+    "name": "Whirlpool",
+    "subtract_heater_phase": ""
+  },
   "zendure": {
     "enabled": false,
     "ip": "192.168.x.x",

@@ -195,6 +195,10 @@ def energy_line(snap: dict[str, Any]) -> str:
     parts.append(f"Heizstab {_w(e.get('heater_w'))}")
     if "wallbox_w" in e:
         parts.append(f"Wallbox {_w(e.get('wallbox_w'))}")
+    if e.get("whirlpool_w") is not None:
+        parts.append(f"Whirlpool {_w(e.get('whirlpool_w'))} (im Hausverbrauch enthalten, wird nicht geregelt)")
+    elif e.get("whirlpool_uncertain"):
+        parts.append("Whirlpool unsicher (Heizstab-Zähler nicht lesbar)")
     if "battery_soc" in e:
         parts.append(f"Batterie {e['battery_soc']} % (lädt {_w(e.get('battery_charge_w'))}, "
                      f"entlädt {_w(e.get('battery_discharge_w'))})")
