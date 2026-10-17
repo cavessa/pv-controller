@@ -135,6 +135,64 @@ class ConsumersConfig:
             raise ValueError("consumers: openhab.url erforderlich")
 
 
+DW_ITEM_KEYS = ("remote_start", "operation_state", "selected_program", "door", "remaining", "action")
+DW_MODES = ("latest_start", "finish_by")
+_HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+@dataclass
+class DishwasherConfig:
+    """Geschirrspüler (Home Connect über openHAB): startet bei PV-Überschuss, spätestens zur Frist.
+
+    ``deadline_mode``: "latest_start" = spätestens um ``latest_start`` starten; "finish_by" = so starten,
+    dass er bis ``finish_by`` fertig ist (gelernte Programmdauer). ``dry_run``: nie wirklich starten
+    (zusätzlich zu runtime.dry_run). openHAB-Zugang aus dem Block ``openhab``.
+    """
+    enabled: bool = False
+    dry_run: bool = False
+    items: dict = field(default_factory=dict)
+    start_surplus_w: float = 1500.0
+    surplus_minutes: int = 5
+    deadline_mode: str = "latest_start"
+    latest_start: str = "14:00"
+    finish_by: str = "18:00"
+    assumed_power_w: float = 2000.0
+    # Heizstab in der Stufe „bis Max“ (Speicher schon über der Min-Temperatur) steckt für den Spüler zurück:
+    # seine Leistung zählt beim Start-Überschuss mit
+    heater_yields: bool = True
+    openhab_url: str = ""
+    openhab_token: str = field(default="", repr=False)
+    openhab_timeout_s: float = 3.0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.items, dict) or set(self.items) - set(DW_ITEM_KEYS):
+            raise ValueError(f"dishwasher.items: erlaubt sind {DW_ITEM_KEYS}")
+        for k, v in self.items.items():
+            if not isinstance(v, str) or (v and not ITEM_RE.match(v)):
+                raise ValueError(f"dishwasher.items.{k}: ungültiger Item-Name")
+        for k in ("enabled", "dry_run", "heater_yields"):
+            if not isinstance(getattr(self, k), bool):
+                raise ValueError(f"dishwasher.{k} muss true/false sein")
+        for k, lo, hi in (("start_surplus_w", 100, 10000), ("assumed_power_w", 0, 5000)):
+            v = getattr(self, k)
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or not lo <= v <= hi:
+                raise ValueError(f"dishwasher.{k} muss zwischen {lo} und {hi} liegen")
+        if not isinstance(self.surplus_minutes, int) or isinstance(self.surplus_minutes, bool) \
+                or not 1 <= self.surplus_minutes <= 60:
+            raise ValueError("dishwasher.surplus_minutes muss zwischen 1 und 60 liegen")
+        if self.deadline_mode not in DW_MODES:
+            raise ValueError(f"dishwasher.deadline_mode muss {DW_MODES} sein")
+        for k in ("latest_start", "finish_by"):
+            if not isinstance(getattr(self, k), str) or not _HHMM.match(getattr(self, k)):
+                raise ValueError(f"dishwasher.{k} muss HH:MM sein")
+        if self.enabled:
+            missing = [k for k in DW_ITEM_KEYS if not self.items.get(k)]
+            if missing:
+                raise ValueError(f"dishwasher: Items fehlen: {missing}")
+            if not self.openhab_url.strip():
+                raise ValueError("dishwasher: openhab.url erforderlich")
+
+
 @dataclass
 class ShellyConfig:
     ph1_url: str
@@ -339,6 +397,11 @@ class Config:
     cascade: CascadeConfig = field(default_factory=CascadeConfig)
     whirlpool_meter: Optional[WhirlpoolMeterConfig] = None
     consumers: Optional[ConsumersConfig] = None
+    dishwasher: Optional[DishwasherConfig] = None
+
+    @property
+    def dishwasher_active(self) -> bool:
+        return self.dishwasher is not None and self.dishwasher.enabled
 
     @property
     def consumers_active(self) -> bool:
@@ -397,6 +460,19 @@ def parse_consumers(raw: dict) -> Optional[ConsumersConfig]:
     )
 
 
+def parse_dishwasher(raw: dict) -> Optional[DishwasherConfig]:
+    block = raw.get("dishwasher")
+    if not block:
+        return None
+    oh = raw.get("openhab") or {}
+    keep = set(DishwasherConfig.__dataclass_fields__) - {"openhab_url", "openhab_token", "openhab_timeout_s"}
+    return DishwasherConfig(
+        **{k: v for k, v in block.items() if k in keep},
+        openhab_url=str(oh.get("url", "")), openhab_token=str(oh.get("token", "")),
+        openhab_timeout_s=float(oh.get("timeout_s", 3)),
+    )
+
+
 def parse_zendure(raw: dict) -> Optional[ZendureConfig]:
     block = raw.get("zendure")
     if not block:
@@ -447,6 +523,7 @@ def load_config(path: str | Path) -> Config:
         zendure=parse_zendure(raw),
         whirlpool_meter=parse_whirlpool_meter(raw),
         consumers=parse_consumers(raw),
+        dishwasher=parse_dishwasher(raw),
         cascade=CascadeConfig(**{
             k: v for k, v in raw.get("cascade", {}).items() if k in CascadeConfig.__dataclass_fields__
         }),

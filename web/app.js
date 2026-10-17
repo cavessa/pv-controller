@@ -152,6 +152,7 @@ function fitChart(svg) {
 
 let lastZendure = null;
 let lastWhirlpool = null;
+let lastDishwasher = null;
 let lastPhasesDisabled = {};
 
 function renderStatus(s) {
@@ -162,6 +163,8 @@ function renderStatus(s) {
   lastWhirlpool = s.whirlpool ?? null;
   renderWhirlpoolCard(lastWhirlpool);
   renderConsumersCard(s.consumers);
+  lastDishwasher = s.dishwasher ?? null;
+  renderDishwasherCard(lastDishwasher);
 
   // Geräte, die seit ≥ 10 min nicht antworten (z. B. ein Phasen-Shelly)
   const devBanner = $("#device-banner");
@@ -538,6 +541,16 @@ function renderEnergyFlow(heater, wb, cs, zd, wp) {
       sub: !wp.reachable ? "offline" : wp.uncertain ? "unsicher" : on ? "heizt/läuft" : "aus",
       aktiv: on, flow: on, target: "whirlpool-card",
     });
+  }
+  if (lastDishwasher?.enabled) {
+    // Geschirrspüler (Home Connect): Status-Kachel, Leistung steckt im Hausverbrauch
+    const d = lastDishwasher, o = d.obs || {};
+    const run = d.code === "dw_running";
+    const val = !d.ok ? "n/a" : run ? "läuft" : d.code === "dw_waiting_surplus" || d.code === "dw_waiting_tomorrow" ? "wartet"
+      : d.code === "dw_start_failed" ? "Fehler" : o.op === "Finished" ? "fertig" : o.op === "Ready" ? "bereit" : "aus";
+    const sub = !d.ok ? "offline" : run ? `noch ${d.data?.remaining ?? "?"}`
+      : d.code === "dw_waiting_surplus" ? `bis ${d.data?.deadline}` : d.code === "dw_waiting_tomorrow" ? "morgen" : "";
+    bots.push({ icon: "🍽️", label: "SPÜLER", value: val, sub, aktiv: run, flow: run, target: "dishwasher-card" });
   }
   shellys.forEach(d => {
     const pw    = d.last_status_power_w ?? 0;
@@ -2879,6 +2892,76 @@ function renderWhirlpoolCard(wp) {
     : "";
 }
 
+// ---------- Geschirrspüler (Home Connect) ----------
+function renderDishwasherCard(d) {
+  const card = document.getElementById("dishwasher-card");
+  if (!card) return;
+  const on = d?.enabled === true;
+  card.classList.toggle("hidden", !on);
+  if (!on) return;
+  const st = $("#dw-status"), big = $("#dw-big"), info = $("#dw-info"), foot = $("#dw-foot");
+  if (!d.ok) {
+    st.textIfChanged = "nicht lesbar"; st.classIfChanged = "badge error";
+    big.textIfChanged = "–"; info.textIfChanged = "openHAB oder Geschirrspüler-Items nicht lesbar"; foot.textIfChanged = "";
+    return;
+  }
+  const o = d.obs || {}, x = d.data || {};
+  const prog = o.program_key || "–";
+  const badge = {
+    dw_running: ["läuft", "badge ok"], dw_waiting_surplus: ["wartet auf Sonne", "badge warn"],
+    dw_waiting_tomorrow: ["wartet auf morgen", "badge warn"], dw_start_failed: ["Start fehlgeschlagen", "badge error"],
+    dw_start_sent: ["Start gesendet", "badge ok"], dw_started_surplus: ["startet", "badge ok"],
+    dw_started_deadline: ["startet", "badge ok"], dw_started_manual: ["gestartet", "badge ok"],
+    dw_start_simulated: ["Dry-Run", "badge"], dw_delayed_start: ["Startzeit am Gerät", "badge"],
+    dw_no_auto: ["nicht automatisch", "badge"], dw_not_ready: [o.op === "Finished" ? "fertig" : "nicht bereit", "badge"],
+  }[d.code] || [d.code || "–", "badge"];
+  st.textIfChanged = badge[0]; st.classIfChanged = badge[1];
+  let headline = prog;
+  if (d.code === "dw_running") headline = `noch ${x.remaining ?? "?"}`;
+  else if (d.code === "dw_waiting_surplus") headline = `spätestens ${x.deadline}`;
+  else if (d.code === "dw_waiting_tomorrow") headline = `morgen, spätestens ${x.deadline}`;
+  big.textIfChanged = headline;
+  const lines = [];
+  if (d.code === "dw_waiting_tomorrow") lines.push(`Startet morgen bei Sonne, spätestens ${x.deadline}`);
+  else if (d.code === "dw_waiting_surplus") lines.push(`Startet bei ≥ ${x.threshold_w} W Überschuss über ${x.minutes} min `
+    + `(jetzt ${x.surplus_w == null ? "?" : x.surplus_w + " W"}${x.heater_yields ? ", inkl. Heizstab „bis Max“" : ""}), spätestens ${x.deadline}`);
+  else lines.push(d.text || "");
+  if (d.pending) lines.push("Startbefehl folgt im nächsten Lauf");
+  lines.push(`Programm ${prog}${d.duration_min ? ` · Dauer ca. ${Math.floor(d.duration_min / 60)}:${String(d.duration_min % 60).padStart(2, "0")} h` : ""}`
+    + (d.mode === "finish_by" ? ` · fertig bis ${d.finish_by}` : ` · Start spätestens ${d.latest_start}`));
+  info.htmlIfChanged = lines.filter(Boolean).map(l => `<div>${l.replace(/</g, "&lt;")}</div>`).join("");
+  foot.htmlIfChanged = `Tür ${o.door === "CLOSED" ? "zu" : o.door === "OPEN" ? "offen" : "?"} · Fernstart ${o.remote_start ? "erlaubt" : "aus"}`
+    + ` · Status ${o.op || "?"}` + (d.dry_run ? " · <b>Dry-Run: startet nie</b>" : "");
+  const canStart = o.op === "Ready" && o.remote_start && o.door === "CLOSED" && !!o.program;
+  const bStart = $("#dw-start"), bAuto = $("#dw-noauto");
+  bStart.disabled = !canStart;
+  bStart.title = canStart ? "" : "nur wenn bereit: Fernstart erlaubt, Tür zu, Programm gewählt";
+  bAuto.textIfChanged = d.no_auto ? "Automatisch starten" : "Nicht automatisch starten";
+  bAuto.disabled = !o.remote_start;
+  bAuto.dataset.on = d.no_auto ? "0" : "1";
+}
+
+async function dishwasherAction(kind) {
+  const msg = $("#dw-msg");
+  try {
+    let r;
+    if (kind === "start") {
+      if (!confirm("Geschirrspüler jetzt starten?")) return;
+      r = await fetch("/api/dishwasher/start", { method: "POST", headers: { "Content-Type": "application/json" },
+                                                 body: JSON.stringify({ confirm: true }) });
+    } else {
+      r = await fetch("/api/dishwasher/no-auto", { method: "POST", headers: { "Content-Type": "application/json" },
+                                                   body: JSON.stringify({ on: $("#dw-noauto").dataset.on === "1" }) });
+    }
+    const j = await r.json().catch(() => ({}));
+    msg.textContent = r.ok ? (kind === "start" ? (j.dry_run ? "Dry-Run: kein Befehl gesendet" : "Startbefehl gesendet") : "gespeichert")
+                           : (j.detail || "Fehler");
+    if (typeof refreshStatus === "function") refreshStatus();
+  } catch (e) {
+    msg.textContent = "Fehler: " + e;
+  }
+}
+
 // ---------- Verbraucher (openHAB, nur lesen) ----------
 let consOtherOpen = false;
 function renderConsumersCard(c) {
@@ -3756,6 +3839,19 @@ async function loadSettings() {
     setFormValue(f, "whirlpool_meter.type", wmc.type ?? "shelly_3em_gen1");
     setFormValue(f, "whirlpool_meter.name", wmc.name ?? "Whirlpool");
     setFormValue(f, "whirlpool_meter.subtract_heater_phase", wmc.subtract_heater_phase ?? "");
+    const dwc = lastConfig.dishwasher ?? {};
+    const dwi = dwc.items ?? {};
+    setFormValue(f, "dishwasher.enabled", dwc.enabled ?? false);
+    setFormValue(f, "dishwasher.dry_run", dwc.dry_run ?? false);
+    for (const k of ["remote_start", "operation_state", "selected_program", "door", "remaining", "action"])
+      setFormValue(f, `dishwasher.items.${k}`, dwi[k] ?? "");
+    setFormValue(f, "dishwasher.start_surplus_w", dwc.start_surplus_w ?? 1500);
+    setFormValue(f, "dishwasher.surplus_minutes", dwc.surplus_minutes ?? 5);
+    setFormValue(f, "dishwasher.deadline_mode", dwc.deadline_mode ?? "latest_start");
+    setFormValue(f, "dishwasher.latest_start", dwc.latest_start ?? "14:00");
+    setFormValue(f, "dishwasher.finish_by", dwc.finish_by ?? "18:00");
+    setFormValue(f, "dishwasher.assumed_power_w", dwc.assumed_power_w ?? 2000);
+    setFormValue(f, "dishwasher.heater_yields", dwc.heater_yields ?? true);
     const cc = lastConfig.consumers ?? {};
     setFormValue(f, "consumers.enabled", cc.enabled ?? false);
     setFormValue(f, "consumers.small_avg_w", cc.small_avg_w ?? 20);
@@ -3890,6 +3986,19 @@ async function saveSettings(e) {
       type: f.elements.namedItem("whirlpool_meter.type")?.value ?? "shelly_3em_gen1",
       name: strField("whirlpool_meter.name") ?? "Whirlpool",
       subtract_heater_phase: f.elements.namedItem("whirlpool_meter.subtract_heater_phase")?.value ?? "",
+    },
+    dishwasher: {
+      enabled: boolField("dishwasher.enabled"),
+      dry_run: boolField("dishwasher.dry_run"),
+      items: Object.fromEntries(["remote_start", "operation_state", "selected_program", "door", "remaining", "action"]
+        .map(k => [k, f.elements.namedItem(`dishwasher.items.${k}`)?.value?.trim() ?? ""])),
+      start_surplus_w: numField("dishwasher.start_surplus_w") ?? 1500,
+      surplus_minutes: Math.round(numField("dishwasher.surplus_minutes") ?? 5),
+      deadline_mode: f.elements.namedItem("dishwasher.deadline_mode")?.value ?? "latest_start",
+      latest_start: f.elements.namedItem("dishwasher.latest_start")?.value || "14:00",
+      finish_by: f.elements.namedItem("dishwasher.finish_by")?.value || "18:00",
+      assumed_power_w: numField("dishwasher.assumed_power_w") ?? 2000,
+      heater_yields: boolField("dishwasher.heater_yields"),
     },
     consumers: {
       enabled: boolField("consumers.enabled"),

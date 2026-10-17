@@ -2021,3 +2021,11 @@ body.sheet-open { overflow: hidden; }
   .cons-edit-head { display: none; }
   .cons-edit-row { grid-template-columns: 1fr 1fr; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
 }
+
+/* -------- Geschirrspüler -------- */
+#dishwasher-card.hidden { display: none; }
+.dw-big { font-size: 22px; font-weight: 500; margin: 6px 0 8px; font-variant-numeric: tabular-nums; }
+.dw-info { font-size: 12px; line-height: 1.6; color: var(--text); }
+.dw-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.dw-actions button { flex: 1 1 140px; padding: 8px; }
+.dw-actions button:disabled { opacity: 0.4; cursor: not-allowed; }

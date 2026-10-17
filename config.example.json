@@ -191,5 +191,23 @@
         "in_sum": true
       }
     ]
+  },
+  "dishwasher": {
+    "enabled": false,
+    "dry_run": false,
+    "items": {
+      "remote_start": "",
+      "operation_state": "",
+      "selected_program": "",
+      "door": "",
+      "remaining": "",
+      "action": ""
+    },
+    "start_surplus_w": 1500,
+    "surplus_minutes": 5,
+    "deadline_mode": "latest_start",
+    "latest_start": "14:00",
+    "finish_by": "18:00",
+    "assumed_power_w": 2000
   }
 }

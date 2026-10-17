@@ -102,6 +102,23 @@ REASONS: dict[str, str] = {
     "openhab_unreachable": "openHAB nicht erreichbar – Eintrag bleibt fällig",
     "readback_mismatch": "Rückprüfung: Gerät meldet {reported} statt {expected}",
     "readback_retry": "Rückprüfung: Wert zurückgesprungen ({reported} statt {expected}) – einmal erneut gesendet",
+    # ── Geschirrspüler (Home Connect) ────────────────────────────────────────
+    "dw_waiting_surplus": "Wartet auf Sonne: Überschuss {surplus_w} W (Minutenmittel inkl. Batterie-Ladung"
+                          "{heater_note}), "
+                          "nötig {threshold_w} W über {minutes} min; startet spätestens {day} {deadline}",
+    "dw_waiting_tomorrow": "Fernstart nach der heutigen Frist – startet {day} bei Sonne, spätestens {deadline}",
+    "dw_started_surplus": "Gestartet bei Überschuss: {minutes} min mindestens {surplus_w} W (Schwelle {threshold_w} W"
+                          "{heater_note})",
+    "dw_started_deadline": "Gestartet zur Frist {deadline} (Programm {program}, ca. {duration_min} min)",
+    "dw_started_manual": "Im Dashboard von Hand gestartet",
+    "dw_start_sent": "Startbefehl um {cmd_time} gesendet – wartet auf Bestätigung durch das Gerät",
+    "dw_start_simulated": "Dry-Run: hätte jetzt gestartet ({by}) – kein Befehl gesendet",
+    "dw_start_failed": "Start fehlgeschlagen ({detail}) – kein zweiter Versuch, bitte am Gerät prüfen",
+    "dw_not_ready": "Nicht startbereit: {missing}",
+    "dw_running": "Läuft (Programm {program}, noch {remaining}; gestartet von {by})",
+    "dw_delayed_start": "Startzeitvorwahl am Gerät – PV Controller tut nichts",
+    "dw_no_auto": "Automatischer Start für diese Freigabe abgeschaltet (Jetzt starten geht weiter)",
+    "dw_unreadable": "Geschirrspüler-Items in openHAB nicht lesbar",
 }
 
 

@@ -195,6 +195,54 @@ def _consumers_status_block(cfg: Config, result: ControllerResult) -> dict[str, 
             **{k: round(v) for k, v in loads.items()}, **ev}
 
 
+_DW_TTL_S = 10.0
+_dw_cache: dict[str, Any] = {"ts": -1e12, "block": None}
+
+
+def _dishwasher_status_block(cfg: Config, storage_temp_c: Optional[float] = None) -> dict[str, Any]:
+    """Geschirrspüler: Live-Items + Vorschau der Entscheidung (ohne Speichern/Starten) + letzter Cron-Status."""
+    if not cfg.dishwasher_active:
+        return {"enabled": False}
+    now_m = time.monotonic()
+    if now_m - _dw_cache["ts"] < _DW_TTL_S and _dw_cache["block"] is not None:
+        return _dw_cache["block"]
+    import dishwasher
+    import reasons
+    dw = cfg.dishwasher
+    now = datetime.now()
+    try:
+        state = dishwasher.load_state()
+        obs = dishwasher.read(dw)
+        learned = dishwasher.learned_minutes()
+        yields = dishwasher.heater_yields_now(dw, cfg, storage_temp_c)
+        series = dishwasher.surplus_series(now, dw.surplus_minutes, yields) if obs is not None else []
+        _st, prev, _run = dishwasher.decide(dw, state, obs, now, series, learned, yields)
+    except Exception:
+        log.warning("Geschirrspüler-Status nicht lesbar", exc_info=True)
+        return {"enabled": True, "ok": False}
+    if prev.get("action") == "start":             # entscheidet erst der nächste Cron-Lauf
+        prev = {**prev, "pending": True}
+    cron = state.get("status") or {}
+    # Ergebnis des Cron-Laufs (Start gesendet/fehlgeschlagen) hat Vorrang, solange die Freigabe gilt
+    shown = cron if cron.get("code") in ("dw_start_failed", "dw_start_sent", "dw_start_simulated",
+                                         "dw_started_manual") and state.get("cmd_at") else prev
+    prog = obs.get("program") if obs else None
+    block = {
+        "enabled": True, "ok": obs is not None, "code": shown.get("code"),
+        "text": reasons.text(shown.get("code"), shown.get("data")), "data": shown.get("data") or {},
+        "pending": bool(prev.get("pending")), "no_auto": bool(state.get("no_auto")),
+        "dry_run": bool(dw.dry_run or cfg.runtime.dry_run), "mode": dw.deadline_mode,
+        "latest_start": dw.latest_start, "finish_by": dw.finish_by,
+        "obs": None if obs is None else {**obs, "program_key": dishwasher.program_key(prog)},
+        "duration_min": round(dishwasher.program_minutes(prog, learned)) if prog else None,
+        "learned": {k: round(v) for k, v in learned.items()},
+        "cron_ts": cron.get("ts"), "assumed_power_w": dw.assumed_power_w,
+        "heater_yields": yields, "heater_yields_enabled": dw.heater_yields,
+    }
+    _dw_cache.update(ts=now_m, block=block)
+    return block
+
+
 def _decision_to_dict(d: PhaseDecision) -> dict[str, Any]:
     return {
         "phase": d.name,
@@ -545,6 +593,7 @@ def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
         "zendure": _zendure_status_block(cfg, r),
         "whirlpool": _whirlpool_status_block(cfg, r),
         "consumers": _consumers_status_block(cfg, result),
+        "dishwasher": _dishwasher_status_block(cfg, r.storage_temp_c),
         "device_alerts": _device_alerts(cfg),
         "house_peak_watts": hp["peak_w"],
         "house_peak_time": hp["peak_time"],
@@ -928,6 +977,7 @@ class ConfigUpdate(BaseModel):
     zendure: dict[str, Any] | None = None
     whirlpool_meter: dict[str, Any] | None = None
     consumers: dict[str, Any] | None = None
+    dishwasher: dict[str, Any] | None = None
 
 
 def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str, Any]:
@@ -1175,6 +1225,33 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
             block["devices"] = devs
         # Item-Namen, Zähler-Zuordnung und openhab.url prüft ConsumersConfig in der Final-Validierung
 
+    if patch.dishwasher:
+        allowed = {"enabled", "dry_run", "items", "start_surplus_w", "surplus_minutes", "deadline_mode",
+                   "latest_start", "finish_by", "assumed_power_w", "heater_yields"}
+        bad = set(patch.dishwasher) - allowed
+        if bad:
+            raise HTTPException(400, f"dishwasher keys not allowed: {sorted(bad)}")
+        block = new_cfg.setdefault("dishwasher", {})
+        for k, v in patch.dishwasher.items():
+            if k in ("enabled", "dry_run", "heater_yields"):
+                if not isinstance(v, bool):
+                    raise HTTPException(400, f"dishwasher.{k} must be boolean")
+            elif k == "items":
+                if not isinstance(v, dict) or not all(isinstance(x, str) for x in v.values()):
+                    raise HTTPException(400, "dishwasher.items must be an object of strings")
+                v = {ik: iv.strip() for ik, iv in v.items()}
+            elif k in ("deadline_mode", "latest_start", "finish_by"):
+                if not isinstance(v, str):
+                    raise HTTPException(400, f"dishwasher.{k} must be a string")
+                v = v.strip()
+            elif k == "surplus_minutes":
+                if not isinstance(v, int) or isinstance(v, bool):
+                    raise HTTPException(400, "dishwasher.surplus_minutes must be an integer")
+            elif not isinstance(v, (int, float)) or isinstance(v, bool):
+                raise HTTPException(400, f"dishwasher.{k} must be a number")
+            block[k] = v
+        # Items, Zeiten, Bereiche prüft DishwasherConfig in der Final-Validierung
+
     if patch.summer_mode:
         bad = set(patch.summer_mode) - _ALLOWED_SUMMER_MODE_KEYS
         if bad:
@@ -1210,6 +1287,7 @@ def load_config_from_dict(raw: dict[str, Any]) -> Config:
         SummerModeConfig,
         WallboxConfig,
         parse_consumers,
+        parse_dishwasher,
         parse_solax2,
         parse_whirlpool_meter,
         parse_zendure,
@@ -1236,6 +1314,7 @@ def load_config_from_dict(raw: dict[str, Any]) -> Config:
         zendure=parse_zendure(raw),
         whirlpool_meter=parse_whirlpool_meter(raw),
         consumers=parse_consumers(raw),
+        dishwasher=parse_dishwasher(raw),
     )
 
 
@@ -2136,6 +2215,44 @@ def wallbox_set_mode(mode: str = Query(..., pattern="^(basic|eco)$")) -> dict[st
     except GoeError as e:
         raise HTTPException(502, f"go-e Fehler: {e}")
     return {"ok": True, "lmo": lmo, "psm": psm, "amp": amp, "mode": mode}
+
+
+# ── Geschirrspüler (Home Connect über openHAB) ──────────────────────────────
+
+
+class DishwasherStart(BaseModel):
+    confirm: bool = False
+
+
+@app.post("/api/dishwasher/start")
+def dishwasher_start(req: DishwasherStart) -> dict[str, Any]:
+    """„Jetzt starten“ (nur mit confirm=true); in Dry-Run wird nichts gesendet."""
+    if not req.confirm:
+        raise HTTPException(400, "Bestätigung fehlt")
+    cfg = _load_cfg()
+    if not cfg.dishwasher_active:
+        raise HTTPException(400, "Geschirrspüler nicht aktiviert")
+    import dishwasher
+    res = dishwasher.start_now(cfg.dishwasher, cfg.runtime.dry_run)
+    _dw_cache.update(ts=-1e12)
+    if not res.get("ok"):
+        raise HTTPException(409, res.get("error") or "Start nicht möglich")
+    return res
+
+
+class DishwasherNoAuto(BaseModel):
+    on: bool
+
+
+@app.post("/api/dishwasher/no-auto")
+def dishwasher_no_auto(req: DishwasherNoAuto) -> dict[str, Any]:
+    cfg = _load_cfg()
+    if not cfg.dishwasher_active:
+        raise HTTPException(400, "Geschirrspüler nicht aktiviert")
+    import dishwasher
+    res = dishwasher.set_no_auto(req.on)
+    _dw_cache.update(ts=-1e12)
+    return res
 
 
 # ── Heizung (openHAB-Thermostate) ────────────────────────────────────────────

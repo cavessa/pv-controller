@@ -147,6 +147,16 @@ def main(argv: list[str] | None = None) -> int:
         log.exception("Unerwarteter Fehler im Controller-Lauf")
         rc = 1
 
+    # Geschirrspüler (Home Connect): nach PV/Heizstab/Wallbox, vor dem Schnappschuss (Grund steht darin)
+    if config.dishwasher_active:
+        try:
+            import dishwasher
+            temp = result.readings.storage_temp_c if result is not None else None
+            dishwasher.run(config.dishwasher, config.runtime.dry_run,
+                           heater_yields=dishwasher.heater_yields_now(config.dishwasher, config, temp))
+        except Exception:
+            log.exception("Geschirrspüler: Fehler im Lauf (PV-Steuerung nicht betroffen)")
+
     # Entscheidungs-Schnappschuss + Geräte-Ereignislog (reines Protokoll, Fehler werden dort abgefangen)
     try:
         import decisions

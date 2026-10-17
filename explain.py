@@ -56,9 +56,9 @@ ACTION_DE = {
     "manual_override": "manuell", "unreachable": "nicht erreichbar", "none": "nicht aktiv",
     "unknown": "Zustand unbekannt", "unchanged": "keine Änderung", "skipped": "nicht gesteuert",
     "release": "wird freigegeben", "pause": "pausiert", "error": "Fehler", "auto_disabled": "deaktiviert",
-    "auto_reenabled": "reaktiviert",
+    "auto_reenabled": "reaktiviert", "start": "startet",
 }
-DEVICE_NAMES = {"zendure": "Batterie", "wallbox_control": "Wallbox (Ladesteuerung)",
+DEVICE_NAMES = {"zendure": "Batterie", "wallbox_control": "Wallbox (Ladesteuerung)", "dishwasher": "Geschirrspüler",
                 "heizstab_phase1": "Heizstab Phase 1", "heizstab_phase2": "Heizstab Phase 2",
                 "heizstab_phase3": "Heizstab Phase 3"}
 _CAR = {1: "kein Auto angesteckt", 2: "lädt", 3: "wartet aufs Auto", 4: "Laden beendet"}
@@ -464,6 +464,17 @@ def _settings_lines(config: Any) -> list[str]:
     lines.append(f"Wallbox: Steuerung {'an' if wb.enabled else 'aus'}; PV-Laden nur im Eco-Modus der Wallbox "
                  f"({wb.eco_phases}-phasig, {wb.eco_amps} A); im normalen Modus lädt sie unabhängig von der PV und "
                  "wird nicht angefasst")
+    dw = getattr(config, "dishwasher", None)
+    if dw is not None and dw.enabled:
+        fr = (f"spätestens Start {dw.latest_start}" if dw.deadline_mode == "latest_start"
+              else f"fertig bis {dw.finish_by} (Start = Frist − gelernte Programmdauer)")
+        lines.append(f"Geschirrspüler: startet nach Fernstart-Freigabe, wenn {dw.surplus_minutes} min lang je "
+                     f"≥ {int(dw.start_surplus_w)} W Überschuss (Einspeisung + Batterie-Ladung"
+                     + (" + Heizstab, wenn der Speicher über der Min-Temperatur ist (Stufe „bis Max“)" if dw.heater_yields else "")
+                     + f", Minutenmittel), "
+                     f"{fr}; Freigabe nach der Frist → nächster Tag; genau ein Startbefehl je Freigabe; zieht in "
+                     f"Heizphasen ca. {int(dw.assumed_power_w)} W (wirkt über den Hauptzähler)"
+                     + ("; Dry-Run: startet nie" if dw.dry_run else ""))
     rt = config.runtime
     lines.append(f"Steuerung: {'an' if rt.enabled else 'aus (nur Beobachten)'}"
                  + ("; Dry-Run: es wird nichts geschaltet" if rt.dry_run else ""))

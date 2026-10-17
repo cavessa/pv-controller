@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=94">
+  <link rel="stylesheet" href="/static/styles.css?v=95">
 </head>
 <body>
   <div class="app-shell">
@@ -298,6 +298,20 @@
         </div>
       </div><!-- .grid -->
       <div class="dashboard-bottom">
+        <div class="card hidden" id="dishwasher-card">
+          <div class="card-head">
+            <h2>Geschirrspüler</h2>
+            <span class="badge" id="dw-status">–</span>
+          </div>
+          <div class="dw-big" id="dw-big">–</div>
+          <div class="dw-info" id="dw-info"></div>
+          <div class="dw-actions">
+            <button type="button" id="dw-start" onclick="dishwasherAction('start')">Jetzt starten</button>
+            <button type="button" id="dw-noauto" onclick="dishwasherAction('noauto')">Nicht automatisch starten</button>
+          </div>
+          <div class="form-msg" id="dw-msg"></div>
+          <div class="house-foot" id="dw-foot"></div>
+        </div>
         <div class="card hidden" id="consumers-card">
           <div class="card-head">
             <h2>Verbraucher</h2>
@@ -778,6 +792,27 @@
           </fieldset>
 
           <fieldset>
+            <legend>Geschirrspüler (Home Connect über openHAB)</legend>
+            <label class="check"><input type="checkbox" name="dishwasher.enabled"> Aktiviert</label>
+            <label class="check"><input type="checkbox" name="dishwasher.dry_run"> Dry-Run (nie wirklich starten)</label>
+            <label>Item Fernstart erlaubt<input type="text" name="dishwasher.items.remote_start" spellcheck="false"></label>
+            <label>Item Betriebsmodus<input type="text" name="dishwasher.items.operation_state" spellcheck="false"></label>
+            <label>Item ausgewähltes Programm<input type="text" name="dishwasher.items.selected_program" spellcheck="false"></label>
+            <label>Item Tür<input type="text" name="dishwasher.items.door" spellcheck="false"></label>
+            <label>Item Restlaufzeit<input type="text" name="dishwasher.items.remaining" spellcheck="false"></label>
+            <label>Item Programm-Aktionen (Start)<input type="text" name="dishwasher.items.action" spellcheck="false"></label>
+            <label>Start ab Überschuss (W)<input type="number" step="50" min="100" max="10000" name="dishwasher.start_surplus_w"></label>
+            <label>… über Minuten<input type="number" step="1" min="1" max="60" name="dishwasher.surplus_minutes"></label>
+            <label>Frist<select name="dishwasher.deadline_mode">
+                <option value="latest_start">spätestens starten um</option><option value="finish_by">fertig bis</option></select></label>
+            <label>Spätester Start<input type="time" name="dishwasher.latest_start"></label>
+            <label>Fertig bis<input type="time" name="dishwasher.finish_by"></label>
+            <label class="check"><input type="checkbox" name="dishwasher.heater_yields"> Heizstab steckt für Spüler zurück (Stufe „bis Max“)</label>
+            <label>Leistung in Heizphasen (W, nur Info)<input type="number" step="100" min="0" max="5000" name="dishwasher.assumed_power_w"></label>
+            <small class="field-hint">Einräumen, Programm wählen, Fernstart am Gerät drücken. Gestartet wird bei Überschuss (Einspeisung + Batterie-Ladung, Minutenmittel), spätestens zur Frist; „fertig bis“ rechnet mit der gelernten Programmdauer (Startwert Eco50 295 min, sonst 180 min). Fernstart nach der Frist → nächster Tag. Genau ein Startbefehl pro Freigabe.</small>
+          </fieldset>
+
+          <fieldset>
             <legend>Verbraucher aus openHAB (nur lesen)</legend>
             <label class="check"><input type="checkbox" name="consumers.enabled"> Aktiviert</label>
             <label>„Sonstige“ unter (W, Ø 24 h)<input type="number" step="1" min="0" max="1000" name="consumers.small_avg_w" placeholder="20"></label>
@@ -1091,7 +1126,7 @@
     </form>
   </div>
 
-  <script src="/static/app.js?v=20261017f" defer></script>
+  <script src="/static/app.js?v=20261017h" defer></script>
   <script src="/static/heating.js?v=20261014a" defer></script>
   <script src="/static/shutters.js?v=20261013j" defer></script>
 </body>

@@ -234,6 +234,28 @@ def _consumers_top(r: Any) -> Optional[list]:
     return [[d["name"], _i(d["power_w"])] for d in consumers.top(r.consumers, 5)] or None
 
 
+DW_ACTION = {"dw_started_surplus": "start", "dw_started_deadline": "start", "dw_started_manual": "start",
+             "dw_start_simulated": "start", "dw_running": "keep_on"}
+
+
+def _dishwasher_entry(config: Any, now: datetime) -> Optional[dict[str, Any]]:
+    """Geschirrspüler-Status aus diesem Lauf (dishwasher.run); älter als 3 min → nicht aufnehmen."""
+    if not getattr(config, "dishwasher_active", False):
+        return None
+    try:
+        import dishwasher
+        stt = dishwasher.load_state().get("status") or {}
+    except Exception:
+        log.debug("Geschirrspüler-Zustand nicht lesbar", exc_info=True)
+        return None
+    ts = stt.get("ts")
+    if not ts or abs((now.replace(tzinfo=None) - datetime.fromisoformat(ts)).total_seconds()) > 180:
+        return None
+    code = stt.get("code") or ""
+    return _entry("dishwasher", DW_ACTION.get(code, "none"), code, stt.get("data") or {},
+                  name="Geschirrspüler", type="dishwasher", on=code == "dw_running")
+
+
 def build(config: Any, cascade: Optional[dict], result: Optional[ControllerResult],
           now: Optional[datetime] = None) -> dict[str, Any]:
     """Schnappschuss eines Laufs aus dem Kaskaden-Ergebnis und dem Controller-Ergebnis bauen."""
@@ -313,6 +335,9 @@ def build(config: Any, cascade: Optional[dict], result: Optional[ControllerResul
                                   error=wd.execution_error))
         if result.summer_mode_heating:
             snap["summer_mode_heating"] = True
+    dw = _dishwasher_entry(config, now)
+    if dw is not None:
+        devices.append(dw)
     snap["devices"] = devices
 
     health = []

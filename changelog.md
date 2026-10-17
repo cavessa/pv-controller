@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-17 – Geschirrspüler (Home Connect) bei PV-Überschuss starten, spätestens zur Frist
+
+Anlass: Bosch-Geschirrspüler (Eco50 ~4 h 55 min, Heizphasen ~2 kW) soll mit PV-Strom laufen. Ablauf: einräumen, Programm wählen, Fernstart am Gerät drücken – der PV Controller startet ihn.
+- **Config `dishwasher`** (Default aus): `items` (Fernstart erlaubt, Betriebsmodus, Programm, Tür, Restlaufzeit, Programm-Aktionen), `start_surplus_w` 1500, `surplus_minutes` 5, `deadline_mode` „latest_start“ (`latest_start` 14:00) oder „finish_by“ (`finish_by`), `assumed_power_w` (nur Info), `dry_run`. In den Settings editierbar. openHAB-Zugang aus `openhab`.
+- **Startbereit**: Fernstart an, Tür zu, Programm gewählt, Status `Ready`. `DelayedStart` (Startzeit am Gerät) oder am Gerät gestartet → nichts tun.
+- **Start bei Sonne**: die letzten `surplus_minutes` vollen Minuten je ≥ `start_surplus_w`; Überschuss = Einspeisung (Minutenmittel Hauptzähler) + Batterie-Ladung − Entladung (Batterie steckt zurück).
+- **Heizstab steckt zurück** (`heater_yields`, Settings-Schalter, Default an): zum Überschuss zählt auch die Heizstab-Leistung der Minute (load_min), aber nur in der Stufe „bis Max“ (Speicher ≥ Min-Temperatur des Profils; ohne Min-Stufe immer). In der Stufe „bis Min“ oder bei unbekannter Temperatur hat der Heizstab Vorrang.
+- **Frist**: spätestens `latest_start` bzw. `finish_by` − Programmdauer. Freigabe nach der heutigen Frist (oder „fertig bis“ heute nicht mehr erreichbar) → Zieltag morgen: dort bei Sonne, spätestens zur Frist; nie über Nacht. Verpasste Frist (Controller aus) wird bis 2 h nachgeholt.
+- **Dauer lernen**: Run → Finished je Programm, Mittel der letzten 3 Läufe (Tabelle `dishwasher_runs`); Startwerte Eco50 295 min, sonst 180 min.
+- **Genau ein Startbefehl pro Freigabe** (Command `start` an `basic_actions_state`); Status nicht binnen 3 min `Run` → `dw_start_failed`, kein zweiter Versuch. Fernstart aus → zurückgesetzt. Zustand in `dishwasher_state`.
+- **Dry-Run** (runtime oder `dishwasher.dry_run`): nie ein Befehl (`dw_start_simulated`). Dev: beides an.
+- **Kaskade**: kein eigener Eintrag – der laufende Spüler wirkt über den Hauptzähler (seine Leistung senkt den Überschuss, Heizstab/Batterie weichen aus); eine angenommene Leistung dazu würde doppelt zählen. Batterie/Heizstab/Wallbox-Logik unverändert.
+- **Card „Geschirrspüler“** (rechte Spalte): Status (wartet auf Sonne / wartet auf morgen / läuft, noch h:mm / fertig / Fehler), Programm, Dauer, Frist, „Jetzt starten“ (mit Bestätigung, nur wenn startbereit) und „Nicht automatisch starten“ (für diese Freigabe). Kachel 🍽️ im Energiefluss (antippbar).
+- **Grund-Codes** `dw_waiting_surplus`, `dw_waiting_tomorrow`, `dw_started_surplus`, `dw_started_deadline`, `dw_started_manual`, `dw_start_sent`, `dw_start_simulated`, `dw_start_failed`, `dw_not_ready` (welche Bedingung fehlt), `dw_running`, `dw_delayed_start`, `dw_no_auto`, `dw_unreadable`; im Entscheidungs-Schnappschuss und Warum-Chat (inkl. Einstellungen).
+- Cron: `main.py` nach der PV-Steuerung, vor dem Schnappschuss; Fehler isoliert. Web liest nur (Vorschau ohne Speichern/Starten).
+- Tests `tests/test_dishwasher.py` (22).
+
 ## 2026-10-17 – Verbraucher aus openHAB (nur lesen): Card, Minutenwerte, Nacht-Anteil, Warum-Chat
 
 Anlass: In openHAB gibt es viele Geräte mit Leistungsmessung (Shelly-Plugs/1PM, Homematic); sie sollen im Dashboard und in der Nacht-Auswertung erscheinen. Es wird **nichts geschaltet**.
