@@ -1164,6 +1164,9 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 
   .dashboard-right .grid { grid-template-columns: 1fr; }
 
+  /* Hauptzähler + Bedarf pro Nacht in der rechten Spalte (linke ist länger) */
+  .dashboard-bottom { margin-top: 0; }
+
   #flow-svg { max-width: 500px; }
 }
 

@@ -575,16 +575,19 @@ function renderEnergyFlow(heater, wb, cs, zd, wp) {
     const bdr = aktiv || always ? accent : "rgba(255,255,255,0.12)";
     const bg  = aktiv || always ? rgba(accent, 0.07) : "rgba(255,255,255,0.04)";
     const vc  = aktiv || always ? accent : "rgba(255,255,255,0.6)";
+    // Schrift passend zur Kachelbreite verkleinern (DM Mono: Zeichenbreite ≈ 0,6 em), damit z. B.
+    // „entlädt 2.40 kW“ oder „freigeg.“ im Rahmen bleibt
+    const fit = (txt, fs) => Math.min(fs, (w - 10) / (Math.max(1, String(txt ?? "").length) * 0.62)).toFixed(2);
     return `<g transform="translate(${x},${y})"${op}${tap}>
   <rect width="${w}" height="${nh}" rx="10" fill="${bg}" stroke="${bdr}" stroke-width="1.5"/>
   <text x="${w/2}" y="16" text-anchor="middle" font-size="14" font-family="'DM Mono',monospace">${icon}</text>
   <text x="${w/2}" y="27" text-anchor="middle" font-size="${label.length > 11 ? 5.4 : 6.5}" fill="rgba(255,255,255,0.5)" letter-spacing="${label.length > 11 ? 0.4 : 1}" font-family="'DM Mono',monospace">${esc(label)}</text>
-  <text x="${w/2}" y="39" text-anchor="middle" font-size="12" font-weight="700" fill="${vc}" font-family="'DM Mono',monospace">${esc(value)}</text>
+  <text x="${w/2}" y="39" text-anchor="middle" font-size="${fit(value, 12)}" font-weight="700" fill="${vc}" font-family="'DM Mono',monospace">${esc(value)}</text>
   ${dots
     ? dots.map((on, i) => on === "off"
         ? `<circle cx="${w/2 + (i - (dots.length - 1) / 2) * 9}" cy="${nh-8}" r="2.3" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="1" stroke-dasharray="1.2 1.2"><title>deaktiviert</title></circle>`
         : `<circle cx="${w/2 + (i - (dots.length - 1) / 2) * 9}" cy="${nh-8}" r="2.3" fill="${on ? accent : "none"}" stroke="${on ? accent : "rgba(255,255,255,0.4)"}" stroke-width="1"/>`).join("")
-    : `<text x="${w/2}" y="${nh-5}" text-anchor="middle" font-size="7.5" fill="rgba(255,255,255,0.4)" font-family="'DM Mono',monospace">${esc(sub)}</text>`}
+    : `<text x="${w/2}" y="${nh-5}" text-anchor="middle" font-size="${fit(sub, 7.5)}" fill="rgba(255,255,255,0.4)" font-family="'DM Mono',monospace">${esc(sub)}</text>`}
 </g>`;
   }
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-17 – Dashboard: Hauptzähler und „Bedarf pro Nacht“ in der rechten Spalte
+
+Anlass: Die beiden unteren Cards liefen auf Tablet/Desktop über die volle Breite, die Charts wurden dadurch sehr breit gezogen; rechts blieb neben der langen linken Spalte eine große Lücke.
+- „Hauptzähler“ und „Batterie – Bedarf pro Nacht“ stehen jetzt am Ende der rechten Spalte (`.dashboard-bottom` innerhalb `.dashboard-right`), gleiche Breite wie die übrigen Cards, keine Lücke mehr. Auf dem Handy unveränderte Reihenfolge (ganz unten). `styles.css?v=93`.
+- **Energiefluss:** Wert- und Unterzeile der unteren Kacheln werden passend zur Kachelbreite verkleinert, damit z. B. „entlädt 2.40 kW“ (Batterie), „freigeg.“ (Wallbox) oder „unter Resume“ im Rahmen bleiben. `app.js?v=20261017e`.
+
 ## 2026-10-17 – Whirlpool-Zähler (eigener Shelly 3EM, nur lesen)
 
 Anlass: Der Whirlpool hängt an einem eigenen Shelly 3EM (SHEM-3, MAC 244CAB41ACF6, jetzt 192.168.2.164; das Balboa-Skript verliert zu oft die Verbindung). Er soll im Dashboard, in der Nacht-Auswertung und im Warum-Chat erscheinen.
