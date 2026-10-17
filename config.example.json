@@ -167,5 +167,29 @@
         "automation": "pvcontroller"
       }
     ]
+  },
+  "consumers": {
+    "enabled": false,
+    "small_avg_w": 20,
+    "devices": [
+      {
+        "item": "Gefriertruhe_Stromverbrauch",
+        "name": "Gefriertruhe",
+        "parent": "",
+        "in_sum": true
+      },
+      {
+        "item": "FeWo_Zaehler_Leistung",
+        "name": "FeWo-Zähler",
+        "parent": "",
+        "in_sum": true
+      },
+      {
+        "item": "FeWo_Klima_Leistung",
+        "name": "FeWo Klima",
+        "parent": "FeWo_Zaehler_Leistung",
+        "in_sum": true
+      }
+    ]
   }
 }

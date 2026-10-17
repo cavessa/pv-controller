@@ -227,6 +227,13 @@ def _phase_action(d: Any) -> str:
     return "keep_on" if d.current_state else "keep_off" if d.current_state is False else "unknown"
 
 
+def _consumers_top(r: Any) -> Optional[list]:
+    if r is None or not getattr(r, "consumers", None):
+        return None
+    import consumers
+    return [[d["name"], _i(d["power_w"])] for d in consumers.top(r.consumers, 5)] or None
+
+
 def build(config: Any, cascade: Optional[dict], result: Optional[ControllerResult],
           now: Optional[datetime] = None) -> dict[str, Any]:
     """Schnappschuss eines Laufs aus dem Kaskaden-Ergebnis und dem Controller-Ergebnis bauen."""
@@ -245,6 +252,8 @@ def build(config: Any, cascade: Optional[dict], result: Optional[ControllerResul
         "wallbox_w": _i(wb.power_w) if wb else None,
         "whirlpool_w": _i(r.whirlpool_power_w) if r is not None and r.whirlpool_reachable else None,
         "whirlpool_uncertain": bool(r.whirlpool_uncertain) if r is not None else False,
+        # stärkste Einzelgeräte aus openHAB (nur gelesen, aktuelle Werte): [[Name, W], …]
+        "consumers_top": _consumers_top(r),
         "battery_charge_w": _i(zd.charge_w) if zd is not None else None,
         "battery_discharge_w": _i(zd.discharge_w) if zd is not None else None,
         "battery_soc": _i(zd.soc) if zd is not None else None,

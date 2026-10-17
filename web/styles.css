@@ -1991,3 +1991,33 @@ body.sheet-open { overflow: hidden; }
 .nl-grid { color: var(--c-grid);   background: rgba(248,113,113,0.1); }
 .nl-peak { color: rgba(248,113,113,0.6); background: rgba(248,113,113,0.05); }
 .nl-sur  { color: var(--c-pv);     background: rgba(251,191,36,0.1); }
+
+/* -------- Verbraucher (openHAB) -------- */
+.consumers-card.hidden, #consumers-card.hidden { display: none; }
+.cons-list { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.cons-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(40px, 1fr) auto; gap: 10px; align-items: center; font-size: 12px; }
+.cons-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.cons-name em { font-style: normal; color: var(--text-muted); font-size: 11px; }
+.cons-bar { height: 6px; border-radius: 999px; background: rgba(255,255,255,0.06); overflow: hidden; }
+.cons-bar i { display: block; height: 100%; background: var(--accent, #2ed8a3); border-radius: 999px; }
+.cons-val { font-variant-numeric: tabular-nums; min-width: 58px; text-align: right; }
+.cons-row.child .cons-name, .cons-row.child .cons-val { color: var(--text-muted); }
+.cons-row.child .cons-bar i, .cons-row.aside .cons-bar i { opacity: 0.45; }
+.cons-row.stale { opacity: 0.45; }
+.cons-row.stale .cons-bar i { background: rgba(255,255,255,0.3); }
+.cons-row.rest .cons-bar i { background: rgba(255,255,255,0.35); }
+.cons-row.rest { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 2px; }
+.cons-other summary { list-style: none; cursor: pointer; }
+.cons-other summary::-webkit-details-marker { display: none; }
+.cons-other[open] summary { margin-bottom: 6px; }
+.cons-other > .cons-row { margin-bottom: 6px; }
+.cons-edit { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 8px; }
+.cons-edit-head, .cons-edit-row { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr) 54px 28px; gap: 6px; align-items: center; }
+.cons-edit-head { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); }
+.cons-edit-row input[type=text], .cons-edit-row select { width: 100%; min-width: 0; font-size: 12px; }
+.cons-edit-row input[type=checkbox] { justify-self: center; }
+.cons-del { padding: 2px 6px; }
+@media (max-width: 600px) {
+  .cons-edit-head { display: none; }
+  .cons-edit-row { grid-template-columns: 1fr 1fr; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+}

@@ -273,6 +273,15 @@ class Controller:
             log.info("Whirlpool: Heizstab-3EM nicht lesbar – Wert unsicher (Rohwert %.0f W inkl. %s)",
                      w["raw_w"], sub)
 
+    def _read_consumers(self) -> Optional[list]:
+        """Verbraucher aus openHAB (nur lesen); Fehler nie weiterreichen – die Regelung braucht sie nicht."""
+        try:
+            import consumers
+            return consumers.read(self.cfg.consumers)
+        except Exception:
+            log.warning("Verbraucher nicht lesbar", exc_info=True)
+            return None
+
     def _read_all(self) -> Readings:
         """Liest alle Geräte parallel (Lauf ≈ langsamstes Gerät, nicht Summe der Timeouts)."""
         if self.cfg.simulation.enabled:
@@ -286,6 +295,7 @@ class Controller:
             f_heat = ex.submit(self.heater_meter.get_total_power_w)
             f_temp = ex.submit(self.storage.get_temperature_c)
             f_whirl = ex.submit(self.whirlpool_meter.get_phase_powers_w) if self.whirlpool_meter else None
+            f_cons = ex.submit(self._read_consumers) if self.cfg.consumers_active else None
             disabled = self.cfg.heater.disabled_phases
             f_ph = [
                 None if disabled[i] else ex.submit(p.get_status)
@@ -297,6 +307,7 @@ class Controller:
             r.storage_temp_c = f_temp.result()
             ph_reads = [None if f is None else PhaseRead(*f.result()) for f in f_ph]
             whirl_phases = f_whirl.result() if f_whirl is not None else None
+            r.consumers = f_cons.result() if f_cons is not None else None
         ph_states = [None if ph is None else ph.on for ph in ph_reads]
         if self.whirlpool_meter is not None:
             self._apply_whirlpool(r, whirl_phases)
@@ -817,6 +828,12 @@ class Controller:
                              readings.heater_meter_power_w, readings.whirlpool_power_w)
             except Exception:
                 log.warning("Wallbox/Heizstab-Minutenwerte nicht gespeichert", exc_info=True)
+            if readings.consumers is not None:
+                try:
+                    from db import record_consumers
+                    record_consumers(readings.consumers)
+                except Exception:
+                    log.warning("Verbraucher-Minutenwerte nicht gespeichert", exc_info=True)
 
         temp_status: Optional[TempStatus] = None
         if readings.storage_temp_c is not None:

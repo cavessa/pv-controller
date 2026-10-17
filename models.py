@@ -63,6 +63,8 @@ class Readings:
     whirlpool_raw_w: Optional[float] = None
     whirlpool_uncertain: bool = False
     whirlpool_reachable: bool = False
+    # Verbraucher aus openHAB (consumers.read): Liste je Gerät; None = aus oder openHAB nicht lesbar
+    consumers: Optional[list] = None
     errors: list[str] = field(default_factory=list)
     # Phasen, deren Shelly nicht antwortet (state None) – nicht kritisch, nur nicht schaltbar
     unreachable_phases: list[str] = field(default_factory=list)

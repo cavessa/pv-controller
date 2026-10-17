@@ -69,6 +69,21 @@ class OpenHabClient:
         """Alle Items (ohne Gruppenmitglieder-Rekursion), schlanke Felder."""
         return self._get("/items", {"recursive": "false", "fields": "name,state,type,label"})
 
+    def get_states(self) -> dict[str, Any]:
+        """Zustände aller Items in einem Abruf: {name: state}."""
+        return {it["name"]: it.get("state") for it in self._get("/items", {"recursive": "false",
+                                                                              "fields": "name,state"})}
+
+    def get_thing_statuses(self) -> dict[str, str]:
+        """Status aller Things: {UID: "ONLINE" | "OFFLINE" | …}."""
+        return {t["UID"]: (t.get("statusInfo") or {}).get("status", "")
+                for t in self._get("/things", {"summary": "true"})}
+
+    def get_item_things(self) -> dict[str, str]:
+        """Item → Thing-UID über die Kanal-Links (Kanal-UID = Thing-UID + ":" + Kanal-ID)."""
+        return {l["itemName"]: l["channelUID"].rsplit(":", 1)[0] for l in self._get("/links")
+                if l.get("itemName") and ":" in l.get("channelUID", "")}
+
     def get_items(self, names: Iterable[str]) -> dict[str, dict]:
         """Mehrere Items in einem Request (alle Items holen, filtern).
 

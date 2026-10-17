@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=93">
+  <link rel="stylesheet" href="/static/styles.css?v=94">
 </head>
 <body>
   <div class="app-shell">
@@ -298,6 +298,14 @@
         </div>
       </div><!-- .grid -->
       <div class="dashboard-bottom">
+        <div class="card hidden" id="consumers-card">
+          <div class="card-head">
+            <h2>Verbraucher</h2>
+            <span class="house-max" id="cons-sum"></span>
+          </div>
+          <div id="cons-list" class="cons-list"></div>
+          <div class="house-foot" id="cons-foot"></div>
+        </div>
         <div class="card" id="meter-card">
         <div class="card-head">
           <h2>Hauptzähler</h2>
@@ -770,6 +778,15 @@
           </fieldset>
 
           <fieldset>
+            <legend>Verbraucher aus openHAB (nur lesen)</legend>
+            <label class="check"><input type="checkbox" name="consumers.enabled"> Aktiviert</label>
+            <label>„Sonstige“ unter (W, Ø 24 h)<input type="number" step="1" min="0" max="1000" name="consumers.small_avg_w" placeholder="20"></label>
+            <div class="cons-edit" id="cons-edit"></div>
+            <button type="button" id="cons-add">Gerät hinzufügen</button>
+            <small class="field-hint">Item = Leistungs-Item in openHAB (W). „hinter Zähler“: das Gerät steckt im Wert dieses Zählers und wird dann nicht doppelt gezählt. „in Summe“ aus: nur anzeigen (z. B. Zähler mit offener Zuordnung). Werte von Things, die nicht ONLINE sind, gelten als veraltet. Es wird nichts geschaltet.</small>
+          </fieldset>
+
+          <fieldset>
             <legend>Shelly IPs</legend>
             <label>Phase 1 (ph1_url)<input type="text" name="shelly.ph1_url" placeholder="http://192.168.x.x"></label>
             <label>Phase 1 Typ/Kanal
@@ -1074,7 +1091,7 @@
     </form>
   </div>
 
-  <script src="/static/app.js?v=20261017e" defer></script>
+  <script src="/static/app.js?v=20261017f" defer></script>
   <script src="/static/heating.js?v=20261014a" defer></script>
   <script src="/static/shutters.js?v=20261013j" defer></script>
 </body>

@@ -199,6 +199,9 @@ def energy_line(snap: dict[str, Any]) -> str:
         parts.append(f"Whirlpool {_w(e.get('whirlpool_w'))} (im Hausverbrauch enthalten, wird nicht geregelt)")
     elif e.get("whirlpool_uncertain"):
         parts.append("Whirlpool unsicher (Heizstab-Zähler nicht lesbar)")
+    if e.get("consumers_top"):
+        top = ", ".join(f"{n} {_w(w)}" for n, w in e["consumers_top"])
+        parts.append(f"größte Einzelverbraucher laut openHAB (im Hausverbrauch enthalten, nur gelesen): {top}")
     if "battery_soc" in e:
         parts.append(f"Batterie {e['battery_soc']} % (lädt {_w(e.get('battery_charge_w'))}, "
                      f"entlädt {_w(e.get('battery_discharge_w'))})")

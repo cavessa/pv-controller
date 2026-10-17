@@ -161,6 +161,7 @@ function renderStatus(s) {
   renderZendureCard(lastZendure);
   lastWhirlpool = s.whirlpool ?? null;
   renderWhirlpoolCard(lastWhirlpool);
+  renderConsumersCard(s.consumers);
 
   // Geräte, die seit ≥ 10 min nicht antworten (z. B. ein Phasen-Shelly)
   const devBanner = $("#device-banner");
@@ -1571,6 +1572,9 @@ function renderBatteryNights(d) {
       + (n.whirlpool_wh != null ? `\ndavon Whirlpool: ${kwh(n.whirlpool_wh)} kWh`
           + (n.whirlpool_peak_wh > 0 ? `, über ${maxKw} kW: ${kwh(n.whirlpool_peak_wh)} kWh` : "")
           + (n.whirlpool_coverage < 0.9 ? ` (Messwerte nur ${Math.round(n.whirlpool_coverage * 100)} % der Nacht)` : "") : "")
+      + (n.top_consumers?.length ? `\nTop-Verbraucher: ` + n.top_consumers.map(t => `${t.name} ${kwh(t.wh)}`).join(", ") + " kWh"
+          + (n.consumers_coverage < 0.9 ? ` (Messwerte nur ${Math.round(n.consumers_coverage * 100)} % der Nacht)` : "") : "")
+      + (n.peak_by?.length ? `\nSpitzen über ${maxKw} kW: ` + n.peak_by.map(t => `${t.name} ${kwh(t.wh)}`).join(", ") + " kWh" : "")
       + (n.excluded_wh > 0 ? `\nnicht eingerechnet (Wallbox/Heizstab): ${kwh(n.excluded_wh)} kWh${n.loads_estimated ? " (geschätzt)" : ""}` : "")
       + (surplus[n.date] ? `\nPV-Überschuss am Tag davor: ${kwh(surplus[n.date].surplus_wh)} kWh` : "");
     let acc = 0;
@@ -2875,6 +2879,127 @@ function renderWhirlpoolCard(wp) {
     : "";
 }
 
+// ---------- Verbraucher (openHAB, nur lesen) ----------
+let consOtherOpen = false;
+function renderConsumersCard(c) {
+  const card = document.getElementById("consumers-card");
+  if (!card) return;
+  const on = c?.enabled === true;
+  card.classList.toggle("hidden", !on);
+  if (!on) return;
+  const list = $("#cons-list"), foot = $("#cons-foot"), sumEl = $("#cons-sum");
+  if (!c.ok) {
+    list.htmlIfChanged = '<div class="chart-empty">openHAB nicht erreichbar – keine Verbraucherwerte.</div>';
+    foot.textIfChanged = ""; sumEl.textIfChanged = "";
+    return;
+  }
+  const esc = t => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const kw = w => Math.abs(w) >= 1000 ? (w / 1000).toFixed(2).replace(".", ",") + " kW" : Math.round(w) + " W";
+  const devs = c.devices || [];
+  const byItem = Object.fromEntries(devs.map(d => [d.item, d]));
+  const fresh = d => !d.stale && d.power_w != null;
+  const max = Math.max(100, ...devs.filter(fresh).map(d => d.power_w), c.rest_w || 0);
+  const row = (name, w, opts = {}) => {
+    const pct = w != null && w > 0 ? Math.min(100, w / max * 100) : 0;
+    return `<div class="cons-row${opts.cls ? " " + opts.cls : ""}"${opts.title ? ` title="${esc(opts.title)}"` : ""}>
+      <span class="cons-name">${opts.indent ? "↳ " : ""}${esc(name)}${opts.note ? ` <em>${esc(opts.note)}</em>` : ""}</span>
+      <span class="cons-bar"><i style="width:${pct.toFixed(1)}%"></i></span>
+      <span class="cons-val">${w == null ? "–" : kw(w)}</span></div>`;
+  };
+  const note = d => d.stale ? `veraltet (${d.thing_status === "NO_THING" ? "kein Thing" : d.thing_status === "MISSING" ? "Thing fehlt" : d.thing_status})`
+    : d.covered ? `in ${byItem[d.parent]?.name || d.parent}`
+    : !d.in_sum ? "Zuordnung offen, nicht in Summe" : "";
+  const big = devs.filter(d => !d.small && !(d.parent && byItem[d.parent] && !byItem[d.parent].small));
+  const small = devs.filter(d => d.small);
+  const sortW = (a, b) => (fresh(b) ? b.power_w : -1) - (fresh(a) ? a.power_w : -1);
+  let html = "";
+  for (const d of big.filter(d => !d.parent || !byItem[d.parent]).sort(sortW)) {
+    html += row(d.name, d.power_w, { cls: d.stale ? "stale" : d.in_sum ? "" : "aside", note: note(d),
+      title: `${d.item}${d.own_w != null ? ` · davon nicht einzeln gemessen ${kw(d.own_w)}` : ""}` });
+    for (const k of devs.filter(k => k.parent === d.item && !k.small).sort(sortW))
+      html += row(k.name, k.power_w, { indent: true, cls: k.stale ? "stale" : "child", note: k.stale ? note(k) : "", title: k.item });
+  }
+  if (small.length) {
+    const sw = small.filter(d => fresh(d) && !d.covered && d.in_sum).reduce((a, d) => a + d.power_w, 0);
+    html += `<details class="cons-other"${consOtherOpen ? " open" : ""}><summary>${row(`Sonstige (${small.length})`, sw,
+      { title: `Ø 24 h unter ${c.small_avg_w} W` })}</summary>`
+      + small.sort(sortW).map(d => row(d.name, d.power_w, { indent: true, cls: d.stale ? "stale" : "child", note: note(d), title: d.item })).join("")
+      + "</details>";
+  }
+  if (c.rest_w != null)
+    html += row("Rest (nicht einzeln gemessen)", Math.max(0, c.rest_w), { cls: "rest",
+      title: "Hausverbrauch − Heizstab/Wallbox/Whirlpool − gemessene Geräte" });
+  list.htmlIfChanged = html;
+  const det = list.querySelector("details.cons-other");
+  if (det) det.ontoggle = () => { consOtherOpen = det.open; };
+  sumEl.textIfChanged = `Σ ${kw(c.sum_w)} gemessen`;
+  const loads = (c.heater_w || 0) + (c.wallbox_w || 0) + (c.whirlpool_w || 0);
+  const nStale = devs.filter(d => d.stale).length;
+  foot.htmlIfChanged = c.house_w != null
+    ? `Haus <b>${kw(c.house_w)}</b> = Heizstab/Wallbox/Whirlpool <b>${kw(loads)}</b> + Geräte <b>${kw(c.sum_w)}</b> + Rest <b>${kw(c.rest_w)}</b>`
+      + (nStale ? `<br>${nStale} veraltet (Thing nicht ONLINE) – nicht eingerechnet` : "")
+    : (nStale ? `${nStale} veraltet (Thing nicht ONLINE) – nicht eingerechnet` : "");
+}
+
+// Settings: Geräteliste der Verbraucher-Card
+function renderConsumerEditor(devices) {
+  const box = document.getElementById("cons-edit");
+  if (!box) return;
+  const esc = t => String(t ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  box.innerHTML = `<div class="cons-edit-head"><span>Item</span><span>Name</span><span>hinter Zähler</span><span>in Summe</span><span></span></div>`
+    + devices.map(d => `<div class="cons-edit-row">
+      <input type="text" data-k="item" value="${esc(d.item)}" placeholder="Item_Stromverbrauch" spellcheck="false">
+      <input type="text" data-k="name" value="${esc(d.name)}" placeholder="Name">
+      <select data-k="parent" data-v="${esc(d.parent || "")}"></select>
+      <input type="checkbox" data-k="in_sum"${d.in_sum === false ? "" : " checked"}>
+      <button type="button" class="cons-del" title="entfernen">✕</button></div>`).join("");
+  refreshConsumerParents();
+}
+function refreshConsumerParents() {
+  const box = document.getElementById("cons-edit");
+  if (!box) return;
+  const rows = [...box.querySelectorAll(".cons-edit-row")];
+  const items = rows.map(r => ({ item: r.querySelector('[data-k="item"]').value.trim(),
+                                 name: r.querySelector('[data-k="name"]').value.trim() }));
+  rows.forEach((r, i) => {
+    const sel = r.querySelector('[data-k="parent"]');
+    const cur = sel.value || sel.dataset.v || "";
+    sel.innerHTML = '<option value="">– Hauptzähler –</option>' + items
+      .filter((o, j) => j !== i && o.item)
+      .map(o => `<option value="${o.item.replace(/"/g, "")}">${(o.name || o.item).replace(/</g, "&lt;")}</option>`).join("");
+    sel.value = items.some((o, j) => j !== i && o.item === cur) ? cur : "";
+    sel.dataset.v = "";
+  });
+}
+function consumerRows() {
+  const box = document.getElementById("cons-edit");
+  if (!box) return null;
+  return [...box.querySelectorAll(".cons-edit-row")].map(r => ({
+    item: r.querySelector('[data-k="item"]').value.trim(),
+    name: r.querySelector('[data-k="name"]').value.trim(),
+    parent: r.querySelector('[data-k="parent"]').value,
+    in_sum: r.querySelector('[data-k="in_sum"]').checked,
+  }));
+}
+function readConsumerEditor() {
+  const rows = consumerRows();
+  return rows == null ? undefined : rows.filter(d => d.item);   // leere Zeilen nicht speichern
+}
+(function initConsumerEditor() {
+  document.addEventListener("click", e => {
+    if (e.target.closest("#cons-add")) {
+      renderConsumerEditor([...(consumerRows() ?? []), { item: "", name: "", parent: "", in_sum: true }]);
+      document.querySelector("#cons-edit .cons-edit-row:last-child [data-k=item]")?.focus();
+    } else if (e.target.closest(".cons-del")) {
+      e.target.closest(".cons-edit-row").remove();
+      refreshConsumerParents();
+    }
+  });
+  document.addEventListener("change", e => {
+    if (e.target.closest("#cons-edit") && e.target.matches('[data-k="item"], [data-k="name"]')) refreshConsumerParents();
+  });
+})();
+
 // ---------- Batterie (Zendure SolarFlow) ----------
 function renderZendureCard(z) {
   const card = document.getElementById("zendure-card");
@@ -3631,6 +3756,10 @@ async function loadSettings() {
     setFormValue(f, "whirlpool_meter.type", wmc.type ?? "shelly_3em_gen1");
     setFormValue(f, "whirlpool_meter.name", wmc.name ?? "Whirlpool");
     setFormValue(f, "whirlpool_meter.subtract_heater_phase", wmc.subtract_heater_phase ?? "");
+    const cc = lastConfig.consumers ?? {};
+    setFormValue(f, "consumers.enabled", cc.enabled ?? false);
+    setFormValue(f, "consumers.small_avg_w", cc.small_avg_w ?? 20);
+    renderConsumerEditor(cc.devices ?? []);
     const zc = lastConfig.zendure ?? {};
     setFormValue(f, "zendure.enabled", zc.enabled ?? false);
     setFormValue(f, "zendure.ip", zc.ip ?? "");
@@ -3761,6 +3890,11 @@ async function saveSettings(e) {
       type: f.elements.namedItem("whirlpool_meter.type")?.value ?? "shelly_3em_gen1",
       name: strField("whirlpool_meter.name") ?? "Whirlpool",
       subtract_heater_phase: f.elements.namedItem("whirlpool_meter.subtract_heater_phase")?.value ?? "",
+    },
+    consumers: {
+      enabled: boolField("consumers.enabled"),
+      small_avg_w: numField("consumers.small_avg_w") ?? 20,
+      devices: readConsumerEditor(),
     },
     zendure: {
       enabled: boolField("zendure.enabled"),

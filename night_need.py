@@ -14,6 +14,11 @@ der Tabelle) nehmen den Stundenwert aus pv_hourly_log (``loads_estimated``). Der
 Bedarf; sein Anteil (``whirlpool_wh``) und sein Anteil an den Spitzen über der Entladeleistung
 (``whirlpool_peak_wh``) kommen aus load_min.whirlpool_w (None ohne Messwerte).
 
+Verbraucher aus openHAB (consumer_min): ``consumers_wh`` = Energie je Gerät in der Nacht; ``peak_by_wh`` ordnet
+jede Spitzen-Minute (Bedarf über der Entladeleistung) dem stärksten gemessenen Einzelgerät zu (Whirlpool
+eingeschlossen), wenn es allein mindestens den Überschuss über der Grenze zieht – sonst „nicht gemessen“
+(``UNMEASURED``); nur Minuten, in denen die Verbraucher gelesen wurden. ``consumers_coverage`` = Anteil der Nacht-Minuten mit gelesenen Verbrauchern.
+
 - ``need_wh``: Bedarf in der Nacht ohne Wallbox/Heizstab.
 - ``capacity_wh``: davon, was ein Speicher mit der Entladegrenze (``max_discharge_w``) hätte liefern
   können – Spitzen darüber kommen immer aus dem Netz, egal wie groß der Speicher ist.
@@ -37,6 +42,8 @@ MORNING_UNTIL = 14 * 60         # … bis spätestens 14:00 suchen
 CUT_MIN = 30                    # Daten beginnen/enden > 30 min nach/vor der Grenze → Nacht angeschnitten, weglassen
 MIN_COVERAGE = 0.9              # Anteil Minuten mit Zählerwert, damit Nacht/Tag als vollständig gilt
 OPEN = 10 ** 9                  # Grenze noch nicht erreicht (laufender Tag)
+UNMEASURED = "_unmeasured"     # Spitzen ohne passendes gemessenes Gerät
+WHIRLPOOL = "whirlpool"         # Schlüssel des Whirlpools in peak_by_wh
 EFFICIENCY = 0.95               # nutzbar (AC) / Nennkapazität × SoC-Fenster (gemessen 16./17.10.: 7,5 von 7,8 kWh)
 
 
@@ -56,9 +63,15 @@ def load_data(first: Date, last: Date) -> dict[str, dict]:
             "SELECT ts, wallbox_w, heater_w, whirlpool_w FROM load_min WHERE ts BETWEEN ? AND ?", (lo, hi)).fetchall()
         loads = {r[0]: (r[1] or 0.0) + (r[2] or 0.0) for r in rows}
         whirl = {r[0]: r[3] for r in rows if r[3] is not None}
+        cons: dict[str, dict[str, float]] = {}
+        try:
+            for ts, item, w in conn.execute("SELECT ts, item, w FROM consumer_min WHERE ts BETWEEN ? AND ?", (lo, hi)):
+                cons.setdefault(ts, {})[item] = w
+        except sqlite3.OperationalError:                 # Tabelle gibt es (noch) nicht
+            pass
         hourly = {r[0][:13]: (r[1] or 0.0) + (r[2] or 0.0) for r in conn.execute(
             "SELECT timestamp, wallbox_w, heater_w FROM pv_hourly_log WHERE timestamp BETWEEN ? AND ?", (lo, hi))}
-    return {"meter": meter, "bat": bat, "loads": loads, "hourly": hourly, "whirl": whirl}
+    return {"meter": meter, "bat": bat, "loads": loads, "hourly": hourly, "whirl": whirl, "cons": cons}
 
 
 def _series(days: list[Date], data: dict) -> tuple[list[str], list, list]:
@@ -114,8 +127,13 @@ def _sun_index(day: Date, which: int, loc, day_offset: int, fallback_min: int) -
 
 
 def compute(days_back: int = 14, now: Optional[datetime] = None, loc=None,
-            max_discharge_w: float = 2400.0, data: Optional[dict] = None) -> dict[str, Any]:
-    """Nächte und Tage der letzten ``days_back`` Tage (älteste zuerst); die laufende Nacht mit ``ongoing``."""
+            max_discharge_w: float = 2400.0, data: Optional[dict] = None,
+            meters: frozenset = frozenset()) -> dict[str, Any]:
+    """Nächte und Tage der letzten ``days_back`` Tage (älteste zuerst); die laufende Nacht mit ``ongoing``.
+
+    ``meters``: Items von Zählern mit eingetragenen Geräten dahinter – sie zählen bei der Spitzen-Zuordnung
+    nicht als Einzelgerät.
+    """
     now = now or datetime.now()
     today = now.date()
     first = today - timedelta(days=days_back)
@@ -123,6 +141,7 @@ def compute(days_back: int = 14, now: Optional[datetime] = None, loc=None,
     if data is None:
         data = load_data(first, today)
     ts_all, net, raw = _series(days, data)
+    cons = data.get("cons", {})
     sm = _smooth(net)
     now_idx = (today - first).days * 1440 + now.hour * 60 + now.minute
 
@@ -167,7 +186,9 @@ def compute(days_back: int = 14, now: Optional[datetime] = None, loc=None,
         if stop <= start:
             continue
         need = cap = batt = excl = wh_all = wh_peak = 0.0
-        have = wh_min = 0
+        have = wh_min = cons_min = 0
+        dev_wh: dict[str, float] = {}
+        peak_by: dict[str, float] = {}
         first_i = last_i = None
         loads_est = False
         for i in range(start, stop):
@@ -181,6 +202,12 @@ def compute(days_back: int = 14, now: Optional[datetime] = None, loc=None,
             batt += dis
             if wp is not None:
                 wh_min += 1
+            cm = cons.get(ts_all[i])
+            if cm is not None and db.CONSUMER_READ_MARK in cm:
+                cons_min += 1
+                for item, w in cm.items():
+                    if item != db.CONSUMER_READ_MARK:
+                        dev_wh[item] = dev_wh.get(item, 0.0) + w
             if v > 0:
                 base_w = max(0.0, v - ld)
                 excl += v - base_w
@@ -191,6 +218,14 @@ def compute(days_back: int = 14, now: Optional[datetime] = None, loc=None,
                     w_in = min(wp, base_w)
                     wh_all += w_in
                     wh_peak += min(w_in, max(0.0, base_w - max_discharge_w))
+                over = base_w - max_discharge_w
+                if over > 0 and cm is not None and db.CONSUMER_READ_MARK in cm:   # Spitze: stärkstes Einzelgerät
+                    cand = {k: w for k, w in (cm or {}).items() if k != db.CONSUMER_READ_MARK and k not in meters}
+                    if wp is not None:
+                        cand[WHIRLPOOL] = wp
+                    best = max(cand, key=cand.get) if cand else None
+                    key = best if best is not None and cand[best] >= over else UNMEASURED
+                    peak_by[key] = peak_by.get(key, 0.0) + over
         if not have or first_i - start > CUT_MIN or (not ongoing and stop - 1 - last_i > CUT_MIN):
             continue                                # keine Daten oder angeschnitten (Datenbeginn/-ende mitten in der Nacht)
         nights.append({
@@ -202,6 +237,9 @@ def compute(days_back: int = 14, now: Optional[datetime] = None, loc=None,
             "whirlpool_wh": round(wh_all / 60) if wh_min else None,
             "whirlpool_peak_wh": round(wh_peak / 60) if wh_min else None,
             "whirlpool_coverage": round(wh_min / have, 2),
+            "consumers_wh": {k: round(v / 60) for k, v in dev_wh.items() if v >= 60},
+            "consumers_coverage": round(cons_min / have, 2),
+            "peak_by_wh": {k: round(v / 60) for k, v in peak_by.items() if v >= 60},
             "estimated": est_s or est_e, "loads_estimated": loads_est, "ongoing": ongoing,
             "complete": not ongoing and have >= MIN_COVERAGE * (stop - start),
         })

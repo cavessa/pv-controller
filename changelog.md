@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-17 – Verbraucher aus openHAB (nur lesen): Card, Minutenwerte, Nacht-Anteil, Warum-Chat
+
+Anlass: In openHAB gibt es viele Geräte mit Leistungsmessung (Shelly-Plugs/1PM, Homematic); sie sollen im Dashboard und in der Nacht-Auswertung erscheinen. Es wird **nichts geschaltet**.
+- **Config `consumers`** (`enabled`, `small_avg_w` = 20, `devices`: `item`, `name`, `parent` = vorgeschalteter Zähler, `in_sum`), in den Settings als Tabelle editierbar. openHAB-Zugang aus dem Block `openhab` (Token nie im repr/Log). Prüfung: Item-Namen, doppelte Items, unbekannter/kreisförmiger `parent`.
+- **Lesen** (`consumers.py`): pro Lauf 3 REST-Abrufe (Item-Zustände, Thing-Status, Kanal-Links – Links 10 min gemerkt), ≈ 0,4 s, parallel zu den übrigen Geräten. **Veraltet**, wenn das Thing nicht ONLINE ist (OFFLINE/UNINITIALIZED/fehlt/kein Link) oder der Zustand keine Leistung ist; veraltete Werte werden grau angezeigt und nie in Summe/Rest gerechnet. openHAB nicht erreichbar → nur die Card fehlt, Regelung unberührt.
+- **Summe/Rest:** ein Gerät zählt, wenn aktuell, `in_sum` und kein vorgeschalteter Zähler schon zählt (kein Doppelzählen). Rest = Hausverbrauch − Heizstab/Wallbox/Whirlpool − gezählte Geräte.
+- **Card „Verbraucher“** (rechte Spalte über dem Hauptzähler): Balken je Gerät, Geräte hinter einem Zähler eingerückt, Geräte mit Ø 24 h < `small_avg_w` unter „Sonstige“ (aufklappbar), Rest-Zeile, Fußzeile Haus = Lasten + Geräte + Rest.
+- **Minutenwerte** in neuer Tabelle `consumer_min` (nur aktuelle Werte ≥ 1 W + Marker `__read__` je gelesener Minute; 35 Tage wie die übrigen Minutentabellen, auch in `prune_once.py`).
+- **Nacht-Card (Tooltip):** Top-5-Verbraucher der Nacht (kWh, mit Abdeckung) und Spitzen über der Entladeleistung je Gerät: jede Spitzen-Minute geht an das stärkste gemessene Einzelgerät (inkl. Whirlpool), wenn es allein den Überschuss zieht, sonst „nicht gemessen“; nur Minuten mit Verbraucher-Lesung.
+- **Warum-Chat:** die 5 stärksten aktuellen Einzelgeräte im Erklär-Kontext (`consumers_top` im Schnappschuss).
+- Whirlpool kommt weiter nur vom eigenen 3EM (.164), nicht aus openHAB.
+- Eingetragen (Dev): 22 Geräte. **FeWo02-Zähler** = ganze FeWo02 außer dem Dusch-Durchlauferhitzer, zählt in der Summe (keine der übrigen Geräte hängen dahinter). **SHEM-3 (192.168.3.29)** misst das andere Haus FeHa.01 und ist deshalb nicht eingetragen.
+- Tests `tests/test_consumers.py` (20).
+
 ## 2026-10-17 – Dashboard: Hauptzähler und „Bedarf pro Nacht“ in der rechten Spalte
 
 Anlass: Die beiden unteren Cards liefen auf Tablet/Desktop über die volle Breite, die Charts wurden dadurch sehr breit gezogen; rechts blieb neben der langen linken Spalte eine große Lücke.

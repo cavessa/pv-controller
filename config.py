@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -69,6 +70,69 @@ class WhirlpoolMeterConfig:
             raise ValueError("whirlpool_meter.subtract_heater_phase must be '', 'L1', 'L2' or 'L3'")
         if self.enabled and not self.url.strip():
             raise ValueError("whirlpool_meter.url required when enabled")
+
+
+ITEM_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+@dataclass
+class ConsumerDevice:
+    """Ein Verbraucher mit Leistungs-Item in openHAB (nur lesen).
+
+    ``parent``: Item des vorgeschalteten Zählers ("" = direkt am Hauptzähler). Wird der Zähler gezählt,
+    zählt das Gerät nicht noch einmal. ``in_sum`` False: nur anzeigen, nicht in Summe/Rest (z. B. ein
+    Zähler, dessen Zuordnung noch offen ist).
+    """
+    item: str
+    name: str = ""
+    parent: str = ""
+    in_sum: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.item, str) or not ITEM_RE.match(self.item):
+            raise ValueError(f"consumers: ungültiger Item-Name {self.item!r}")
+        if not isinstance(self.name, str) or not isinstance(self.parent, str):
+            raise ValueError(f"consumers.{self.item}: name/parent müssen Text sein")
+        if not isinstance(self.in_sum, bool):
+            raise ValueError(f"consumers.{self.item}: in_sum muss true/false sein")
+        self.name = self.name.strip() or self.item
+        self.parent = self.parent.strip()
+
+
+@dataclass
+class ConsumersConfig:
+    """Verbraucher-Card: Leistungs-Items aus openHAB, nur lesen (es wird nichts geschaltet).
+
+    ``small_avg_w``: Geräte mit kleinerem 24-h-Mittel stehen in der Card unter „Sonstige“.
+    openHAB-Zugang kommt aus dem Block ``openhab`` (url, token, timeout_s).
+    """
+    enabled: bool = False
+    small_avg_w: float = 20.0
+    devices: list = field(default_factory=list)
+    openhab_url: str = ""
+    openhab_token: str = field(default="", repr=False)
+    openhab_timeout_s: float = 3.0
+
+    def __post_init__(self) -> None:
+        self.devices = [d if isinstance(d, ConsumerDevice) else ConsumerDevice(**d) for d in self.devices]
+        if not isinstance(self.small_avg_w, (int, float)) or isinstance(self.small_avg_w, bool) \
+                or not 0 <= self.small_avg_w <= 1000:
+            raise ValueError("consumers.small_avg_w muss zwischen 0 und 1000 liegen")
+        items = [d.item for d in self.devices]
+        if len(items) != len(set(items)):
+            raise ValueError("consumers: Item doppelt eingetragen")
+        by = {d.item: d for d in self.devices}
+        for d in self.devices:
+            seen, p = {d.item}, d.parent
+            while p:
+                if p not in by:
+                    raise ValueError(f"consumers.{d.item}: parent {p!r} ist kein eingetragenes Gerät")
+                if p in seen:
+                    raise ValueError(f"consumers.{d.item}: Zähler-Zuordnung im Kreis")
+                seen.add(p)
+                p = by[p].parent
+        if self.enabled and not self.openhab_url.strip():
+            raise ValueError("consumers: openhab.url erforderlich")
 
 
 @dataclass
@@ -274,6 +338,11 @@ class Config:
     zendure: Optional[ZendureConfig] = None
     cascade: CascadeConfig = field(default_factory=CascadeConfig)
     whirlpool_meter: Optional[WhirlpoolMeterConfig] = None
+    consumers: Optional[ConsumersConfig] = None
+
+    @property
+    def consumers_active(self) -> bool:
+        return self.consumers is not None and self.consumers.enabled and bool(self.consumers.devices)
 
     @property
     def whirlpool_active(self) -> bool:
@@ -314,6 +383,18 @@ def parse_whirlpool_meter(raw: dict) -> Optional[WhirlpoolMeterConfig]:
         return None
     return WhirlpoolMeterConfig(**{k: v for k, v in block.items()
                                    if k in WhirlpoolMeterConfig.__dataclass_fields__})
+
+
+def parse_consumers(raw: dict) -> Optional[ConsumersConfig]:
+    block = raw.get("consumers")
+    if not block:
+        return None
+    oh = raw.get("openhab") or {}
+    return ConsumersConfig(
+        **{k: v for k, v in block.items() if k in ("enabled", "small_avg_w", "devices")},
+        openhab_url=str(oh.get("url", "")), openhab_token=str(oh.get("token", "")),
+        openhab_timeout_s=float(oh.get("timeout_s", 3)),
+    )
 
 
 def parse_zendure(raw: dict) -> Optional[ZendureConfig]:
@@ -365,6 +446,7 @@ def load_config(path: str | Path) -> Config:
         house_max_load_kw=float(raw.get("house_max_load_kw", 11.0)),
         zendure=parse_zendure(raw),
         whirlpool_meter=parse_whirlpool_meter(raw),
+        consumers=parse_consumers(raw),
         cascade=CascadeConfig(**{
             k: v for k, v in raw.get("cascade", {}).items() if k in CascadeConfig.__dataclass_fields__
         }),

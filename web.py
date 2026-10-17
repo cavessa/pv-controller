@@ -154,6 +154,47 @@ def _whirlpool_status_block(cfg: Config, r) -> dict[str, Any]:
     }
 
 
+_CONS_AVG_TTL_S = 300.0
+_cons_avg: dict[str, Any] = {"ts": -1e12, "avg": {}}
+
+
+def _consumer_avgs() -> dict[str, float]:
+    """24-h-Mittel je Gerät (für „Sonstige“), 5 min gemerkt."""
+    now = time.monotonic()
+    if now - _cons_avg["ts"] > _CONS_AVG_TTL_S:
+        try:
+            from db import get_consumer_avg
+            _cons_avg.update(ts=now, avg=get_consumer_avg(24))
+        except Exception:
+            log.warning("Verbraucher-Mittelwerte nicht lesbar", exc_info=True)
+            _cons_avg.update(ts=now, avg={})
+    return _cons_avg["avg"]
+
+
+def _consumers_status_block(cfg: Config, result: ControllerResult) -> dict[str, Any]:
+    """Verbraucher aus openHAB (nur lesen): Geräte, Summe, Rest, Einteilung in „Sonstige“."""
+    cc = cfg.consumers
+    if not cfg.consumers_active:
+        return {"enabled": False}
+    r = result.readings
+    if r.consumers is None:
+        return {"enabled": True, "ok": False}
+    import consumers
+    ws = result.wallbox_status
+    loads = {"heater_w": r.heater_meter_power_w or 0.0,
+             "wallbox_w": (ws.power_w or 0.0) if ws is not None else 0.0,
+             "whirlpool_w": (r.whirlpool_power_w or 0.0) if r.whirlpool_reachable else 0.0}
+    ev = consumers.evaluate(r.consumers, r.house_consumption_w, sum(loads.values()))
+    avgs = _consumer_avgs()
+    for d in ev["devices"]:
+        # ohne Verlauf (gerade eingeschaltet) zählt die aktuelle Leistung; im Verlauf fehlend = nie ≥ 1 W
+        d["avg_w"] = round(avgs.get(d["item"], 0.0) if avgs else (d["power_w"] or 0.0), 1)
+        # Zähler mit Geräten dahinter nie unter „Sonstige“
+        d["small"] = not d.get("children") and d["avg_w"] < cc.small_avg_w
+    return {"enabled": True, "ok": True, "small_avg_w": cc.small_avg_w, "house_w": r.house_consumption_w,
+            **{k: round(v) for k, v in loads.items()}, **ev}
+
+
 def _decision_to_dict(d: PhaseDecision) -> dict[str, Any]:
     return {
         "phase": d.name,
@@ -503,6 +544,7 @@ def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
         "meter_today": compute_meter_today(r),
         "zendure": _zendure_status_block(cfg, r),
         "whirlpool": _whirlpool_status_block(cfg, r),
+        "consumers": _consumers_status_block(cfg, result),
         "device_alerts": _device_alerts(cfg),
         "house_peak_watts": hp["peak_w"],
         "house_peak_time": hp["peak_time"],
@@ -712,7 +754,19 @@ def api_battery_nights(response: Response, days: int = 14) -> dict[str, Any]:
     except (OSError, ValueError):
         loc = None
     max_w = z.max_discharge_w if z is not None else 2400.0
-    res = night_need.compute(days, loc=loc, max_discharge_w=max_w)
+    cc = cfg.consumers
+    devs = cc.devices if cc is not None else []
+    meters = frozenset(d.parent for d in devs if d.parent)
+    res = night_need.compute(days, loc=loc, max_discharge_w=max_w, meters=meters)
+    names = {d.item: d.name for d in devs}
+    names.update({night_need.WHIRLPOOL: cfg.whirlpool_meter.name if cfg.whirlpool_meter else "Whirlpool",
+                  night_need.UNMEASURED: "nicht gemessen"})
+    for n in res["nights"]:                           # Top-Verbraucher (Einzelgeräte) und Spitzen mit Namen
+        top = sorted(((k, v) for k, v in n.get("consumers_wh", {}).items() if k not in meters),
+                     key=lambda kv: -kv[1])[:5]
+        n["top_consumers"] = [{"name": names.get(k, k), "wh": v} for k, v in top]
+        n["peak_by"] = [{"name": names.get(k, k), "wh": v}
+                        for k, v in sorted(n.get("peak_by_wh", {}).items(), key=lambda kv: -kv[1])]
     summ = night_need.summary(res, z.capacity_wh if z is not None else 0.0,
                               z.min_soc if z is not None else 10.0, z.target_soc if z is not None else 100.0)
     return {**res, "summary": summ, "max_discharge_w": max_w, "enabled": bool(z is not None and z.enabled)}
@@ -873,6 +927,7 @@ class ConfigUpdate(BaseModel):
     house: dict[str, Any] | None = None
     zendure: dict[str, Any] | None = None
     whirlpool_meter: dict[str, Any] | None = None
+    consumers: dict[str, Any] | None = None
 
 
 def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str, Any]:
@@ -1088,6 +1143,38 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
             block[k] = v
         # Typ, Phase und URL prüft WhirlpoolMeterConfig in der Final-Validierung
 
+    if patch.consumers:
+        bad = set(patch.consumers) - {"enabled", "small_avg_w", "devices"}
+        if bad:
+            raise HTTPException(400, f"consumers keys not allowed: {sorted(bad)}")
+        block = new_cfg.setdefault("consumers", {})
+        c = patch.consumers
+        if "enabled" in c:
+            if not isinstance(c["enabled"], bool):
+                raise HTTPException(400, "consumers.enabled must be boolean")
+            block["enabled"] = c["enabled"]
+        if "small_avg_w" in c:
+            v = c["small_avg_w"]
+            if not isinstance(v, (int, float)) or isinstance(v, bool):
+                raise HTTPException(400, "consumers.small_avg_w must be a number")
+            block["small_avg_w"] = float(v)
+        if "devices" in c:
+            if not isinstance(c["devices"], list) or len(c["devices"]) > 100:
+                raise HTTPException(400, "consumers.devices must be a list (max. 100)")
+            devs = []
+            for d in c["devices"]:
+                if not isinstance(d, dict) or set(d) - {"item", "name", "parent", "in_sum"}:
+                    raise HTTPException(400, "consumers.devices: nur item, name, parent, in_sum erlaubt")
+                for k in ("item", "name", "parent"):
+                    if k in d and not isinstance(d[k], str):
+                        raise HTTPException(400, f"consumers.devices.{k} must be a string")
+                if "in_sum" in d and not isinstance(d["in_sum"], bool):
+                    raise HTTPException(400, "consumers.devices.in_sum must be boolean")
+                devs.append({"item": d.get("item", "").strip(), "name": d.get("name", "").strip(),
+                             "parent": d.get("parent", "").strip(), "in_sum": d.get("in_sum", True)})
+            block["devices"] = devs
+        # Item-Namen, Zähler-Zuordnung und openhab.url prüft ConsumersConfig in der Final-Validierung
+
     if patch.summer_mode:
         bad = set(patch.summer_mode) - _ALLOWED_SUMMER_MODE_KEYS
         if bad:
@@ -1122,6 +1209,7 @@ def load_config_from_dict(raw: dict[str, Any]) -> Config:
         SolaxConfig,
         SummerModeConfig,
         WallboxConfig,
+        parse_consumers,
         parse_solax2,
         parse_whirlpool_meter,
         parse_zendure,
@@ -1147,6 +1235,7 @@ def load_config_from_dict(raw: dict[str, Any]) -> Config:
         house_max_load_kw=float(raw.get("house_max_load_kw", 11.0)),
         zendure=parse_zendure(raw),
         whirlpool_meter=parse_whirlpool_meter(raw),
+        consumers=parse_consumers(raw),
     )
 
 

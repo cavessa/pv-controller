@@ -178,6 +178,16 @@ def init_pv_logging_tables() -> None:
             conn.execute("ALTER TABLE load_min ADD COLUMN whirlpool_w REAL")
         except sqlite3.OperationalError:
             pass
+        # Verbraucher aus openHAB pro Minute: nur aktuelle Werte ab 1 W (fehlende Zeile = ~0 W oder
+        # veraltet); Zeile item "__read__" = Minute erfolgreich gelesen (w = Anzahl aktueller Geräte)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS consumer_min (
+                ts    TEXT NOT NULL,   -- YYYY-MM-DD HH:MM
+                item  TEXT NOT NULL,
+                w     REAL NOT NULL,
+                PRIMARY KEY (ts, item)
+            )
+        """)
         # Lastspitze (Netzbezug am Hauptzähler) pro Tag; eigene Tabelle, damit das
         # das Schreiben von pv_daily_log sie nicht berührt
         conn.execute("""
@@ -580,6 +590,34 @@ def record_zendure(soc, charge_w: float, discharge_w: float) -> None:
             conn.execute("DELETE FROM zendure_min WHERE ts < date('now', ?)", (f"-{RETENTION_DAYS['minute_tables']} days",))
 
 
+CONSUMER_READ_MARK = "__read__"
+
+
+def record_consumers(devices: list) -> None:
+    """Aktuelle (nicht veraltete) Verbraucher-Leistungen der laufenden Minute, ab 1 W."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    rows = [(ts, d["item"], round(d["power_w"], 1)) for d in devices
+            if not d["stale"] and d["power_w"] is not None and abs(d["power_w"]) >= 1]
+    fresh = sum(1 for d in devices if not d["stale"])
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM consumer_min WHERE ts = ?", (ts,))
+        conn.executemany("INSERT INTO consumer_min (ts, item, w) VALUES (?,?,?)",
+                         rows + [(ts, CONSUMER_READ_MARK, float(fresh))])
+
+
+def get_consumer_avg(hours: int = 24) -> dict[str, float]:
+    """Mittlere Leistung je Gerät über die letzten ``hours`` Stunden (fehlende Minuten = 0 W)."""
+    since = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M")
+    with sqlite3.connect(DB_PATH) as conn:
+        n = conn.execute("SELECT COUNT(*) FROM consumer_min WHERE item = ? AND ts >= ?",
+                         (CONSUMER_READ_MARK, since)).fetchone()[0]
+        if not n:
+            return {}
+        rows = conn.execute("SELECT item, SUM(w) FROM consumer_min WHERE ts >= ? AND item != ? GROUP BY item",
+                            (since, CONSUMER_READ_MARK)).fetchall()
+    return {item: s / n for item, s in rows}
+
+
 def record_loads(wallbox_w: Optional[float], heater_w: Optional[float],
                  whirlpool_w: Optional[float] = None) -> None:
     """Wallbox-, Heizstab- und Whirlpool-Leistung (W, None = unbekannt/unsicher) der aktuellen Minute."""
@@ -778,7 +816,7 @@ RETENTION_DAYS = {
     "cascade_events": 365,     # cascade_log: Schaltvorgänge und Ereignisse
     "cascade_verbose": 2,      # cascade_log: keep_*/budget (nur mit cascade.log_verbose)
     "pv_hourly_log": 90,
-    "minute_tables": 35,       # main_meter_min, zendure_min, load_min (Tagesverlauf-Ansicht reicht so weit zurück)
+    "minute_tables": 35,       # main_meter_min, zendure_min, load_min, consumer_min (Tagesverlauf-Ansicht reicht so weit zurück)
     "heater_budget_log": 14,
     "heating_schedule_once": 7,   # einmalige Heizungs-Zeitpläne: 7 Tage nach ihrem Datum
     "decision_snapshot": 2,       # Entscheidungs-Schnappschuss je Minuten-Lauf (48 h)
@@ -809,6 +847,7 @@ def _prune_rules(now: datetime) -> list[tuple[str, str, str, tuple]]:
         ("main_meter_min", "main_meter_min", "ts < ?", (cut(R["minute_tables"], "%Y-%m-%d %H:%M", now),)),
         ("zendure_min", "zendure_min", "ts < ?", (cut(R["minute_tables"], "%Y-%m-%d %H:%M", now),)),
         ("load_min", "load_min", "ts < ?", (cut(R["minute_tables"], "%Y-%m-%d %H:%M", now),)),
+        ("consumer_min", "consumer_min", "ts < ?", (cut(R["minute_tables"], "%Y-%m-%d %H:%M", now),)),
         ("heater_budget_log", "heater_budget_log", "ts < ?", (cut(R["heater_budget_log"], "%Y-%m-%d %H:%M", now),)),
         ("heating_schedule (einmalig)", "heating_schedule", "date IS NOT NULL AND date < ?",
          (cut(R["heating_schedule_once"], "%Y-%m-%d", now),)),
