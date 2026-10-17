@@ -23,6 +23,7 @@
     "max_discharge_w": 2400,
     "min_soc": 10,
     "target_soc": 100,
+    "discharge_target_grid_w": 40,
     "control_enabled": false
   },
   "shelly": {

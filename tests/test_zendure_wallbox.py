@@ -140,16 +140,16 @@ class CascadeWallboxTest(unittest.TestCase):
     def test_car_finished_discharge_allowed_again(self):
         dev = Device(soc=60)
         self.run_once(Goe(DONE), dev)
-        self.assertEqual(self.last_write(dev), (2, 0, 800))
+        self.assertEqual(self.last_write(dev), (2, 0, 760))
 
     def test_sequence_discharge_car_starts_then_finishes(self):
         dev = Device(soc=60)
         self.run_once(Goe(IDLE), dev)
-        self.assertEqual(self.last_write(dev), (2, 0, 800))     # entlädt die Grundlast
+        self.assertEqual(self.last_write(dev), (2, 0, 760))     # entlädt die Grundlast (− 40 W Puffer)
         self.run_once(Goe(car(11000)), dev, main_w=11000.0)      # Auto startet (Akku liefert noch 800)
         self.assertEqual(self.last_write(dev), (None, 0, 0))
         self.run_once(Goe(DONE), dev)                            # Auto fertig, 800 W Bezug
-        self.assertEqual(self.last_write(dev), (2, 0, 800))
+        self.assertEqual(self.last_write(dev), (2, 0, 760))
 
     def test_race_car_starts_between_plan_and_write(self):
         dev = Device(soc=60)
@@ -416,6 +416,15 @@ class SettingsMinSocTest(unittest.TestCase):
         for bad in (0, 12, 25, 50):
             with self.assertRaises(HTTPException):
                 self.put(min_soc=bad)
+
+    def test_discharge_buffer_setting(self):
+        from fastapi import HTTPException
+        res, ap = self.put(discharge_target_grid_w=60)
+        ap.assert_not_called()                                       # kein Geräte-Schreiben
+        self.assertEqual(json.loads(self.cfg_path.read_text())["zendure"]["discharge_target_grid_w"], 60)
+        for bad in (-10, 301, True):
+            with self.assertRaises(HTTPException):
+                self.put(discharge_target_grid_w=bad)
 
     def test_old_switch_ignored(self):
         res, ap = self.put(block_discharge_while_wallbox_charging=False)

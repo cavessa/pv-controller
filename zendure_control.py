@@ -8,8 +8,9 @@ die Befehle über den ZendureClient.
 Regeln:
 - Laden nur aus dem Überschuss, der der Batterie in der Kaskade zusteht
   (`avail_w`); nie aus dem Netz. Stufenlos, Start ab 100 W + Hysterese.
-- Entladen nur ohne Laden, mit SoC > Mindest-SoC und Netzbezug; geregelt auf
-  Bezug ≈ 0 (Ziel = aktuelle Abgabe + Bezug), begrenzt auf die **Grundlast**
+- Entladen nur ohne Laden, mit SoC > Mindest-SoC und Netzbezug; geregelt auf einen kleinen
+  Rest-Bezug ``discharge_target_grid_w`` (Default 40 W; Ziel = aktuelle Abgabe + Bezug − Rest,
+  Puffer gegen Einspeisung aus der Batterie, wenn eine Last abschaltet), begrenzt auf die **Grundlast**
   (Haus ohne Heizstab und Wallbox) – die Batterie heizt nie das Wasser.
 - Wallbox lädt (go-e car=2 oder > 100 W, nicht lesbar = lädt) -> Entladen hart gesperrt
   (fest, nicht abschaltbar). Vor jedem Entlade-Befehl wird go-e unter dem Schreib-Lock neu
@@ -213,8 +214,9 @@ def plan(
         elif import_w > DISCHARGE_START_IMPORT_W or ctl_mode == "discharge":
             # Entladen nur für die Grundlast (Haus ohne Heizstab/Wallbox), nie in den Heizstab
             cap_w = min(max_d, base_load_w)
-            target_d = max(0, min(_round10(st.home_out_w + import_w), cap_w)) \
-                if ctl_mode == "discharge" else max(0, min(_round10(import_w), cap_w))
+            keep_w = max(0.0, float(zc.discharge_target_grid_w or 0.0))     # Rest-Bezug als Puffer
+            target_d = max(0, min(_round10(st.home_out_w + import_w - keep_w), cap_w)) \
+                if ctl_mode == "discharge" else max(0, min(_round10(import_w - keep_w), cap_w))
             target_d = _round10(target_d)
             if target_d >= DISCHARGE_START_IMPORT_W:
                 limited = " (auf Grundlast begrenzt)" if base_load_w < min(max_d, import_w + st.home_out_w) else ""

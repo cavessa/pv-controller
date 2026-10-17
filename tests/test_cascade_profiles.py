@@ -144,7 +144,7 @@ class DischargeTest(unittest.TestCase):
 
     def test_discharge_limited_by_import_too(self):
         p = self.discharge(import_w=300, base_load_w=900)
-        self.assertEqual((p.mode, p.limit_w), ("discharge", 300))
+        self.assertEqual((p.mode, p.limit_w), ("discharge", 260))     # Bezug − 40 W Puffer
 
     def test_only_heater_import_means_no_discharge(self):
         p = self.discharge(import_w=1500, base_load_w=0)

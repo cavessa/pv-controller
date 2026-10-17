@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-17 – Batterie: Entlade-Puffer 40 W Rest-Netzbezug statt Regelung auf 0 W
+
+Anlass: Beim Entladen auf genau 0 W ging bei jedem Lastabfall kurz Batterie-Strom ins Netz (16./17.10. 17–02 Uhr: ~270 Wh, rund 4 % der entladenen 6,9 kWh), bis Minutenlauf oder Wächter nachregelten.
+- **Neues Config-Feld `zendure.discharge_target_grid_w`** (Default 40 W, 0–300, in den Settings unter Batterie editierbar): Die Batterie deckt beim Entladen nur bis auf diesen Netzbezug. Sollwert = jetzige Abgabe + Bezug − Puffer, beim Start Bezug − Puffer; Grundlast-Deckel, 2400 W, Startschwelle (50 W Bezug, Sollwert ≥ 50 W) und Schreib-Schwelle (> 50 W Änderung) bleiben. 0 = wie bisher auf 0 W.
+- Wächter-Entlade-Drosselung unverändert (Einspeisung > 100 W in zwei 3-s-Takten → senken, < 50 W → Standby).
+- Ohne Eintrag in der Prod-Config gilt nach dem Deploy sofort der Default 40 W.
+- **Replay 16.10. 16:53 – 17.10. 02:01** (20-s-Messreihe bis 21:00, danach Minutenwerte; Zähler beim Entladen um 40 W Richtung Bezug verschoben, außer die Batterie lief an der 2400-W-Grenze):
+  - Entladung ins Netz: 270 → 148 Wh (−122 Wh, −45 %).
+  - Netzbezug während des Entladens: 2535 → 2744 Wh (+209 Wh). Diese Energie bleibt in der Batterie und deckt später in der Nacht Bezug, solange die Batterie vor dem Morgen leer wird (wie am 17.10. um 02:01). Netto über die Nacht ≈ 120 Wh weniger aus dem Netz.
+  - Näherung: Minutenmittel ab 21:00 glätten kurze Einspeisungen (echte Einsparung eher etwas höher); weniger Wächter-Drosselungen nicht mitgerechnet.
+- Tests: Puffer im laufenden Entladen, Einspeisung → Puffer mit abgezogen, Puffer konfigurierbar, Start unter der Mindestschwelle, Grundlast-Deckel weiter gültig, Settings (0–300, kein Geräte-Schreiben); bestehende Erwartungen um die 40 W angepasst, „regelt auf 0 W“ mit Puffer 0.
+
 ## 2026-10-17 – Dashboard: „Batterie – Bedarf pro Nacht“ (wie groß müsste der Speicher sein?)
 
 Anlass: Die Batterie (8,64 kWh, ~7,5 kWh nutzbar) war in der Nacht 16./17.10. um 02:02 leer. Gesucht ist, wie groß sie sein müsste, um die ganze Nacht zu überbrücken, und ob die PV einen größeren Speicher überhaupt füllen könnte.

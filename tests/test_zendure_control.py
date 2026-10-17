@@ -43,14 +43,40 @@ class PlanTest(unittest.TestCase):
 
     def test_discharge_on_import(self):
         p = plan(self.zc, self.st, **mk(import_w=420))
-        self.assertEqual((p.mode, p.limit_w, p.write), ("discharge", 420, True))
+        self.assertEqual((p.mode, p.limit_w, p.write), ("discharge", 380, True))   # 40 W Rest-Bezug als Puffer
 
     def test_discharge_regulates_to_zero_import(self):
+        self.zc.discharge_target_grid_w = 0
         self.st.home_out_w = 400
         p = plan(self.zc, self.st, **mk(import_w=200, ctl_mode="discharge", ctl_limit_w=400))
         self.assertEqual(p.limit_w, 600)
         p = plan(self.zc, self.st, **mk(import_w=-300, ctl_mode="discharge", ctl_limit_w=400))
         self.assertEqual(p.limit_w, 100)          # Einspeisung -> Abgabe reduzieren
+
+    def test_discharge_keeps_grid_buffer(self):
+        # Ziel 40 W Rest-Bezug (Default): Abgabe = jetzige Abgabe + Bezug − 40
+        self.assertEqual(self.zc.discharge_target_grid_w, 40)
+        self.st.home_out_w = 400
+        p = plan(self.zc, self.st, **mk(import_w=200, ctl_mode="discharge", ctl_limit_w=400))
+        self.assertEqual(p.limit_w, 560)
+        # schon bei 40 W Bezug: Sollwert bleibt (keine Änderung > 50 W → nicht schreiben)
+        p = plan(self.zc, self.st, **mk(import_w=40, ctl_mode="discharge", ctl_limit_w=400))
+        self.assertEqual((p.mode, p.limit_w, p.write), ("discharge", 400, False))
+        # Einspeisung 60 W → um 100 W senken (60 + 40 Puffer)
+        p = plan(self.zc, self.st, **mk(import_w=-60, ctl_mode="discharge", ctl_limit_w=400))
+        self.assertEqual((p.mode, p.limit_w, p.write), ("discharge", 300, True))
+
+    def test_discharge_buffer_configurable_and_start_threshold(self):
+        self.zc.discharge_target_grid_w = 100
+        p = plan(self.zc, self.st, **mk(import_w=500))
+        self.assertEqual(p.limit_w, 400)
+        # Start: Bezug 80 W − 40 W Puffer = 40 W < 50 W Mindestsollwert → kein Entladen
+        self.zc.discharge_target_grid_w = 40
+        p = plan(self.zc, self.st, **mk(import_w=80))
+        self.assertEqual(p.mode, "idle")
+        # Grundlast-Deckel gilt weiter (Puffer wird vor dem Deckel abgezogen)
+        p = plan(self.zc, self.st, **mk(import_w=3000, base_load_w=300))
+        self.assertEqual((p.mode, p.limit_w), ("discharge", 300))
 
     def test_no_discharge_below_min_soc(self):
         self.st.soc = 10
@@ -79,7 +105,7 @@ class PlanTest(unittest.TestCase):
         # Laden → Entladen und Entladen → Laden direkt im nächsten Lauf (keine Standby-Pause)
         self.st.home_out_w = 0
         p = plan(self.zc, self.st, **mk(import_w=500, ctl_mode="charge", ctl_limit_w=1000, seconds_since_change=30))
-        self.assertEqual((p.mode, p.limit_w, p.write), ("discharge", 500, True))
+        self.assertEqual((p.mode, p.limit_w, p.write), ("discharge", 460, True))
         p = plan(self.zc, self.st, **mk(avail_w=3000, ctl_mode="discharge", ctl_limit_w=600, seconds_since_change=30))
         self.assertEqual((p.mode, p.limit_w, p.write), ("charge", 2400, True))
         p = plan(self.zc, self.st, **mk(import_w=500, ctl_mode="idle", seconds_since_change=5))
@@ -105,7 +131,7 @@ class PlanTest(unittest.TestCase):
         # Entladen läuft, 150 W Einspeisung: unter Ladeschwelle (100 + 100 Hysterese) → kein Laden
         self.st.home_out_w = 400
         p = plan(self.zc, self.st, **mk(avail_w=150, import_w=-150, ctl_mode="discharge", ctl_limit_w=400))
-        self.assertEqual((p.mode, p.limit_w), ("discharge", 250))
+        self.assertEqual((p.mode, p.limit_w), ("discharge", 210))     # 400 − 150 − 40 Puffer
 
     def test_override_force_charge_and_block_discharge(self):
         p = plan(self.zc, self.st, **mk(override="on", seconds_since_change=5, ctl_mode="discharge", ctl_limit_w=300))

@@ -1011,7 +1011,7 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
 
     if patch.zendure:
         allowed = {"enabled", "ip", "sn", "name", "capacity_wh", "max_charge_w", "max_discharge_w",
-                   "min_soc", "target_soc", "control_enabled",
+                   "min_soc", "target_soc", "control_enabled", "discharge_target_grid_w",
                    "block_discharge_while_wallbox_charging"}      # alt: wird ignoriert (Sperre ist fest)
         bad = set(patch.zendure) - allowed
         if bad:
@@ -1031,7 +1031,7 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
                 if not isinstance(v, (int, float)) or isinstance(v, bool):
                     raise HTTPException(400, f"zendure.{k} must be a number")
                 lim = {"capacity_wh": (100, 100000), "max_charge_w": (0, 2400), "max_discharge_w": (0, 2400),
-                       "min_soc": (0, 50), "target_soc": (70, 100)}[k]
+                       "min_soc": (0, 50), "target_soc": (70, 100), "discharge_target_grid_w": (0, 300)}[k]
                 if not lim[0] <= v <= lim[1]:
                     raise HTTPException(400, f"zendure.{k} must be between {lim[0]} and {lim[1]}")
                 if k == "min_soc":

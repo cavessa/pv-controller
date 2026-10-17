@@ -38,6 +38,9 @@ class ZendureConfig:
     min_soc: float = 10.0
     target_soc: float = 100.0
     control_enabled: bool = False  # Master-Schalter für Phase 2 (Steuerung)
+    # Entladen regelt auf diesen Netzbezug statt auf 0 W: Puffer gegen Einspeisung aus der Batterie,
+    # wenn eine Last abschaltet (der Wächter senkt erst ab > 100 W Einspeisung)
+    discharge_target_grid_w: float = 40.0
     # Entladen ist fest gesperrt, solange die Wallbox lädt (früherer Schalter
     # block_discharge_while_wallbox_charging entfällt; alter Config-Eintrag wird ignoriert)
 

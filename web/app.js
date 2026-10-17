@@ -3586,6 +3586,7 @@ async function loadSettings() {
     setFormValue(f, "zendure.max_discharge_w", zc.max_discharge_w ?? 2400);
     setFormValue(f, "zendure.min_soc", zc.min_soc ?? 10);
     setFormValue(f, "zendure.target_soc", zc.target_soc ?? 100);
+    setFormValue(f, "zendure.discharge_target_grid_w", zc.discharge_target_grid_w ?? 40);
     setFormValue(f, "zendure.control_enabled", zc.control_enabled ?? false);
     setFormValue(f, "location.latitude",  lastConfig.latitude  ?? "");
     setFormValue(f, "location.longitude", lastConfig.longitude ?? "");
@@ -3709,6 +3710,7 @@ async function saveSettings(e) {
       max_discharge_w: numField("zendure.max_discharge_w"),
       min_soc: numField("zendure.min_soc"),
       target_soc: numField("zendure.target_soc"),
+      discharge_target_grid_w: numField("zendure.discharge_target_grid_w"),
       control_enabled: boolField("zendure.control_enabled"),
     },
     location: {

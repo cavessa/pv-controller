@@ -736,6 +736,8 @@
                 <option value="15">15 %</option><option value="20">20 %</option></select>
               <small class="field-hint">Entladen stoppt hier, wieder frei ab +2 %. Wird beim Speichern auch ins Gerät geschrieben (Schutz ohne Pi).</small></label>
             <label>Ziel-SoC (%)<input type="number" step="1" min="70" max="100" name="zendure.target_soc"></label>
+            <label>Rest-Netzbezug beim Entladen (W)<input type="number" step="10" min="0" max="300" name="zendure.discharge_target_grid_w">
+              <small class="field-hint">Die Batterie deckt nur bis auf diesen Bezug (Puffer): schaltet eine Last ab, geht weniger aus der Batterie ins Netz. 0 = auf 0 W regeln.</small></label>
             <label class="check"><input type="checkbox" name="zendure.control_enabled"> <b>Steuerung aktiv</b> (Laden aus PV-Überschuss, Entladen bei Netzbezug)
               <small class="field-hint">erst einschalten, wenn der Verbindungstest und das acMode-Mapping (1 = Laden, 2 = Entladen) am Gerät geprüft sind. Bei Dry-Run (runtime) wird nur geloggt, nicht geschrieben. Die Kaskade muss aktiv sein.</small></label>
             <p class="note" style="margin-top:4px">Lokale API aktivieren: In der Zendure-App „HEMS hinzufügen" und wieder verlassen.</p>
@@ -1053,7 +1055,7 @@
     </form>
   </div>
 
-  <script src="/static/app.js?v=20261017b" defer></script>
+  <script src="/static/app.js?v=20261017c" defer></script>
   <script src="/static/heating.js?v=20261014a" defer></script>
   <script src="/static/shutters.js?v=20261013j" defer></script>
 </body>
