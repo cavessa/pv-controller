@@ -18,6 +18,7 @@ from cascade_plan import BATTERY, HEATER_MAX, HEATER_MIN
 ACTIVE, WAITING, DONE = "active", "waiting", "done"
 SURPLUS_MIN_W = 50            # darunter gilt „kein Überschuss“
 ON_ACTIONS = ("turn_on", "keep_on", "skip_min_on")
+IDLE_LOAD_W = 20              # eingeschaltetes Gerät mit weniger gemessener Leistung „zieht nichts“
 PROFILE_DE = {"winter": "Winterprofil", "summer": "Sommerprofil"}
 
 
@@ -31,7 +32,8 @@ def _t(t: Optional[float]) -> str:
 
 
 def _stage(key: str, devs: dict[str, dict], e: dict, temp: Optional[float], comfort: Optional[float],
-           tmax: float, wallbox_connected: Optional[bool], heater_full: bool = False) -> Optional[tuple[str, str, str]]:
+           tmax: float, wallbox_connected: Optional[bool], heater_full: bool = False,
+           measured: Optional[dict[str, float]] = None) -> Optional[tuple[str, str, str]]:
     """(Zustand, Name, Satz) einer Profilstufe; None = Stufe nicht vorhanden."""
     if key == BATTERY:
         d = devs.get(BATTERY)
@@ -44,6 +46,12 @@ def _stage(key: str, devs: dict[str, dict], e: dict, temp: Optional[float], comf
             return ACTIVE, "Batterie priorisiert", f"Batterie lädt mit {_w(ch)} aus PV-Überschuss{soc_s}."
         if d.get("reason") == "soc_target_reached":
             return DONE, "Batterie", f"Batterie voll{soc_s}."
+        if d.get("reason") == "below_start_threshold" and data.get("threshold_w"):
+            rest = data.get("rest_w", data.get("avail_w"))
+            return WAITING, "Batterie", (f"Batterie wartet – Überschuss {_w(rest)} unter der Lade-Startschwelle "
+                                         f"{_w(data['threshold_w'])}{soc_s}.")
+        if d.get("reason") == "battery_empty":
+            return WAITING, "Batterie", f"Batterie leer{soc_s}."
         return WAITING, "Batterie", f"Batterie lädt noch nicht{soc_s}."
     if key in (HEATER_MIN, HEATER_MAX):
         d = devs.get("heizstab")
@@ -89,7 +97,12 @@ def _stage(key: str, devs: dict[str, dict], e: dict, temp: Optional[float], comf
         return DONE, name, f"{name} nicht erreichbar."
     data = d.get("data") or {}
     if d.get("action") in ON_ACTIONS:
-        pw = data.get("power_w")
+        # gemessene Leistung (Shelly) statt der eingetragenen Nennleistung; an, aber ohne Last zählt nicht als aktiv
+        pw = (measured or {}).get(key)
+        if pw is not None and pw < IDLE_LOAD_W:
+            return DONE, name, f"{name} ist an, zieht aber nichts ({_w(pw)})."
+        if pw is None:
+            pw = data.get("power_w")
         return ACTIVE, name, f"{name} läuft" + (f" ({_w(pw)})." if pw else ".")
     thr = data.get("threshold_w")
     rest = data.get("rest_w")
@@ -98,7 +111,8 @@ def _stage(key: str, devs: dict[str, dict], e: dict, temp: Optional[float], comf
 
 
 def cascade_headline(snap: dict[str, Any], order: list[str], temp: Optional[float], comfort: Optional[float],
-                     tmax: float, heater_full: bool = False) -> dict[str, Any]:
+                     tmax: float, heater_full: bool = False,
+                     measured: Optional[dict[str, float]] = None) -> dict[str, Any]:
     """Überschrift, Text und Profil aus einem Entscheidungs-Schnappschuss."""
     e = snap.get("energy") or {}
     devs = {d["id"]: d for d in snap.get("devices") or []}
@@ -106,7 +120,7 @@ def cascade_headline(snap: dict[str, Any], order: list[str], temp: Optional[floa
     wb_conn = None if wb is None else wb.get("reason") != "not_connected"
     surplus = e.get("surplus_w") or 0
     grid = e.get("grid_w")
-    stages = [s for k in order if (s := _stage(k, devs, e, temp, comfort, tmax, wb_conn, heater_full)) is not None]
+    stages = [s for k in order if (s := _stage(k, devs, e, temp, comfort, tmax, wb_conn, heater_full, measured)) is not None]
     profile = PROFILE_DE.get(snap.get("profile"), snap.get("profile") or "")
 
     active = [s for s in stages if s[0] == ACTIVE]

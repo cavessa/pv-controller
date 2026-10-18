@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-18 – Anzeige: Lade-Grund statt „Batterie leer“, gemessene Leistung der Kaskaden-Geräte
+
+Anlass: 13:42 Batterie 10 %, 283 W Überschuss, eBike (Shelly an, 0 W gemessen) reservierte 180 W; der Rest (≤ 148 W) lag unter der Lade-Startschwelle 200 W – angezeigt wurde „Batterie leer“ und „eBike läuft (180 W)“.
+- **Batterie** (`zendure_control.plan`, nur Text/Code, Regelung unverändert): leer **und** mehr als 20 W Überschuss unter der Startschwelle → Grund „Überschuss 148 W < 200 W – kein Laden (Batterie leer, SoC 10 %)“ (Code `below_start_threshold`); ohne Überschuss weiter „Batterie leer“.
+- **Überschrift** (`headline.py`): Batterie wartet mit Grund („Überschuss … unter der Lade-Startschwelle …“); Kaskaden-Shellys mit gemessener Leistung statt Nennleistung; eingeschaltet, aber < 20 W → „eBike ist an, zieht aber nichts (0 W)“ und zählt nicht als aktive Stufe.
+- **Prod-Einstellung** (kein Code): Winterprofil jetzt Batterie → eBike → Wasserspeicher bis 40 °C → bis Max → Wallbox; Sommer unverändert.
+- Überschuss im Text aus demselben Datenstand wie Energiefluss (nicht aus dem bis zu 1 min alten Lauf).
+- Tests: `tests/test_headline.py` (13:42-Fall, gemessene Leistung, Überschuss live), `tests/test_zendure_wallbox.py` (Lade-Grund bei leerer Batterie).
+
 ## 2026-10-18 – „Aktuelle Entscheidung“ aus dem Kaskaden-Ergebnis statt aus der Speichertemperatur
 
 Anlass: 12:06 Winterprofil, Batterie 10 %, Netzbezug 2,75 kW – Überschrift „Wasserspeicher priorisiert“, Text „Heizstab darf per PV-Überschuss laden“, „unter 62 °C“.

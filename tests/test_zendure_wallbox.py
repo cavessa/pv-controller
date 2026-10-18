@@ -330,6 +330,16 @@ class MinSocTest(unittest.TestCase):
         self.assertEqual(self.p(12).mode, "discharge")
         self.assertEqual(self.p(11, "discharge").mode, "discharge")   # läuft weiter bis zur Grenze
 
+    def test_empty_with_small_surplus_names_the_charge_reason(self):
+        """13:42: leer, 148 W frei, Startschwelle 200 W – Anzeige nennt die Schwelle, Regelung bleibt Standby."""
+        p = plan(ZC, ZendureStatus(soc=10), **mk(avail_w=148, import_w=-148))
+        self.assertEqual((p.mode, p.limit_w, p.code), ("idle", 0, "below_start_threshold"))
+        self.assertEqual(p.reason, "Überschuss 148 W < 200 W – kein Laden (Batterie leer, SoC 10 %)")
+        self.assertEqual((p.data["rest_w"], p.data["threshold_w"]), (148, 200))
+        p = plan(ZC, ZendureStatus(soc=10), **mk(avail_w=0, import_w=300))
+        self.assertEqual((p.mode, p.code), ("idle", "battery_empty"))            # nichts frei: „leer“
+        self.assertEqual(plan(ZC, ZendureStatus(soc=10), **mk(avail_w=250, import_w=-250)).mode, "charge")
+
     def test_soc_unknown(self):
         p = self.p(None, "discharge")
         self.assertEqual((p.mode, p.limit_w), ("idle", 0))

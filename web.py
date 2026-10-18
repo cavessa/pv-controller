@@ -400,13 +400,24 @@ def _cascade_summary(cfg: Config, r, heater_full: bool = False) -> dict[str, Any
         e = dict(snap.get("energy") or {})
         if r.main_meter_power_w is not None:
             e["grid_w"] = round(r.main_meter_power_w)
+            e["surplus_w"] = max(0, round(-(r.main_meter_power_w - r.battery_net_w)))   # wie Kaskaden-Card
         zd = r.zendure
         if zd is not None:
             e.update(battery_charge_w=round(zd.charge_w or 0), battery_discharge_w=round(zd.discharge_w or 0),
                      battery_soc=None if zd.soc is None else round(zd.soc))
         snap = {**snap, "energy": e}
         order = get_cascade_profile(snap.get("profile") or season, comfort is not None)
-        return headline.cascade_headline(snap, order, r.storage_temp_c, comfort, tmax, heater_full=heater_full)
+        # gemessene Leistung der Kaskaden-Shellys (Status-Abfrage je Lauf), nicht die eingetragene Nennleistung
+        measured = {}
+        try:
+            for d in get_cascade_devices():
+                if d.get("type", "").startswith("shelly") and d.get("last_status_ok", True) \
+                        and d.get("last_status_power_w") is not None:
+                    measured[d["id"]] = float(d["last_status_power_w"])
+        except Exception:
+            log.debug("Kaskaden-Messwerte nicht lesbar", exc_info=True)
+        return headline.cascade_headline(snap, order, r.storage_temp_c, comfort, tmax, heater_full=heater_full,
+                                         measured=measured)
     grid = r.main_meter_power_w
     surplus = None if grid is None else max(0.0, -(grid - r.battery_net_w))
     if not surplus or surplus <= headline.SURPLUS_MIN_W:

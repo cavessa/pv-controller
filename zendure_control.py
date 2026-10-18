@@ -63,6 +63,7 @@ WRITE_DELTA_W = 50              # Limit nur bei größerer Änderung schreiben
 DISCHARGE_START_IMPORT_W = 50   # Netzbezug, ab dem entladen wird
 MIN_DIRECTION_S = 0             # Mindestzeit vor Laden <-> Entladen (0 = direkt)
 MAX_FAILS = 3
+EMPTY_SHOW_CHARGE_REASON_W = 20  # Anzeige: leere Batterie nennt ab so viel Überschuss den Lade-Grund statt „leer“
 MIN_SOC_HYST = 2                # Entladen nach Erreichen des Mindest-SoC erst ab Mindest-SoC + 2 % wieder
 MIN_SOC_CHOICES = (5, 10, 15, 20)
 WRITE_LOCK_PATH = "/tmp/pvc-zendure-write.lock"   # gemeinsam für Minutenlauf und Wächter
@@ -201,6 +202,11 @@ def plan(
         elif st.soc is None:
             desired = Plan("idle", 0, False, "SoC unbekannt – kein Entladen", "idle",
                            code="battery_empty", data={**nums, "min_soc": zc.min_soc})
+        elif (soc <= zc.min_soc or (ctl_mode != "discharge" and soc < zc.min_soc + MIN_SOC_HYST)) \
+                and code_c == "below_start_threshold" and avail_w > EMPTY_SHOW_CHARGE_REASON_W:
+            # Nur Anzeige: Überschuss da, aber unter der Lade-Startschwelle – das ist der Grund, nicht „leer“
+            desired = Plan("idle", 0, False, f"{reason_c} (Batterie leer, SoC {soc:.0f} %)", "idle",
+                           code="below_start_threshold", data={**nums, **data_c, "min_soc": zc.min_soc})
         elif soc <= zc.min_soc or (ctl_mode != "discharge" and soc < zc.min_soc + MIN_SOC_HYST):
             # stoppt bei Mindest-SoC, Freigabe erst wieder ab Mindest-SoC + Hysterese
             again = "" if soc <= zc.min_soc else f", Freigabe ab {zc.min_soc + MIN_SOC_HYST:.0f} %"

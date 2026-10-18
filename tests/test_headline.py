@@ -117,6 +117,29 @@ class HeadlineTest(unittest.TestCase):
         self.assertIn("praktisch voll", h["reason"])
 
 
+class MeasuredAndBatteryReasonTest(unittest.TestCase):
+    def test_screenshot_1342_battery_waits_with_reason(self):
+        """13:42: eBike an (0 W gemessen), Batterie leer mit 148 W frei unter 200 W Startschwelle."""
+        bat = dev(BATTERY, "idle", "below_start_threshold", {"rest_w": 148, "threshold_w": 200, "avail_w": 148})
+        s = snap([bat, ebike("keep_on", "keep_running"), heater(budget=51), wallbox()], surplus=283,
+                 battery_soc=10)
+        h = head(s, order=[BATTERY, "shelly_test", HEATER_MIN, HEATER_MAX, "wallbox"], comfort=40.0, temp=51.1,
+                 measured={"shelly_test": 0.0})
+        self.assertEqual(h["state"], "Batterie wartet")
+        self.assertIn("Batterie wartet – Überschuss 148 W unter der Lade-Startschwelle 200 W (SoC 10 %).", h["reason"])
+        self.assertNotIn("180 W", h["reason"])
+
+    def test_device_uses_measured_power(self):
+        s = snap([battery("idle", "soc_target_reached"), ebike("keep_on", "keep_running")], surplus=500,
+                 battery_soc=100)
+        h = head(s, order=[BATTERY, "shelly_test"], measured={"shelly_test": 152.0})
+        self.assertEqual(h["state"], "eBike")
+        self.assertIn("eBike läuft (152 W).", h["reason"])
+        h = head(s, order=[BATTERY, "shelly_test"], measured={"shelly_test": 3.0})
+        self.assertNotEqual(h["state"], "eBike")
+        self.assertIn("eBike ist an, zieht aber nichts (3 W).", h["reason"])
+
+
 class CascadeSummaryTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -136,6 +159,15 @@ class CascadeSummaryTest(unittest.TestCase):
         self.assertEqual(out["state"], "Kein Überschuss")
         self.assertIn("Netzbezug 1,25 kW", out["reason"])           # Netz aus dem aktuellen Status, nicht dem Lauf
         self.assertNotIn("nicht aktuell", out["reason"])
+
+    def test_surplus_text_from_the_live_readings(self):
+        """Lauf sah 283 W Überschuss, jetzt 267 W Bezug: kein „Überschuss 283 W“ neben „Netz 267 W Bezug“."""
+        bat = dev(BATTERY, "idle", "below_start_threshold", {"rest_w": 148, "threshold_w": 200})
+        decisions.save(snap([bat], surplus=283, grid=-283, battery_soc=10))
+        out = web._cascade_summary(self.cfg, Readings(main_meter_power_w=267.0, storage_temp_c=48.0))
+        self.assertEqual(out["state"], "Kein Überschuss")
+        self.assertIn("Netzbezug 267 W", out["reason"])
+        self.assertNotIn("283", out["reason"])
 
     def test_stale_snapshot_falls_back_to_readings(self):
         s = snap([], surplus=2000)
