@@ -1,9 +1,31 @@
 # Changelog
 
+## 2026-10-18 – „Aktuelle Entscheidung“ aus dem Kaskaden-Ergebnis statt aus der Speichertemperatur
+
+Anlass: 12:06 Winterprofil, Batterie 10 %, Netzbezug 2,75 kW – Überschrift „Wasserspeicher priorisiert“, Text „Heizstab darf per PV-Überschuss laden“, „unter 62 °C“.
+- Neues Modul `headline.py` (nur Anzeige, Regelung unverändert): Quelle ist der Entscheidungs-Schnappschuss des letzten Laufs (≤ 3 min) und die Reihenfolge des aktiven Profils.
+  - kein Überschuss und keine Stufe aktiv → „Kein Überschuss“ + Netzbezug (bzw. „Batterie entlädt … und deckt den Grundbedarf“ / „Batterie leer“)
+  - sonst die erste Stufe, die gerade Leistung bekommt („Batterie priorisiert“, „Wasserspeicher bis 40 °C / bis Max 64 °C“, „Wallbox“, Gerätename); bekommt keine etwas, die erste, die wartet („… wartet“ mit Grund)
+  - alles voll / nicht bereit, aber Überschuss → „Einspeisung“
+  - Profil klein neben der Überschrift („· Winterprofil“)
+- Text nur mit zutreffenden Sätzen; Max-Temperatur aus der Config (`heater.storage_max_temp`, 64 °C) statt Wiedereinschalt-Temperatur. „Wallbox ist freigegeben“ und die angehängte Batterie-Entscheidung entfallen (stehen in Kaskade/Batterie-Card); „Wallbox im manuellen Modus“ und Thermostat-Hinweise bleiben.
+- Ohne aktuellen Schnappschuss (Cron steht, Dev): nur „Kein Überschuss“/„Überschuss … W“ aus den eigenen Lesewerten + „Kaskaden-Entscheidung nicht aktuell“.
+- Unverändert vorrangig: Beobachtungsmodus, Lesefehler, Phase nicht erreichbar, Wallbox unerreichbar, Sommermodus-Netzheizung.
+- `web._battery_priority` entfernt (ersetzt). Tests: `tests/test_headline.py` (12 Fälle).
+
 ## 2026-10-18 – Settings ließen sich nicht speichern („Gültigen Wert eingeben“)
 
 - Ursache: `zendure.capacity_wh` hatte `step="100"`; der gespeicherte Wert 8640 Wh ist kein Vielfaches → der Browser blockiert das ganze Formular. Gleiches Risiko bei 11 weiteren Feldern (Lade-/Entladeleistung, Entlade-Puffer, Geschirrspüler, Heizstab-Schwellen, Phasen-Mindestzeiten mit Schritt 10/50/100) sowie Kaskade „Mindest-Überschuss“ (50) und Rollladen-Haltezeit (5).
 - Alle Zahlenfelder jetzt `step="1"` (Grenzen min/max bleiben, Server prüft weiter). Test `tests/test_settings_markup.py`.
+
+## 2026-10-18 – Dashboard: ein Datenstand für alle Live-Werte, PV einheitlich als AC-Leistung, PV-Card-Layout
+
+Anlass: Energiefluss zeigte Netz 13,71 kW Bezug / Haus 14,40 kW, die PV-Card gleichzeitig Einspeisung +54 W / Haus 640 W; PV 632 + Pergola 47 = 679, Σ aber 694.
+- **Ursache 1**: Energiefluss aus `/api/status` (Hauptzähler-Shelly, Momentwert), PV-Card aus `/api/solax` (eigener Messpunkt des Solax, andere Abfragezeit). Jetzt liefert `/api/status` einen Block `live` aus EINEM Lesedurchlauf (PV, Strings, Pergola, Hauptzähler, Haus = PV + Netz + Entladung − Ladung); PV-Card, Energiefluss, „PV & Netz“, Hausverbrauch und Kopf-Pill nutzen ihn (`withLive`). `/api/solax` liefert nur noch Tageswerte (Ertrag, Tageshoch, kWh). Kopfzeile „Stand HH:MM:SS“ = Zeit dieses Datenstands.
+- **Ursache 2**: PV-Werte stammten aus zwei Abfragen zu verschiedenen Zeiten, Pergola als DC. Jetzt **PV = AC-Ausgang** der Wechselrichter (Haupt-WR Data[9], Pergola Data[2]; `SolaxRealtimeData.pv_ac_w`, nachts nie negativ; ohne Register DC-Summe) für PV gesamt, Kopf-Pill, Energiefluss, Kaskade, Hausverbrauch und Stundenlog. DC je String nur noch als Detail („… V · … A · DC“). Beim Haupt-WR meldet das Gerät AC = Summe der Strings; bei der Pergola liegt AC ~10 W unter DC.
+- **Energiefluss**: Haus-Kachel zeigt „ohne Heizstab“, wenn der Heizstab läuft (Haus dort = Gesamt − Heizstab).
+- **PV-Card**: Label auf Höhe des Balkens, V/A-Zeile eingerückt darunter; Abschnittsköpfe „PV-Anlage“ und „Balkonkraftwerk“ beide mit Summe (AC); Chart-Titel „Erzeugung heute“ (Legende STR1 (Dach), STR2 (Wand), Pergola); weniger Abstand unter der großen Zahl. iPad/Desktop: PV-Card und Energiefluss-Card enden auf gleicher Höhe (`syncTopCards`, die kürzere wird gestreckt).
+- Tests: `tests/test_pv_ac.py` (AC/DC, Live-Block, Markup); Test-Fakes um `get_pv_ac_w` ergänzt.
 
 ## 2026-10-18 – Geschirrspüler deaktiviert (nur Config)
 

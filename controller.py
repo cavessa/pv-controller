@@ -190,10 +190,11 @@ class Controller:
         if d is None:
             log.warning("Pergola-WR nicht erreichbar (n/a)")
             return
-        r.pv2_power_w = d.pv_total_w
+        r.solax_pergola = d
+        r.pv2_power_w = d.pv_ac_w
         r.pv2_today_kwh = d.yield_today_kwh
         if r.pv_power_w is not None:
-            r.pv_power_w += d.pv_total_w
+            r.pv_power_w += d.pv_ac_w
 
     def _read_zendure(self, r: Readings) -> None:
         """Batterie lesen (nicht kritisch: Fehler -> None, kein Fail-safe)."""
@@ -211,18 +212,19 @@ class Controller:
 
     def _read_inverters(self, r: Readings) -> None:
         """Haupt-WR (+ Pergola, Tageszähler). Ein Thread: das Pocket-WiFi mag nur eine Verbindung."""
-        r.pv1_power_w = self.solax.get_pv_power_w()
+        # PV-Leistung = AC-Ausgang (ein Read; Strings DC nur als Detail in solax_main)
+        try:
+            sd = self.solax.get_realtime_data()
+        except Exception:
+            log.warning("Solax: Lesewerte ungültig", exc_info=True)
+            sd = None
+        if sd is not None:
+            r.solax_main = sd
+            r.pv1_power_w = sd.pv_ac_w
+            r.solax_yield_today_kwh = sd.yield_today_kwh
+            r.solax_grid_out_kwh = sd.grid_out_today_kwh
+            r.solax_grid_in_kwh = sd.grid_in_today_kwh
         r.pv_power_w = r.pv1_power_w
-        if r.pv_power_w is not None:
-            # kommt aus dem Cache des eben erfolgten Reads (kein zweiter HTTP-Call)
-            try:
-                sd = self.solax.get_realtime_data()
-                if sd is not None:
-                    r.solax_yield_today_kwh = sd.yield_today_kwh
-                    r.solax_grid_out_kwh = sd.grid_out_today_kwh
-                    r.solax_grid_in_kwh = sd.grid_in_today_kwh
-            except Exception:
-                log.warning("Solax-Tageszähler nicht lesbar", exc_info=True)
         self._read_pergola(r)
 
     def _read_main_meter(self, r: Readings) -> None:

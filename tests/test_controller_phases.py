@@ -63,8 +63,15 @@ class FakeSolax:
     def get_pv_power_w(self):
         return self.pv
 
+    def get_pv_ac_w(self):
+        return self.pv
+
     def get_realtime_data(self):
-        return None
+        if self.pv is None:
+            return None
+        from types import SimpleNamespace
+        return SimpleNamespace(pv_ac_w=self.pv, pv_total_w=self.pv, yield_today_kwh=0.0,
+                               grid_out_today_kwh=0.0, grid_in_today_kwh=0.0)
 
 
 class ControllerPhaseTest(unittest.TestCase):

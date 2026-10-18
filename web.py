@@ -62,7 +62,6 @@ from db import (
 from models import (
     ControllerResult,
     PhaseDecision,
-    TempStatus,
     WallboxAction,
     WallboxDecision,
     WallboxStatus,
@@ -308,32 +307,6 @@ def _heater_thermostat(result: ControllerResult) -> dict[str, Any]:
     return {"state": None}
 
 
-def _battery_priority(cfg: Config, temp: Optional[float]) -> Optional[int]:
-    """Ladesollwert der Batterie, wenn sie gerade lädt (oder auf Leistung wartet) und im aktiven
-    Profil vor dem Heizstab-Schritt steht, der jetzt zählt („bis Min“ unterhalb Min, sonst „bis
-    Max“); sonst None. Für die Überschrift statt „Wasserspeicher priorisiert“."""
-    if not (cfg.zendure_active and cfg.zendure.control_enabled):
-        return None
-    try:
-        from cascade_plan import BATTERY, HEATER_MAX, HEATER_MIN
-        from db import get_cascade_profile, get_zendure_ctl
-        ctl = get_zendure_ctl()
-        if ctl["mode"] != "charge" or not ctl["decided_at"] or (
-            datetime.now() - datetime.fromisoformat(ctl["decided_at"])
-        ).total_seconds() > 180:
-            return None
-        season = "summer" if cfg.summer_mode.enabled else "winter"
-        cmin = cfg.comfort_min_for(season)
-        order = get_cascade_profile(season, cmin is not None)
-        heater = HEATER_MIN if (HEATER_MIN in order and cmin is not None and temp is not None
-                                and temp < cmin) else HEATER_MAX
-        if BATTERY in order and heater in order and order.index(BATTERY) < order.index(heater):
-            return int(ctl["limit_w"] or 0)
-    except Exception:
-        log.debug("Batterie-Vorrang nicht bestimmbar", exc_info=True)
-    return None
-
-
 def _summary(result: ControllerResult, cfg: Config) -> dict[str, str]:
     """Eine kompakte UI-Zusammenfassung des aktuellen Zustands."""
     r = result.readings
@@ -380,82 +353,70 @@ def _summary(result: ControllerResult, cfg: Config) -> dict[str, str]:
         }
 
     thermo = _heater_thermostat(result)
-    if thermo["state"] == "full":
-        state = "Wasserspeicher praktisch voll"
-        reason = (
-            f"Thermostat im Heizstab war {thermo.get('open_min')} min offen bei {thermo.get('temp_c')} °C – "
-            f"Heizstab aus, wieder frei ab {thermo.get('release_c')} °C."
-        )
-        severity = "ok"
-    elif result.summer_mode_heating:
+    if result.summer_mode_heating:
         sm = cfg.summer_mode
-        state = "Netzbezug-Heizung"
-        reason = (
-            result.summer_mode_reason
-            or f"Sommermodus: Heizstab aus Netz "
-               f"(Minimum {sm.min_temp:.0f} °C, Ziel {sm.target_temp:.0f} °C)."
-        )
-        severity = "warn"
-    elif result.temp_status is TempStatus.AT_OR_ABOVE_MAX:
-        state = "Wasserspeicher voll"
-        reason = (
-            f"Wasserspeicher {temp:.1f} °C ≥ {cfg.heater.storage_max_temp:.0f} °C. "
-            "Heizstab aus."
-        )
-        severity = "ok"
-    elif result.temp_status is TempStatus.HYSTERESIS_BAND:
-        state = "Hysterese"
-        reason = (
-            f"Wasserspeicher {temp:.1f} °C im Hysteresefenster "
-            f"({cfg.heater.heat_resume_temp:.0f}–{cfg.heater.storage_max_temp:.0f} °C). "
-            "Keine neuen Phasen."
-        )
-        severity = "ok"
-    elif (bat := _battery_priority(cfg, temp)) is not None:
-        state = "Batterie priorisiert"
-        reason = (
-            f"Batterie steht im Profil vor dem Heizstab und lädt zuerst ({bat} W); "
-            f"der Heizstab bekommt nur den Rest. Wasserspeicher {temp:.1f} °C."
-        )
-        severity = "ok"
-    else:  # BELOW_RESUME
-        state = "Wasserspeicher priorisiert"
-        reason = (
-            f"Wasserspeicher {temp:.1f} °C unter "
-            f"{cfg.heater.heat_resume_temp:.0f} °C. "
-            "Heizstab darf per PV-Überschuss laden."
-        )
-        severity = "ok"
+        return {
+            "state": "Netzbezug-Heizung",
+            "reason": result.summer_mode_reason
+            or f"Sommermodus: Heizstab aus Netz (Minimum {sm.min_temp:.0f} °C, Ziel {sm.target_temp:.0f} °C).",
+            "severity": "warn",
+            "profile": "Sommerprofil",
+        }
 
+    # Überschrift aus dem Kaskaden-Ergebnis des letzten Laufs (nur Anzeige, Regelung unverändert)
+    out = _cascade_summary(cfg, r, heater_full=thermo["state"] == "full")
     if thermo["state"] == "open":
-        reason += (f" Thermostat im Heizstab hat abgeschaltet (Relais an, 0 W seit {thermo.get('open_min')} min) – "
-                   "Überschuss geht an Batterie/Wallbox.")
+        out["reason"] += (f" Thermostat im Heizstab hat abgeschaltet (Relais an, 0 W seit {thermo.get('open_min')} min) – "
+                          "Überschuss geht an Batterie/Wallbox.")
+    if wd is not None and wd.action is WallboxAction.SKIPPED and ws is not None and not ws.pv_surplus_active:
+        out["reason"] += " Wallbox läuft im manuellen Modus und wird nicht angefasst."
+    out["reason"] = out["reason"].strip()
+    return out
 
-    if wd is not None:
-        if wd.action is WallboxAction.SKIPPED and ws is not None and not ws.pv_surplus_active:
-            reason += " Wallbox läuft im manuellen Modus und wird nicht angefasst."
-        elif wd.action in (WallboxAction.PAUSE, WallboxAction.UNCHANGED) and (
-            ws is not None and ws.force_state == 1
-        ):
-            reason += " Wallbox ist im Eco-Modus pausiert."
-        elif wd.action is WallboxAction.RELEASE or (
-            ws is not None and ws.force_state == 0 and ws.pv_surplus_active
-        ):
-            reason += " Wallbox ist freigegeben."
 
-    # Batterie-Entscheidung (Phase 2) an die Begründung hängen
-    if cfg.zendure_active and cfg.zendure.control_enabled:
-        try:
-            from db import get_zendure_ctl
-            zc = get_zendure_ctl()
-            if zc["decision"] and zc["decided_at"] and (
-                datetime.now() - datetime.fromisoformat(zc["decided_at"])
-            ).total_seconds() < 600:
-                reason += " " + zc["decision"] + ("." if not zc["decision"].endswith((".", ")")) else "")
-        except Exception:
-            log.debug("Batterie-Entscheidung nicht lesbar", exc_info=True)
+SUMMARY_SNAPSHOT_MAX_S = 180          # älterer Kaskaden-Schnappschuss gilt nicht mehr als „aktuell“
 
-    return {"state": state, "reason": reason, "severity": severity}
+
+def _cascade_summary(cfg: Config, r, heater_full: bool = False) -> dict[str, Any]:
+    """Überschrift/Text aus dem letzten Entscheidungs-Schnappschuss (headline.py). Ohne aktuellen
+    Schnappschuss (Cron steht, Dev) nur Überschuss bzw. Netzbezug aus den eigenen Lesewerten."""
+    import decisions as _dec
+    import headline
+    from db import get_cascade_profile
+    season = "summer" if cfg.summer_mode.enabled else "winter"
+    comfort, tmax = cfg.comfort_min_for(season), cfg.heater.storage_max_temp
+    snap = None
+    try:
+        snap = _dec.latest()
+        if snap is not None:
+            age = (datetime.now().astimezone() - datetime.fromisoformat(snap["ts"])).total_seconds()
+            if age > SUMMARY_SNAPSHOT_MAX_S or snap.get("cascade") or snap.get("failsafe"):
+                snap = None
+    except Exception:
+        log.debug("Entscheidungs-Schnappschuss nicht lesbar", exc_info=True)
+        snap = None
+    if snap is not None:
+        # Entscheidungen aus dem Lauf, Messwerte (Netz, Batterie) aus demselben Datenstand wie Energiefluss/PV-Card
+        e = dict(snap.get("energy") or {})
+        if r.main_meter_power_w is not None:
+            e["grid_w"] = round(r.main_meter_power_w)
+        zd = r.zendure
+        if zd is not None:
+            e.update(battery_charge_w=round(zd.charge_w or 0), battery_discharge_w=round(zd.discharge_w or 0),
+                     battery_soc=None if zd.soc is None else round(zd.soc))
+        snap = {**snap, "energy": e}
+        order = get_cascade_profile(snap.get("profile") or season, comfort is not None)
+        return headline.cascade_headline(snap, order, r.storage_temp_c, comfort, tmax, heater_full=heater_full)
+    grid = r.main_meter_power_w
+    surplus = None if grid is None else max(0.0, -(grid - r.battery_net_w))
+    if not surplus or surplus <= headline.SURPLUS_MIN_W:
+        state = "Kein Überschuss"
+        reason = f"Netzbezug {headline._w(grid)}." if grid is not None and grid > headline.SURPLUS_MIN_W else ""
+    else:
+        state = f"Überschuss {headline._w(surplus)}"
+        reason = ""
+    reason = (reason + " Kaskaden-Entscheidung nicht aktuell (kein Lauf in den letzten 3 min).").strip()
+    return {"state": state, "reason": reason, "severity": "ok", "profile": headline.PROFILE_DE.get(season, season)}
 
 
 from meter import compute_meter_today  # noqa: E402
@@ -532,11 +493,38 @@ def _house_peak_today() -> dict[str, Any]:
     return get_house_peak(datetime.now().strftime("%Y-%m-%d"))
 
 
+def _live_block(r, cfg: Config) -> dict[str, Any]:
+    """Live-Werte des Dashboards aus EINEM Lesedurchlauf: PV als AC-Leistung, Netz vom Hauptzähler,
+    Haus = PV + Netz + Entladung − Ladung (inkl. Heizstab/Wallbox). DC je String nur als Detail."""
+    def _str(w, v, a):
+        return {"w": w, "v": v, "a": a}
+    m, pg = r.solax_main, r.solax_pergola
+    strings = None
+    if m is not None:
+        strings = [_str(m.pv1_power_w, m.pv1_voltage_v, m.pv1_current_a),
+                   _str(m.pv2_power_w, m.pv2_voltage_v, m.pv2_current_a)]
+    return {
+        "pv_w": r.pv_power_w,
+        "pv_main_w": r.pv1_power_w,
+        "pv_main_dc_w": m.pv_total_w if m is not None else None,
+        "strings": strings,
+        "pergola_enabled": cfg.solax2_active,
+        "pergola_ok": pg is not None,
+        "pergola_w": r.pv2_power_w,
+        "pergola_dc_w": pg.pv_total_w if pg is not None else None,
+        "pergola_v": pg.pv1_voltage_v if pg is not None else None,
+        "pergola_a": pg.pv1_current_a if pg is not None else None,
+        "grid_w": r.main_meter_power_w,
+        "house_w": r.house_consumption_w,
+    }
+
+
 def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
     r = result.readings
     hp = _house_peak_today()
     return {
         "timestamp": result.timestamp.isoformat(timespec="seconds"),
+        "live": _live_block(r, cfg),
         "runtime": {
             "enabled": cfg.runtime.enabled,
             "dry_run": cfg.runtime.dry_run,
@@ -1420,8 +1408,8 @@ def api_pv_now(response: Response) -> dict[str, Any]:
         pg = None
         if cfg.solax2_active:
             pg = SolaxClient(cfg.solax2.url, cfg.solax2.pwd, cfg.solax2_timeout).cached_realtime_data(PV_NOW_CACHE_S)
-        pg_w = pg.pv_total_w if pg is not None else None
-        return {"pv_w": md.pv_total_w + (pg_w or 0.0), "main_w": md.pv_total_w, "pergola_w": pg_w,
+        pg_w = pg.pv_ac_w if pg is not None else None
+        return {"pv_w": md.pv_ac_w + (pg_w or 0.0), "main_w": md.pv_ac_w, "pergola_w": pg_w,
                 "source": "cache", "age_s": round(main.cache_age() or 0.0)}
     import decisions as _dec
     try:
@@ -1448,11 +1436,12 @@ def api_solax(response: Response) -> dict[str, Any]:
     if data is None:
         raise HTTPException(status_code=503, detail="Solax device not reachable")
     bk = _read_pergola(cfg)
-    bk_w = bk.pv_total_w if bk is not None else 0.0
+    # PV-Leistung = AC-Ausgang (wie Kopf-Pill, Energiefluss, Kaskade); DC je String nur als Detail
+    bk_w = bk.pv_ac_w if bk is not None else 0.0
     bk_kwh = bk.yield_today_kwh if bk is not None else 0.0
     # Der Pergola-WR speist hinter dem Hauszähler ein: Gesamt-PV, Tagesertrag und
     # Hausverbrauch (Haupt-WR sieht den Pergola-Anteil nicht) = Summe.
-    pv_total_w = data.pv_total_w + bk_w
+    pv_total_w = data.pv_ac_w + bk_w
     yield_today = round(data.yield_today_kwh + bk_kwh, 2)
     grid_out, grid_in = data.grid_out_today_kwh, data.grid_in_today_kwh
     # Tageswerte bevorzugt aus dem Hauptzähler (Shelly); Zählerstände liefert der
@@ -1481,7 +1470,8 @@ def api_solax(response: Response) -> dict[str, Any]:
         "pv1_power_w": data.pv1_power_w,
         "pv2_power_w": data.pv2_power_w,
         "pv_total_w": pv_total_w,
-        "main_total_w": data.pv_total_w,
+        "main_total_w": data.pv_ac_w,
+        "main_dc_w": data.pv_total_w,
         "pv1_voltage_v": data.pv1_voltage_v,
         "pv2_voltage_v": data.pv2_voltage_v,
         "pv1_current_a": data.pv1_current_a,
@@ -1505,7 +1495,8 @@ def api_solax(response: Response) -> dict[str, Any]:
         "pergola_enabled": cfg.solax2_active,
         "pergola_name": cfg.solax2.name if cfg.solax2 is not None else None,
         "pergola_ok": bk is not None,
-        "pergola_power_w": bk.pv_total_w if bk is not None else None,
+        "pergola_power_w": bk_w if bk is not None else None,
+        "pergola_dc_w": bk.pv_total_w if bk is not None else None,
         "pergola_yield_today_kwh": bk.yield_today_kwh if bk is not None else None,
         "pergola_voltage_v": bk.pv1_voltage_v if bk is not None else None,
         "pergola_current_a": bk.pv1_current_a if bk is not None else None,

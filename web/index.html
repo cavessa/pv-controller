@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=95">
+  <link rel="stylesheet" href="/static/styles.css?v=97">
 </head>
 <body>
   <div class="app-shell">
@@ -16,7 +16,7 @@
     <h1 class="brand-title">PV Controller</h1>
     <div class="topbar-right">
       <button type="button" class="pill pv-pill dim" id="pill-pv" title="Gesamt-PV (Hauptwechselrichter + Pergola) – zum Dashboard">☀ –</button>
-      <span class="pill subtle" id="pill-time"><span class="pt-label">aktualisiert</span><span class="pt-val">…</span></span>
+      <span class="pill subtle" id="pill-time"><span class="pt-label">Stand</span><span class="pt-val">…</span></span>
     </div>
   </header>
 
@@ -56,10 +56,10 @@
 
       <div class="card decision-card">
         <div class="card-head">
-          <h2>Aktuelle Entscheidung</h2>
+          <h2>Aktuelle Entscheidung <span class="cascade-profile-label" id="summary-profile"></span></h2>
           <span class="severity-badge" id="summary-severity">…</span>
         </div>
-        <div class="decision-state" id="summary-state"><span class="skeleton">Wasserspeicher priorisiert</span></div>
+        <div class="decision-state" id="summary-state"><span class="skeleton">Kein Überschuss</span></div>
         <div class="decision-reason" id="summary-reason"><span class="skeleton">Wasserspeicher-Temperatur und PV-Überschuss werden gelesen …</span></div>
       </div>
 
@@ -191,15 +191,15 @@
         <div class="card" id="pv-card">
           <h2>PV Erzeugung</h2>
           <div class="pv-live-total" id="pv-live-total"><span class="skeleton">5123 W</span></div>
-          <div id="pv-peak-display" style="font-size:12px;color:#6a6d75;text-align:center;margin-top:4px"><span class="skeleton">Tageshoch: 6420 W um 13:10</span></div>
+          <div id="pv-peak-display" class="pv-peak"><span class="skeleton">Tageshoch: 6420 W um 13:10</span></div>
           <div id="string-dash-alert" class="string-dash-alert hidden"></div>
           <div id="pv-live-strings"><div class="skeleton skeleton-chart" style="height:70px"></div></div>
           <div class="kv compact" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
             <div><span>Einspeisung / Bezug</span><b id="pv-live-feedin"><span class="skeleton">-639 W</span></b></div>
             <div><span>Hausverbrauch</span><b id="pv-live-consumption"><span class="skeleton">639 W</span></b></div>
           </div>
-          <div class="card-head" style="margin-top:10px">
-            <span style="font-size:11px;letter-spacing:2px;color:#8a8d95;text-transform:uppercase">PV1 / PV2 heute</span>
+          <div class="card-head pv-chart-head">
+            <span style="font-size:11px;letter-spacing:2px;color:#8a8d95;text-transform:uppercase">Erzeugung heute</span>
             <div class="chart-legend-inline">
               <span class="cl-str1">STR1 (Dach)</span>
               <span class="cl-str2">STR2 (Wand)</span>
@@ -1126,7 +1126,7 @@
     </form>
   </div>
 
-  <script src="/static/app.js?v=20261017h" defer></script>
+  <script src="/static/app.js?v=20261018c" defer></script>
   <script src="/static/heating.js?v=20261014a" defer></script>
   <script src="/static/shutters.js?v=20261013j" defer></script>
 </body>

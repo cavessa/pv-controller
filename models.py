@@ -37,9 +37,12 @@ class Readings:
     """Alle Messwerte eines Durchlaufs. Felder sind optional, damit Teilfehler
     nicht den ganzen Snapshot ungültig machen."""
 
+    # PV-Leistung = AC-Ausgang der Wechselrichter (DC je String nur als Detail in solax_main/solax_pergola)
     pv_power_w: Optional[float] = None  # Summe Haupt-WR + Pergola-PV
     pv1_power_w: Optional[float] = None  # nur Haupt-WR
     pv2_power_w: Optional[float] = None  # Pergola-PV (None = aus / n/a)
+    solax_main: Optional[Any] = None     # SolaxRealtimeData des Haupt-WR (Strings DC, V, A)
+    solax_pergola: Optional[Any] = None  # SolaxRealtimeData der Pergola
     pv2_today_kwh: Optional[float] = None
     # Tageszähler des Haupt-WR (Fallback für meter_today) und Hauptzähler-Lifetime (Wh)
     solax_yield_today_kwh: Optional[float] = None

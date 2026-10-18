@@ -249,7 +249,7 @@ class TempDb(unittest.TestCase):
         svc.heater_meter = SimpleNamespace(get_total_power_w=lambda: heater)
         svc.main_meter = SimpleNamespace(get_total_power_w=lambda: main)
         svc.storage = SimpleNamespace(get_temperature_c=lambda: temp)
-        svc.solax = SimpleNamespace(get_pv_power_w=lambda: pv)
+        svc.solax = SimpleNamespace(get_pv_power_w=lambda: pv, get_pv_ac_w=lambda: pv)
         svc.solax2 = None
         if svc.zendure_ctl is not None:
             svc.zendure_client = SimpleNamespace(get_status=lambda: ZendureStatus(soc=soc))

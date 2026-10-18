@@ -207,6 +207,8 @@ function renderStatus(s) {
 
   // summary
   $("#summary-state").textIfChanged = s.summary?.state ?? "–";
+  const sumProf = $("#summary-profile");
+  if (sumProf) sumProf.textIfChanged = s.summary?.profile ? "· " + s.summary.profile : "";
   $("#summary-reason").textIfChanged = s.summary?.reason ?? "";
   const sev = s.summary?.severity ?? "ok";
   const badge = $("#summary-severity");
@@ -215,7 +217,7 @@ function renderStatus(s) {
 
   // PV & Netz
   const h = s.heater;
-  renderPvNetz(h, s.wallbox);
+  renderPvNetz(h, s.wallbox, s.live);
 
   // Wasserspeicher
   const heaterAktiv = (h.heater_meter_power ?? 0) > 50
@@ -611,7 +613,7 @@ function renderEnergyFlow(heater, wb, cs, zd, wp) {
   <text x="${H_W/2}" y="16" text-anchor="middle" font-size="14" font-family="'DM Mono',monospace">🏠</text>
   <text x="${H_W/2}" y="27" text-anchor="middle" font-size="6.5" fill="rgba(255,255,255,0.5)" letter-spacing="1" font-family="'DM Mono',monospace">HAUS</text>
   <text x="${H_W/2}" y="39" text-anchor="middle" font-size="12" font-weight="700" fill="${ACTIVE}" font-family="'DM Mono',monospace">${esc(hvStr)}</text>
-  <text x="${H_W/2}" y="${NH-5}" text-anchor="middle" font-size="7.5" fill="rgba(255,255,255,0.4)" font-family="'DM Mono',monospace">Verbrauch</text>
+  <text x="${H_W/2}" y="${NH-5}" text-anchor="middle" font-size="7.5" fill="rgba(255,255,255,0.4)" font-family="'DM Mono',monospace">${heatOn ? "ohne Heizstab" : "Verbrauch"}</text>
 </g>`;
   }
 
@@ -740,26 +742,26 @@ function renderSolax(d) {
         <div class="pv-string-label">${s.n}</div>
         <div class="pv-string-bar-wrap"><div class="pv-string-bar ${s.cls}" style="width:${pct}%"></div></div>
         <div class="pv-string-val"><span style="color:#e0e2e6">${s.w == null ? "n/a" : Math.round(s.w) + " W"}</span><span style="color:#6a6d75;font-size:11px;margin-left:6px">/ ${fmtMax(s.max)}</span></div>
-        <div class="pv-string-sub">${s.v == null ? "" : s.v.toFixed(0) + " V · " + s.a.toFixed(1) + " A"}</div>
+        <div class="pv-string-sub">${s.v == null ? "" : s.v.toFixed(0) + " V · " + s.a.toFixed(1) + " A" + (s.dc ? " · DC" : "")}</div>
       </div>`;
     };
-    // Summenwert im Kopf nur bei mehr als einem String (sonst steht er schon im Balken)
-    const group = (name, w, nStrings) => `<div class="pv-group"><span>${name}</span>${nStrings > 1 ? `<b>${w == null ? "n/a" : Math.round(w) + " W"}</b>` : ""}</div>`;
+    // Abschnittskopf mit Summe (AC-Leistung des Wechselrichters); Zeilen darunter = DC je String
+    const group = (name, w) => `<div class="pv-group"><span>${name}</span><b>${w == null ? "n/a" : Math.round(w) + " W"}</b></div>`;
     const str1Max = d.str1_max_w ?? 11500, str2Max = d.str2_max_w ?? 6500;
     const strs = [
-      { n: "STR1 (Dach)", w: d.pv1_power_w, v: d.pv1_voltage_v, a: d.pv1_current_a, cls: "str1", max: str1Max },
-      { n: "STR2 (Wand)", w: d.pv2_power_w, v: d.pv2_voltage_v, a: d.pv2_current_a, cls: "str2", max: str2Max },
+      { n: "STR1 (Dach)", w: d.pv1_power_w, v: d.pv1_voltage_v, a: d.pv1_current_a, cls: "str1", max: str1Max, dc: true },
+      { n: "STR2 (Wand)", w: d.pv2_power_w, v: d.pv2_voltage_v, a: d.pv2_current_a, cls: "str2", max: str2Max, dc: true },
     ].map(row).join("");
     if (!pergola) {
       stringsEl.htmlIfChanged = strs;
     } else {
       const pgName = d.pergola_name || "Pergola";
       stringsEl.htmlIfChanged =
-        group("PV-Anlage", d.main_total_w, 2) + strs +
-        group("Balkonkraftwerk", d.pergola_ok ? d.pergola_power_w : null, 1) +
-        row({ n: pgName, w: d.pergola_ok ? d.pergola_power_w : 0,
+        group("PV-Anlage", d.main_total_w) + strs +
+        group("Balkonkraftwerk", d.pergola_ok ? d.pergola_power_w : 0) +
+        row({ n: pgName, w: d.pergola_ok ? (d.pergola_dc_w ?? d.pergola_power_w) : 0,
               v: d.pergola_ok ? d.pergola_voltage_v : null, a: d.pergola_current_a, cls: "str3",
-              max: d.pergola_max_w ?? 1000 });
+              max: d.pergola_max_w ?? 1000, dc: d.pergola_dc_w != null });
     }
     const lg = document.getElementById("legend-pergola");
     if (lg) {
@@ -898,7 +900,7 @@ async function drawHausverbrauchSparkline() {
   ctx.fill();
 }
 
-function renderPvNetz(h, wb) {
+function renderPvNetz(h, wb, live) {
   const el = document.getElementById("pv-netz-body");
   if (!el) return;
 
@@ -907,7 +909,7 @@ function renderPvNetz(h, wb) {
   const gridW     = Math.round(h.main_meter_power ?? 0);
   const wbSt      = wb?.status ?? {};
   const wallboxW  = wbSt.charging === true ? Math.max(0, Math.round(wbSt.power_w ?? 0)) : 0;
-  const hausW     = Math.max(0, Math.round(lastSolaxData?.consumption_w ?? 0));
+  const hausW     = Math.max(0, Math.round(live?.house_w ?? lastSolaxData?.consumption_w ?? 0));
   const isEinsp   = gridW < 0;
   const zaehlerW  = Math.abs(gridW);
 
@@ -3684,6 +3686,49 @@ document.addEventListener("visibilitychange", () => {
   if (_activeTab() === "logs" && $("#log-auto")?.checked) refreshLogs();
 });
 
+// Live-Werte aller Cards aus EINEM Datenstand: /api/status (ein Lesedurchlauf: Wechselrichter,
+// Hauptzähler, Batterie) überschreibt die Momentwerte von /api/solax; von dort kommen nur Tageswerte
+// (Ertrag, Tageshoch, kWh). PV = AC-Leistung, Netz = Hauptzähler, Haus = PV + Netz + Entladung − Ladung.
+function withLive(solax, status) {
+  const L = status?.live;
+  if (!L || L.pv_w == null) return solax;
+  const d = { ...(solax || {}) };
+  d.pv_total_w = L.pv_w;
+  d.main_total_w = L.pv_main_w;
+  if (L.strings) {
+    [d.pv1_power_w, d.pv2_power_w] = L.strings.map(x => x.w);
+    [d.pv1_voltage_v, d.pv2_voltage_v] = L.strings.map(x => x.v);
+    [d.pv1_current_a, d.pv2_current_a] = L.strings.map(x => x.a);
+  }
+  d.pergola_enabled = L.pergola_enabled;
+  d.pergola_ok = L.pergola_ok;
+  d.pergola_power_w = L.pergola_w;
+  d.pergola_dc_w = L.pergola_dc_w;
+  d.pergola_voltage_v = L.pergola_v;
+  d.pergola_current_a = L.pergola_a;
+  if (L.grid_w != null) d.feed_in_w = -L.grid_w;
+  if (L.house_w != null) d.consumption_w = L.house_w;
+  if (d.pv_peak_w == null || Math.round(L.pv_w) > d.pv_peak_w) {
+    d.pv_peak_w = Math.round(L.pv_w);
+    d.pv_peak_time = (status.timestamp || "").slice(11, 16);
+  }
+  return d;
+}
+
+// iPad/Desktop (zwei Spalten): PV-Card und Energiefluss-Card enden auf gleicher Höhe – die kürzere
+// der beiden wird gestreckt (PV: Chart rutscht nach unten, Energiefluss: Diagramm mittig).
+function syncTopCards() {
+  const pv = document.getElementById("pv-card");
+  const flow = document.querySelector(".flow-card");
+  if (!pv || !flow) return;
+  pv.style.minHeight = ""; flow.style.minHeight = "";
+  if (!window.matchMedia("(min-width: 768px)").matches) return;
+  const pb = pv.getBoundingClientRect().bottom, fb = flow.getBoundingClientRect().bottom;
+  if (pb < fb - 1) pv.style.minHeight = Math.round(pv.offsetHeight + fb - pb) + "px";
+  else if (fb < pb - 1) flow.style.minHeight = Math.round(flow.offsetHeight + pb - fb) + "px";
+}
+window.addEventListener("resize", () => requestAnimationFrame(syncTopCards));
+
 async function refreshStatus() {
   lastStatusRefresh = Date.now();
   const activeTab = _activeTab();
@@ -3705,7 +3750,7 @@ async function refreshStatus() {
     renderCascadeMini(cascadeStatus);
     checkCascadeAlerts(cascadeStatus);
   });
-  hourlyP.then(hourlyToday => renderStringChart(hourlyToday.entries || [], "pv-strings-chart-wrap", sunWindow(hourlyToday)));
+  hourlyP.then(hourlyToday => { renderStringChart(hourlyToday.entries || [], "pv-strings-chart-wrap", sunWindow(hourlyToday)); syncTopCards(); });
   historyP.then(history => renderWbChart(history.entries));
 
   try {
@@ -3715,15 +3760,11 @@ async function refreshStatus() {
     } else {
       console.log("[refreshStatus] /api/solax failed – using cached data:", lastSolaxData ? "available" : "none");
     }
-    const effectiveSolax = solax !== null ? solax : lastSolaxData;
-    // Single source of truth: pv_total_w aus dem Solax-Call überschreibt pv_power
-    // im Status-Result (beide Endpunkte nutzen ohnehin denselben Server-Cache).
-    if (effectiveSolax != null && data?.heater != null) {
-      data.heater.pv_power = effectiveSolax.pv_total_w;
-    }
+    const effectiveSolax = withLive(solax !== null ? solax : lastSolaxData, data);
     renderStatus(data);
     renderSolax(effectiveSolax);
     setPvPill(effectiveSolax ? effectiveSolax.pv_total_w : null);
+    syncTopCards();
     const history = await historyP;
     loadStorage().catch(() => {});
     loadHouseDash().catch(() => {});
@@ -3744,10 +3785,7 @@ async function runOnce() {
       api("/api/solax").catch(() => null),
     ]);
     if (solax !== null) lastSolaxData = solax;
-    const effectiveSolax = solax !== null ? solax : lastSolaxData;
-    if (effectiveSolax != null && data?.heater != null) {
-      data.heater.pv_power = effectiveSolax.pv_total_w;
-    }
+    const effectiveSolax = withLive(solax !== null ? solax : lastSolaxData, data);
     renderStatus(data);
     renderSolax(effectiveSolax);
     setPvPill(effectiveSolax ? effectiveSolax.pv_total_w : null);

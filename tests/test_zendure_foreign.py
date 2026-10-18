@@ -207,32 +207,5 @@ class BatteryWaitingHeaterTest(tcp.ServiceIntegrationTest):
         self.assertGreater(self.down(), 1500)                      # Batterie voll: Glättung wie bisher
 
 
-class HeadlineTest(DbCase):
-    def cfg_web(self, summer=False):
-        return SimpleNamespace(zendure_active=True, zendure=SimpleNamespace(control_enabled=True),
-                               summer_mode=SimpleNamespace(enabled=summer),
-                               comfort_min_for=lambda s: 52.0 if s == "summer" else 40.0)
-
-    def setUp(self):
-        super().setUp()
-        db.init_cascade_tables()
-        db.init_cascade_settings_table()
-        db.ensure_zendure_cascade_device("Batterie", 2400)
-        db.set_zendure_ctl(mode="charge", limit_w=660, decided_at=datetime.now().isoformat(timespec="seconds"))
-
-    def test_winter_battery_first(self):
-        self.assertEqual(web._battery_priority(self.cfg_web(), 45.0), 660)
-
-    def test_summer_cold_water_heater_first(self):
-        self.assertIsNone(web._battery_priority(self.cfg_web(summer=True), 45.0))
-
-    def test_summer_warm_water_battery_first(self):
-        self.assertEqual(web._battery_priority(self.cfg_web(summer=True), 55.0), 660)
-
-    def test_battery_idle_no_priority(self):
-        db.set_zendure_ctl(mode="idle", limit_w=0)
-        self.assertIsNone(web._battery_priority(self.cfg_web(), 45.0))
-
-
 if __name__ == "__main__":
     unittest.main()

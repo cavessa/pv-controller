@@ -254,7 +254,7 @@ class ServiceIntegrationTest(unittest.TestCase):
         svc.heater_meter = SimpleNamespace(get_total_power_w=lambda: heater_w)
         svc.main_meter = SimpleNamespace(get_total_power_w=lambda: main_w)
         svc.storage = SimpleNamespace(get_temperature_c=lambda: temp)
-        svc.solax = SimpleNamespace(get_pv_power_w=lambda: pv)
+        svc.solax = SimpleNamespace(get_pv_power_w=lambda: pv, get_pv_ac_w=lambda: pv)
         svc.solax2 = None
         st = zd or ZendureStatus(soc=soc)
         # go-e: keine Netzanfragen im Test – Wallbox steht (car=1, 0 W), Tests überschreiben bei Bedarf

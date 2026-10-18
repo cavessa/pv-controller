@@ -494,15 +494,15 @@ class CascadeService:
             return None
 
     def _read_pv_total_w(self) -> Optional[float]:
-        """Gesamt-PV (Haupt-WR + Pergola) – Solax-Lesewerte sind prozessweit gecacht."""
-        pv = self.solax.get_pv_power_w()
+        """Gesamt-PV als AC-Leistung (Haupt-WR + Pergola) – Solax-Lesewerte sind prozessweit gecacht."""
+        pv = self.solax.get_pv_ac_w()
         if pv is None:
             return None
         if self.solax2 is not None:
             try:
                 d = self.solax2.get_realtime_data()
                 if d is not None:
-                    pv += d.pv_total_w
+                    pv += d.pv_ac_w
             except Exception:
                 log.warning("Kaskade: Pergola-WR nicht lesbar", exc_info=True)
         return float(pv)

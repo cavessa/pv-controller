@@ -15,15 +15,17 @@ from tests.test_solax_timeout import cfg_with
 MAIN, PERGOLA = "http://192.168.2.195", "http://192.168.2.141"
 
 
-def raw_x3(pv1, pv2):
+def raw_x3(pv1, pv2, ac=None):
     raw = [0] * 100
     raw[14], raw[15] = pv1, pv2
+    raw[9] = pv1 + pv2 if ac is None else ac        # AC-Ausgang (beim Haupt-WR = Summe der Strings)
     return raw
 
 
-def raw_x1(pv1, pv2):
+def raw_x1(pv1, pv2, ac=None):
     raw = [0] * 100
     raw[7], raw[8] = pv1, pv2
+    raw[2] = pv1 + pv2 if ac is None else ac
     return raw
 
 

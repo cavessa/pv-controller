@@ -1,7 +1,8 @@
 """Solax X3 Pocket-WiFi Client (ReadRealTimeData).
 
 Liest PV-Leistung direkt vom Wechselrichter-Logger.
-pv_power_w  = Data[14] (PV1) + Data[15] (PV2).
+pv_power_w  = Data[14] (PV1) + Data[15] (PV2) – DC je String (Detail).
+AC-Leistung = Data[9] (X3) bzw. Data[2] (X1) – gilt als „PV-Leistung“ (``pv_ac_w``).
 get_realtime_data() liefert alle Felder für das Dashboard.
 
 Race-condition-Schutz: Das Pocket-WiFi-Modul verarbeitet nur eine
@@ -61,7 +62,14 @@ class SolaxRealtimeData:
     grid_in_today_kwh: float  # Netzbezug heute
     mode: int
     model: str = "x3"         # "x3" (Haupt-WR) | "x1" (Pergola-PV)
-    ac_power_w: float = 0.0   # nur X1: AC-Ausgangsleistung
+    ac_power_w: Optional[float] = None  # AC-Ausgangsleistung (X3: Data[9], X1: Data[2]); None = unbekannt
+
+    @property
+    def pv_ac_w(self) -> float:
+        """PV-Leistung als AC-Ausgang (nie negativ); ohne AC-Register die DC-Summe."""
+        if self.ac_power_w is None:
+            return self.pv_total_w
+        return max(0.0, self.ac_power_w)
 
 
 class SolaxClient:
@@ -175,6 +183,11 @@ class SolaxClient:
             return None
         return float(pv1 + pv2)
 
+    def get_pv_ac_w(self) -> Optional[float]:
+        """PV-Leistung als AC-Ausgang (aus demselben, gecachten Read)."""
+        d = self.get_realtime_data()
+        return None if d is None else d.pv_ac_w
+
     def get_realtime_data(self) -> Optional[SolaxRealtimeData]:
         raw = self._fetch()
         if raw is None:
@@ -225,4 +238,5 @@ class SolaxClient:
             grid_out_today_kwh=raw[90] / 100.0,
             grid_in_today_kwh=raw[92] / 100.0,
             mode=int(raw[19]),
+            ac_power_w=_signed16(raw[9]),
         )
