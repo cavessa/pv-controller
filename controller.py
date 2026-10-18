@@ -154,6 +154,12 @@ class Controller:
             wm = config.whirlpool_meter
             self.whirlpool_meter = Shelly3EMClient(wm.url, SHELLY_READ_TIMEOUT_S, name="whirlpool_meter",
                                                    type_=wm.type)
+        # Durchlauferhitzer-3EM: nur lesen (Anzeige, Verbraucher-Rest), nichts schalten
+        self.waterheater_meter: Optional[Shelly3EMClient] = None
+        if config.waterheater_active:
+            wh = config.waterheater_meter
+            self.waterheater_meter = Shelly3EMClient(wh.url, SHELLY_READ_TIMEOUT_S, name="waterheater_meter",
+                                                     type_=wh.type)
         self.goe: Optional[GoeClient] = None
         if config.wallbox.enabled and config.wallbox.url:
             self.goe = GoeClient(
@@ -275,6 +281,12 @@ class Controller:
             log.info("Whirlpool: Heizstab-3EM nicht lesbar – Wert unsicher (Rohwert %.0f W inkl. %s)",
                      w["raw_w"], sub)
 
+    @staticmethod
+    def _apply_waterheater(r: Readings, phases: Optional[list[float]]) -> None:
+        """Durchlauferhitzer-Leistung = Summe der Phasen (nicht unter 0); nicht lesbar → offline, kein Fail-safe."""
+        if phases:
+            r.waterheater_power_w, r.waterheater_reachable = max(0.0, float(sum(phases))), True
+
     def _read_consumers(self) -> Optional[list]:
         """Verbraucher aus openHAB (nur lesen); Fehler nie weiterreichen – die Regelung braucht sie nicht."""
         try:
@@ -290,13 +302,14 @@ class Controller:
             return self._read_simulated()
 
         r = Readings()
-        with ThreadPoolExecutor(max_workers=9, thread_name_prefix="read") as ex:
+        with ThreadPoolExecutor(max_workers=10, thread_name_prefix="read") as ex:
             f_inv = ex.submit(self._read_inverters, r)
             f_zd = ex.submit(self._read_zendure, r)
             f_main = ex.submit(self._read_main_meter, r)
             f_heat = ex.submit(self.heater_meter.get_total_power_w)
             f_temp = ex.submit(self.storage.get_temperature_c)
             f_whirl = ex.submit(self.whirlpool_meter.get_phase_powers_w) if self.whirlpool_meter else None
+            f_wh = ex.submit(self.waterheater_meter.get_phase_powers_w) if self.waterheater_meter else None
             f_cons = ex.submit(self._read_consumers) if self.cfg.consumers_active else None
             disabled = self.cfg.heater.disabled_phases
             f_ph = [
@@ -309,10 +322,13 @@ class Controller:
             r.storage_temp_c = f_temp.result()
             ph_reads = [None if f is None else PhaseRead(*f.result()) for f in f_ph]
             whirl_phases = f_whirl.result() if f_whirl is not None else None
+            wh_phases = f_wh.result() if f_wh is not None else None
             r.consumers = f_cons.result() if f_cons is not None else None
         ph_states = [None if ph is None else ph.on for ph in ph_reads]
         if self.whirlpool_meter is not None:
             self._apply_whirlpool(r, whirl_phases)
+        if self.waterheater_meter is not None:
+            self._apply_waterheater(r, wh_phases)
 
         r.ph1_on, r.ph2_on, r.ph3_on = ph_states
 

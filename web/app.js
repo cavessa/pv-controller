@@ -152,6 +152,7 @@ function fitChart(svg) {
 
 let lastZendure = null;
 let lastWhirlpool = null;
+let lastWaterheater = null;
 let lastDishwasher = null;
 let lastPhasesDisabled = {};
 
@@ -162,6 +163,8 @@ function renderStatus(s) {
   renderZendureCard(lastZendure);
   lastWhirlpool = s.whirlpool ?? null;
   renderWhirlpoolCard(lastWhirlpool);
+  lastWaterheater = s.waterheater ?? null;
+  renderWaterheaterCard(lastWaterheater);
   renderConsumersCard(s.consumers);
   lastDishwasher = s.dishwasher ?? null;
   renderDishwasherCard(lastDishwasher);
@@ -422,13 +425,13 @@ function renderStatus(s) {
 
   const wbCard = document.getElementById("wallbox-card");
   if (wbCard) wbCard.style.display = wb.enabled ? "" : "none";
-  renderEnergyFlow(h, wb, lastCascadeStatus, lastZendure, lastWhirlpool);
+  renderEnergyFlow(h, wb, lastCascadeStatus, lastZendure, lastWhirlpool, lastWaterheater);
 }
 
 // ══════════════════════════════════════════════════════════════════
 // Energiefluss – haus-zentriertes Layout
 // ══════════════════════════════════════════════════════════════════
-function renderEnergyFlow(heater, wb, cs, zd, wp) {
+function renderEnergyFlow(heater, wb, cs, zd, wp, wh) {
   const el = document.getElementById("flow-diagram");
   if (!el) return;
 
@@ -542,6 +545,17 @@ function renderEnergyFlow(heater, wb, cs, zd, wp) {
       value: !wp.reachable ? "n/a" : w == null ? "?" : kwOrW(w),
       sub: !wp.reachable ? "offline" : wp.uncertain ? "unsicher" : on ? "heizt/läuft" : "aus",
       aktiv: on, flow: on, target: "whirlpool-card",
+    });
+  }
+  if (wh?.enabled) {
+    // Durchlauferhitzer: eigener 3EM, nur Anzeige (Teil des Hausverbrauchs)
+    const w = wh.power_w;
+    const on = w != null && w > 50;
+    bots.push({
+      icon: "🚿", label: (wh.name || "Durchlauferhitzer").toUpperCase().slice(0, 11),
+      value: !wh.reachable ? "n/a" : w == null ? "?" : kwOrW(w),
+      sub: !wh.reachable ? "offline" : on ? "heizt" : "aus",
+      aktiv: on, flow: on, target: "waterheater-card",
     });
   }
   if (lastDishwasher?.enabled) {
@@ -2894,6 +2908,26 @@ function renderWhirlpoolCard(wp) {
     : "";
 }
 
+// ---------- Durchlauferhitzer (eigener 3EM, nur lesen) ----------
+function renderWaterheaterCard(wh) {
+  const card = document.getElementById("waterheater-card");
+  if (!card) return;
+  const on = wh?.enabled === true;
+  card.classList.toggle("hidden", !on);
+  if (!on) return;
+  const kw = w => Math.abs(w) >= 1000 ? (w / 1000).toFixed(2).replace(".", ",") + " kW" : Math.round(w) + " W";
+  $("#wh-title").textIfChanged = wh.name || "Durchlauferhitzer";
+  const st = $("#wh-status"), pw = $("#wh-power");
+  if (!wh.reachable || wh.power_w == null) {
+    st.textIfChanged = "nicht erreichbar"; st.classIfChanged = "badge error";
+    pw.textIfChanged = "–";
+    return;
+  }
+  const w = wh.power_w;
+  st.textIfChanged = w > 50 ? "heizt" : "aus"; st.classIfChanged = w > 50 ? "badge ok" : "badge";
+  pw.textIfChanged = kw(w);
+}
+
 // ---------- Geschirrspüler (Home Connect) ----------
 function renderDishwasherCard(d) {
   const card = document.getElementById("dishwasher-card");
@@ -3013,15 +3047,15 @@ function renderConsumersCard(c) {
   }
   if (c.rest_w != null)
     html += row("Rest (nicht einzeln gemessen)", Math.max(0, c.rest_w), { cls: "rest",
-      title: "Hausverbrauch − Heizstab/Wallbox/Whirlpool − gemessene Geräte" });
+      title: "Hausverbrauch − Heizstab/Wallbox/Whirlpool/Durchlauferhitzer − gemessene Geräte" });
   list.htmlIfChanged = html;
   const det = list.querySelector("details.cons-other");
   if (det) det.ontoggle = () => { consOtherOpen = det.open; };
   sumEl.textIfChanged = `Σ ${kw(c.sum_w)} gemessen`;
-  const loads = (c.heater_w || 0) + (c.wallbox_w || 0) + (c.whirlpool_w || 0);
+  const loads = (c.heater_w || 0) + (c.wallbox_w || 0) + (c.whirlpool_w || 0) + (c.waterheater_w || 0);
   const nStale = devs.filter(d => d.stale).length;
   foot.htmlIfChanged = c.house_w != null
-    ? `Haus <b>${kw(c.house_w)}</b> = Heizstab/Wallbox/Whirlpool <b>${kw(loads)}</b> + Geräte <b>${kw(c.sum_w)}</b> + Rest <b>${kw(c.rest_w)}</b>`
+    ? `Haus <b>${kw(c.house_w)}</b> = Heizstab/Wallbox/Whirlpool/Durchlauferhitzer <b>${kw(loads)}</b> + Geräte <b>${kw(c.sum_w)}</b> + Rest <b>${kw(c.rest_w)}</b>`
       + (nStale ? `<br>${nStale} veraltet (Thing nicht ONLINE) – nicht eingerechnet` : "")
     : (nStale ? `${nStale} veraltet (Thing nicht ONLINE) – nicht eingerechnet` : "");
 }
@@ -3877,6 +3911,11 @@ async function loadSettings() {
     setFormValue(f, "whirlpool_meter.type", wmc.type ?? "shelly_3em_gen1");
     setFormValue(f, "whirlpool_meter.name", wmc.name ?? "Whirlpool");
     setFormValue(f, "whirlpool_meter.subtract_heater_phase", wmc.subtract_heater_phase ?? "");
+    const whc = lastConfig.waterheater_meter ?? {};
+    setFormValue(f, "waterheater_meter.enabled", whc.enabled ?? false);
+    setFormValue(f, "waterheater_meter.url", whc.url ?? "");
+    setFormValue(f, "waterheater_meter.type", whc.type ?? "shelly_pro_3em");
+    setFormValue(f, "waterheater_meter.name", whc.name ?? "Durchlauferhitzer");
     const dwc = lastConfig.dishwasher ?? {};
     const dwi = dwc.items ?? {};
     setFormValue(f, "dishwasher.enabled", dwc.enabled ?? false);
@@ -4017,6 +4056,12 @@ async function saveSettings(e) {
     },
     house: {
       max_load_kw: numField("house.max_load_kw"),
+    },
+    waterheater_meter: {
+      enabled: boolField("waterheater_meter.enabled"),
+      url: f.elements.namedItem("waterheater_meter.url")?.value?.trim() ?? "",
+      type: f.elements.namedItem("waterheater_meter.type")?.value ?? "shelly_pro_3em",
+      name: strField("waterheater_meter.name") ?? "Durchlauferhitzer",
     },
     whirlpool_meter: {
       enabled: boolField("whirlpool_meter.enabled"),

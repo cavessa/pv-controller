@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-18 – Durchlauferhitzer (Shelly Pro 3EM, nur lesen)
+
+Anlass: Der Durchlauferhitzer hängt jetzt in der FeVo 02 an einem eigenen Shelly Pro 3EM (192.168.2.76).
+- Neuer Config-Block `waterheater_meter` (`enabled`, `url`, `type` = `shelly_pro_3em`/`shelly_3em_gen1`, `name`), analog zum Whirlpool-Zähler; nichts wird geschaltet, kein Fail-safe (Zähler offline → „n/a“).
+- Leistung = Summe der drei Phasen (nicht unter 0); gelesen parallel zu den anderen Geräten (`Controller._apply_waterheater`).
+- Anzeige: eigene Card „Durchlauferhitzer“, Kachel im Energiefluss, Eingabefelder in den Einstellungen; die Leistung zählt in der Verbraucher-Card zu den bekannten Lasten (Rest = Haus − Heizstab/Wallbox/Whirlpool/Durchlauferhitzer − Geräte).
+- Nicht enthalten: Speicherung in `load_min` und Nachtbedarf (Durchlauferhitzer bleibt dort Teil des Hausverbrauchs).
+- Prod: Block erst in `~/pvcontroller-prod/config.json` eintragen, wenn der Code deployt ist. Läuft der Durchlauferhitzer schon als openHAB-Gerät in der Verbraucher-Card, dieses Item auf `in_sum: false` setzen (sonst doppelt gezählt).
+- Tests: `tests/test_waterheater.py`.
+
 ## 2026-10-18 – Anzeige: Lade-Grund statt „Batterie leer“, gemessene Leistung der Kaskaden-Geräte
 
 Anlass: 13:42 Batterie 10 %, 283 W Überschuss, eBike (Shelly an, 0 W gemessen) reservierte 180 W; der Rest (≤ 148 W) lag unter der Lade-Startschwelle 200 W – angezeigt wurde „Batterie leer“ und „eBike läuft (180 W)“.

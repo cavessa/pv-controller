@@ -168,6 +168,14 @@
         <div class="house-foot" id="wp-foot"></div>
       </div>
 
+      <div class="card hidden" id="waterheater-card">
+        <div class="card-head">
+          <h2><span id="wh-title">Durchlauferhitzer</span></h2>
+          <span class="badge" id="wh-status">–</span>
+        </div>
+        <div class="big-temp" id="wh-power">–</div>
+      </div>
+
       <div class="card">
         <div class="card-head">
           <h2>Tageshoch – Verlauf (kW)</h2>
@@ -789,6 +797,15 @@
             <label>Heizstab-Phase abziehen<select name="whirlpool_meter.subtract_heater_phase">
                 <option value="">keine</option><option value="L1">L1</option><option value="L2">L2</option><option value="L3">L3</option></select>
               <small class="field-hint">Läuft eine Heizstab-Phase durch diesen Zähler, wird ihre Leistung (Heizstab-3EM, gleiche Phase) abgezogen. Nach dem Umklemmen auf „keine“ stellen. Es wird nichts geschaltet.</small></label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Durchlauferhitzer-Zähler (Shelly Pro 3EM, nur lesen)</legend>
+            <label class="check"><input type="checkbox" name="waterheater_meter.enabled"> Aktiviert</label>
+            <label>URL<input type="text" name="waterheater_meter.url" placeholder="http://192.168.x.x"></label>
+            <label>Typ<select name="waterheater_meter.type">
+                <option value="shelly_pro_3em">Shelly Pro 3EM</option><option value="shelly_3em_gen1">Shelly 3EM (Gen1)</option></select></label>
+            <label>Bezeichnung<input type="text" name="waterheater_meter.name" placeholder="Durchlauferhitzer"></label>
           </fieldset>
 
           <fieldset>

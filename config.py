@@ -72,6 +72,21 @@ class WhirlpoolMeterConfig:
             raise ValueError("whirlpool_meter.url required when enabled")
 
 
+@dataclass
+class WaterheaterMeterConfig:
+    """Durchlauferhitzer-Zähler (eigener Shelly 3EM / Pro 3EM, nur lesen – nichts wird geschaltet)."""
+    enabled: bool = False
+    url: str = ""
+    type: str = "shelly_pro_3em"
+    name: str = "Durchlauferhitzer"
+
+    def __post_init__(self) -> None:
+        if self.type not in METER_TYPES:
+            raise ValueError(f"waterheater_meter.type must be one of {METER_TYPES}")
+        if self.enabled and not self.url.strip():
+            raise ValueError("waterheater_meter.url required when enabled")
+
+
 ITEM_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 
@@ -396,6 +411,7 @@ class Config:
     zendure: Optional[ZendureConfig] = None
     cascade: CascadeConfig = field(default_factory=CascadeConfig)
     whirlpool_meter: Optional[WhirlpoolMeterConfig] = None
+    waterheater_meter: Optional[WaterheaterMeterConfig] = None
     consumers: Optional[ConsumersConfig] = None
     dishwasher: Optional[DishwasherConfig] = None
 
@@ -410,6 +426,10 @@ class Config:
     @property
     def whirlpool_active(self) -> bool:
         return self.whirlpool_meter is not None and self.whirlpool_meter.enabled
+
+    @property
+    def waterheater_active(self) -> bool:
+        return self.waterheater_meter is not None and self.waterheater_meter.enabled
 
     @property
     def comfort_min_temp(self) -> float:
@@ -446,6 +466,14 @@ def parse_whirlpool_meter(raw: dict) -> Optional[WhirlpoolMeterConfig]:
         return None
     return WhirlpoolMeterConfig(**{k: v for k, v in block.items()
                                    if k in WhirlpoolMeterConfig.__dataclass_fields__})
+
+
+def parse_waterheater_meter(raw: dict) -> Optional[WaterheaterMeterConfig]:
+    block = raw.get("waterheater_meter")
+    if not block:
+        return None
+    return WaterheaterMeterConfig(**{k: v for k, v in block.items()
+                                     if k in WaterheaterMeterConfig.__dataclass_fields__})
 
 
 def parse_consumers(raw: dict) -> Optional[ConsumersConfig]:
@@ -522,6 +550,7 @@ def load_config(path: str | Path) -> Config:
         house_max_load_kw=float(raw.get("house_max_load_kw", 11.0)),
         zendure=parse_zendure(raw),
         whirlpool_meter=parse_whirlpool_meter(raw),
+        waterheater_meter=parse_waterheater_meter(raw),
         consumers=parse_consumers(raw),
         dishwasher=parse_dishwasher(raw),
         cascade=CascadeConfig(**{

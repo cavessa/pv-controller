@@ -153,6 +153,15 @@ def _whirlpool_status_block(cfg: Config, r) -> dict[str, Any]:
     }
 
 
+def _waterheater_status_block(cfg: Config, r) -> dict[str, Any]:
+    """Durchlauferhitzer-3EM (nur lesen): Summe der drei Phasen."""
+    wm = cfg.waterheater_meter
+    if wm is None or not wm.enabled:
+        return {"enabled": False}
+    return {"enabled": True, "name": wm.name, "power_w": r.waterheater_power_w,
+            "reachable": r.waterheater_reachable}
+
+
 _CONS_AVG_TTL_S = 300.0
 _cons_avg: dict[str, Any] = {"ts": -1e12, "avg": {}}
 
@@ -182,7 +191,8 @@ def _consumers_status_block(cfg: Config, result: ControllerResult) -> dict[str, 
     ws = result.wallbox_status
     loads = {"heater_w": r.heater_meter_power_w or 0.0,
              "wallbox_w": (ws.power_w or 0.0) if ws is not None else 0.0,
-             "whirlpool_w": (r.whirlpool_power_w or 0.0) if r.whirlpool_reachable else 0.0}
+             "whirlpool_w": (r.whirlpool_power_w or 0.0) if r.whirlpool_reachable else 0.0,
+             "waterheater_w": (r.waterheater_power_w or 0.0) if r.waterheater_reachable else 0.0}
     ev = consumers.evaluate(r.consumers, r.house_consumption_w, sum(loads.values()))
     avgs = _consumer_avgs()
     for d in ev["devices"]:
@@ -591,6 +601,7 @@ def _serialize_status(result: ControllerResult, cfg: Config) -> dict[str, Any]:
         "meter_today": compute_meter_today(r),
         "zendure": _zendure_status_block(cfg, r),
         "whirlpool": _whirlpool_status_block(cfg, r),
+        "waterheater": _waterheater_status_block(cfg, r),
         "consumers": _consumers_status_block(cfg, result),
         "dishwasher": _dishwasher_status_block(cfg, r.storage_temp_c),
         "device_alerts": _device_alerts(cfg),
@@ -975,6 +986,7 @@ class ConfigUpdate(BaseModel):
     house: dict[str, Any] | None = None
     zendure: dict[str, Any] | None = None
     whirlpool_meter: dict[str, Any] | None = None
+    waterheater_meter: dict[str, Any] | None = None
     consumers: dict[str, Any] | None = None
     dishwasher: dict[str, Any] | None = None
 
@@ -1192,6 +1204,23 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
             block[k] = v
         # Typ, Phase und URL prüft WhirlpoolMeterConfig in der Final-Validierung
 
+    if patch.waterheater_meter:
+        allowed = {"enabled", "url", "type", "name"}
+        bad = set(patch.waterheater_meter) - allowed
+        if bad:
+            raise HTTPException(400, f"waterheater_meter keys not allowed: {sorted(bad)}")
+        block = new_cfg.setdefault("waterheater_meter", {})
+        for k, v in patch.waterheater_meter.items():
+            if k == "enabled":
+                if not isinstance(v, bool):
+                    raise HTTPException(400, "waterheater_meter.enabled must be boolean")
+            elif not isinstance(v, str):
+                raise HTTPException(400, f"waterheater_meter.{k} must be a string")
+            else:
+                v = v.strip()
+            block[k] = v
+        # Typ und URL prüft WaterheaterMeterConfig in der Final-Validierung
+
     if patch.consumers:
         bad = set(patch.consumers) - {"enabled", "small_avg_w", "devices"}
         if bad:
@@ -1288,6 +1317,7 @@ def load_config_from_dict(raw: dict[str, Any]) -> Config:
         parse_consumers,
         parse_dishwasher,
         parse_solax2,
+        parse_waterheater_meter,
         parse_whirlpool_meter,
         parse_zendure,
     )
@@ -1312,6 +1342,7 @@ def load_config_from_dict(raw: dict[str, Any]) -> Config:
         house_max_load_kw=float(raw.get("house_max_load_kw", 11.0)),
         zendure=parse_zendure(raw),
         whirlpool_meter=parse_whirlpool_meter(raw),
+        waterheater_meter=parse_waterheater_meter(raw),
         consumers=parse_consumers(raw),
         dishwasher=parse_dishwasher(raw),
     )

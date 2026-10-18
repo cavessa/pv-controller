@@ -20,6 +20,12 @@
     "name": "Whirlpool",
     "subtract_heater_phase": ""
   },
+  "waterheater_meter": {
+    "enabled": false,
+    "url": "",
+    "type": "shelly_pro_3em",
+    "name": "Durchlauferhitzer"
+  },
   "zendure": {
     "enabled": false,
     "ip": "192.168.x.x",
