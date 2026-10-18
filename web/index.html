@@ -758,15 +758,15 @@
             <label>IP-Adresse<input type="text" name="zendure.ip" placeholder="192.168.x.x"></label>
             <label>Seriennummer (leer = automatisch)<input type="text" name="zendure.sn"></label>
             <label>Bezeichnung<input type="text" name="zendure.name" placeholder="Batterie"></label>
-            <label>Kapazität (Wh)<input type="number" step="100" name="zendure.capacity_wh"></label>
-            <label>Max. Ladeleistung (W)<input type="number" step="50" min="0" max="2400" name="zendure.max_charge_w"></label>
-            <label>Max. Entladeleistung (W)<input type="number" step="50" min="0" max="2400" name="zendure.max_discharge_w"></label>
+            <label>Kapazität (Wh)<input type="number" step="1" name="zendure.capacity_wh"></label>
+            <label>Max. Ladeleistung (W)<input type="number" step="1" min="0" max="2400" name="zendure.max_charge_w"></label>
+            <label>Max. Entladeleistung (W)<input type="number" step="1" min="0" max="2400" name="zendure.max_discharge_w"></label>
             <label>Mindest-Ladestand<select name="zendure.min_soc">
                 <option value="5">5 %</option><option value="10">10 %</option>
                 <option value="15">15 %</option><option value="20">20 %</option></select>
               <small class="field-hint">Entladen stoppt hier, wieder frei ab +2 %. Wird beim Speichern auch ins Gerät geschrieben (Schutz ohne Pi).</small></label>
             <label>Ziel-SoC (%)<input type="number" step="1" min="70" max="100" name="zendure.target_soc"></label>
-            <label>Rest-Netzbezug beim Entladen (W)<input type="number" step="10" min="0" max="300" name="zendure.discharge_target_grid_w">
+            <label>Rest-Netzbezug beim Entladen (W)<input type="number" step="1" min="0" max="300" name="zendure.discharge_target_grid_w">
               <small class="field-hint">Die Batterie deckt nur bis auf diesen Bezug (Puffer): schaltet eine Last ab, geht weniger aus der Batterie ins Netz. 0 = auf 0 W regeln.</small></label>
             <label class="check"><input type="checkbox" name="zendure.control_enabled"> <b>Steuerung aktiv</b> (Laden aus PV-Überschuss, Entladen bei Netzbezug)
               <small class="field-hint">erst einschalten, wenn der Verbindungstest und das acMode-Mapping (1 = Laden, 2 = Entladen) am Gerät geprüft sind. Bei Dry-Run (runtime) wird nur geloggt, nicht geschrieben. Die Kaskade muss aktiv sein.</small></label>
@@ -801,14 +801,14 @@
             <label>Item Tür<input type="text" name="dishwasher.items.door" spellcheck="false"></label>
             <label>Item Restlaufzeit<input type="text" name="dishwasher.items.remaining" spellcheck="false"></label>
             <label>Item Programm-Aktionen (Start)<input type="text" name="dishwasher.items.action" spellcheck="false"></label>
-            <label>Start ab Überschuss (W)<input type="number" step="50" min="100" max="10000" name="dishwasher.start_surplus_w"></label>
+            <label>Start ab Überschuss (W)<input type="number" step="1" min="100" max="10000" name="dishwasher.start_surplus_w"></label>
             <label>… über Minuten<input type="number" step="1" min="1" max="60" name="dishwasher.surplus_minutes"></label>
             <label>Frist<select name="dishwasher.deadline_mode">
                 <option value="latest_start">spätestens starten um</option><option value="finish_by">fertig bis</option></select></label>
             <label>Spätester Start<input type="time" name="dishwasher.latest_start"></label>
             <label>Fertig bis<input type="time" name="dishwasher.finish_by"></label>
             <label class="check"><input type="checkbox" name="dishwasher.heater_yields"> Heizstab steckt für Spüler zurück (Stufe „bis Max“)</label>
-            <label>Leistung in Heizphasen (W, nur Info)<input type="number" step="100" min="0" max="5000" name="dishwasher.assumed_power_w"></label>
+            <label>Leistung in Heizphasen (W, nur Info)<input type="number" step="1" min="0" max="5000" name="dishwasher.assumed_power_w"></label>
             <small class="field-hint">Einräumen, Programm wählen, Fernstart am Gerät drücken. Gestartet wird bei Überschuss (Einspeisung + Batterie-Ladung, Minutenmittel), spätestens zur Frist; „fertig bis“ rechnet mit der gelernten Programmdauer (Startwert Eco50 295 min, sonst 180 min). Fernstart nach der Frist → nächster Tag. Genau ein Startbefehl pro Freigabe.</small>
           </fieldset>
 
@@ -862,12 +862,12 @@
             <label>storage_temp_hysteresis (K)<input type="number" step="0.1" name="heater.storage_temp_hysteresis"></label>
             <label>Winter-Untergrenze (°C)<input type="number" step="0.5" min="20" max="90" name="heater.winter_comfort_min_temp" placeholder="leer = aus (Default 40)"><small class="field-hint">Winterprofil: bis hierher wird der Wasserspeicher VOR der Batterie geheizt, damit er nicht auskühlt (Öl heizt zusätzlich). Leer = Winterprofil ohne diese Stufe.</small></label>
             <label>Komfort-Mindesttemperatur (°C)<input type="number" step="0.5" min="20" max="90" name="heater.comfort_min_temp" placeholder="leer = Sommermodus-Zieltemperatur"><small class="field-hint">Bis hierher hat der Wasserspeicher im Sommerprofil Vorrang vor der Batterie (Kaskade-Stufe „Wasserspeicher bis …“). Leer = Zieltemperatur des Sommermodus.</small></label>
-            <label>min_pv_power_ph1 (W, veraltet – ohne Wirkung)<input type="number" step="50" name="heater.min_pv_power_ph1"></label>
-            <label>min_pv_power_ph2 (W, veraltet – ohne Wirkung)<input type="number" step="50" name="heater.min_pv_power_ph2"></label>
-            <label>min_pv_power_ph3 (W, veraltet – ohne Wirkung)<input type="number" step="50" name="heater.min_pv_power_ph3"></label>
-            <label>Netzbezug-Toleranz (W)<input type="number" step="50" min="0" name="heater.grid_assist_w"><small class="field-hint">Wird von den Einschaltschwellen abgezogen: Bei 500 W startet Phase 1 schon mit 1000 W Überschuss, die fehlenden 500 W kommen aus dem Netz. 0 = aus.</small></label>
-            <label>Mindestlaufzeit je Phase (s)<input type="number" step="10" min="0" name="heater.phase_min_on_s"><small class="field-hint">Eine Phase bleibt nach dem Einschalten mindestens so lange an (außer Max-Temperatur/Sommermodus-Stopp/manuell AUS).</small></label>
-            <label>Mindestpause je Phase (s)<input type="number" step="10" min="0" name="heater.phase_min_off_s"></label>
+            <label>min_pv_power_ph1 (W, veraltet – ohne Wirkung)<input type="number" step="1" name="heater.min_pv_power_ph1"></label>
+            <label>min_pv_power_ph2 (W, veraltet – ohne Wirkung)<input type="number" step="1" name="heater.min_pv_power_ph2"></label>
+            <label>min_pv_power_ph3 (W, veraltet – ohne Wirkung)<input type="number" step="1" name="heater.min_pv_power_ph3"></label>
+            <label>Netzbezug-Toleranz (W)<input type="number" step="1" min="0" name="heater.grid_assist_w"><small class="field-hint">Wird von den Einschaltschwellen abgezogen: Bei 500 W startet Phase 1 schon mit 1000 W Überschuss, die fehlenden 500 W kommen aus dem Netz. 0 = aus.</small></label>
+            <label>Mindestlaufzeit je Phase (s)<input type="number" step="1" min="0" name="heater.phase_min_on_s"><small class="field-hint">Eine Phase bleibt nach dem Einschalten mindestens so lange an (außer Max-Temperatur/Sommermodus-Stopp/manuell AUS).</small></label>
+            <label>Mindestpause je Phase (s)<input type="number" step="1" min="0" name="heater.phase_min_off_s"></label>
             <label>Abschalt-Hysterese (Anteil einer Phase)<input type="number" step="0.05" min="0" max="0.95" name="heater.phase_down_hyst"><small class="field-hint">0,15 = erst abschalten, wenn das Budget mehr als 15 % einer Phase unter der Schwelle liegt.</small></label>
             <label>Budget-Glättung Zuschalten (Minuten)<input type="number" step="1" min="1" name="heater.budget_smooth_min"><small class="field-hint">Mittelwert des Überschuss-Budgets über so viele Minuten, bevor eine Phase zugeschaltet wird (verhindert Flackern bei Wolken; 1 = aus).</small></label>
             <label>Budget-Glättung Abschalten (Minuten)<input type="number" step="1" min="1" name="heater.budget_smooth_down_min"><small class="field-hint">Kürzeres Mittel für das Abschalten: reagiert schneller, wenn der Überschuss wegbricht.</small></label>
@@ -957,7 +957,7 @@
             </select>
           </label>
           <label>Mindest-Überschuss zum Einschalten (W)
-            <input type="number" id="cs-min-surplus" min="0" step="50" placeholder="0">
+            <input type="number" id="cs-min-surplus" min="0" step="1" placeholder="0">
             <small class="field-hint">Kaskade schaltet erst ein wenn Überschuss diesen Wert übersteigt.</small>
           </label>
           <label class="check"><input type="checkbox" id="cs-grid-draw"> Netzbezug erlaubt (allow_grid_draw)</label>
@@ -999,7 +999,7 @@
           <label class="check"><input type="checkbox" id="ss-sched"> Rollladen-Zeitpläne aktiv (der Minuten-Cron fährt fällige Pläne; nur Rollläden mit „Automatik: PV Controller“)</label>
           <label>Frost: automatisches Öffnen aussetzen unter (°C)<input type="number" step="0.5" min="-20" max="10" id="ss-frost"></label>
           <label>Außentemperatur-Item (optional, sonst Tages-Minimum der Prognose)<input type="text" list="hs-items" id="ss-frost-item" autocomplete="off" placeholder="z. B. Aussentemperatur_Temperature"></label>
-          <label>Von Hand bewegt: Zeitpläne so lange aussetzen (min)<input type="number" step="5" min="0" max="600" id="ss-hold"></label>
+          <label>Von Hand bewegt: Zeitpläne so lange aussetzen (min)<input type="number" step="1" min="0" max="600" id="ss-hold"></label>
           <div id="ss-rooms"></div>
           <button type="button" class="btn" id="ss-add">+ Rollladen</button>
           <small class="field-hint">Pflicht: ID, Name, Rollladen-Item (0 = offen, 100 = zu). „Automatik: openHAB-Regel“ heißt: eine openHAB-Regel fährt diesen Rollladen, der PV Controller plant dafür nichts. Tür ohne Kontakt-Item oder mit offenem Kontakt: Schließen nur mit Bestätigung, Gruppenbefehle überspringen sie.</small>

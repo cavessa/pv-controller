@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-18 – Settings ließen sich nicht speichern („Gültigen Wert eingeben“)
+
+- Ursache: `zendure.capacity_wh` hatte `step="100"`; der gespeicherte Wert 8640 Wh ist kein Vielfaches → der Browser blockiert das ganze Formular. Gleiches Risiko bei 11 weiteren Feldern (Lade-/Entladeleistung, Entlade-Puffer, Geschirrspüler, Heizstab-Schwellen, Phasen-Mindestzeiten mit Schritt 10/50/100) sowie Kaskade „Mindest-Überschuss“ (50) und Rollladen-Haltezeit (5).
+- Alle Zahlenfelder jetzt `step="1"` (Grenzen min/max bleiben, Server prüft weiter). Test `tests/test_settings_markup.py`.
+
 ## 2026-10-18 – Geschirrspüler deaktiviert (nur Config)
 
 - `dishwasher.enabled = false` in Prod (17.10., Sicherung `config.json.bak-20261017-vor-dishwasher-aus`) und Dev (18.10., Sicherung `config.json.bak-20261018-vor-dishwasher-aus`). Code bleibt; keine automatischen Starts, Card und Kachel ausgeblendet. Wieder an: Einstellungen → Geschirrspüler.
