@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-18 – Geschirrspüler deaktiviert (nur Config)
+
+- `dishwasher.enabled = false` in Prod (17.10., Sicherung `config.json.bak-20261017-vor-dishwasher-aus`) und Dev (18.10., Sicherung `config.json.bak-20261018-vor-dishwasher-aus`). Code bleibt; keine automatischen Starts, Card und Kachel ausgeblendet. Wieder an: Einstellungen → Geschirrspüler.
+
 ## 2026-10-17 – Geschirrspüler (Home Connect) bei PV-Überschuss starten, spätestens zur Frist
 
 Anlass: Bosch-Geschirrspüler (Eco50 ~4 h 55 min, Heizphasen ~2 kW) soll mit PV-Strom laufen. Ablauf: einräumen, Programm wählen, Fernstart am Gerät drücken – der PV Controller startet ihn.
