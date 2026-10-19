@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-19 – Dashboard: Verbraucher-Card direkt unter Hausverbrauch
+
+- Die Card „Verbraucher“ steht jetzt in der linken Spalte unmittelbar unter „Hausverbrauch“ (vorher rechte Spalte unter PV/Wallbox). Nur Verschiebung in `web/index.html`, keine Logik geändert.
+- Fix: Whirlpool- und Durchlauferhitzer-Card blieben bei deaktiviertem Zähler sichtbar (Klasse `hidden` ohne CSS-Regel, `.card` überschrieb sie). Regel in `web/styles.css` ergänzt (`styles.css?v=98` gegen Browser-Cache).
+- Durchlauferhitzer-Card: Zusatz „· FeWo.02“ hinter dem Titel (`web/index.html`).
+
 ## 2026-10-18 – Durchlauferhitzer (Shelly Pro 3EM, nur lesen)
 
 Anlass: Der Durchlauferhitzer hängt jetzt in der FeVo 02 an einem eigenen Shelly Pro 3EM (192.168.2.76).

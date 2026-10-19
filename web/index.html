@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/static/styles.css?v=97">
+  <link rel="stylesheet" href="/static/styles.css?v=98">
 </head>
 <body>
   <div class="app-shell">
@@ -86,6 +86,15 @@
           </div>
           <canvas id="hausverbrauch-sparkline" width="110" height="50" class="hv-sparkline"></canvas>
         </div>
+      </div>
+
+      <div class="card hidden" id="consumers-card">
+        <div class="card-head">
+          <h2>Verbraucher</h2>
+          <span class="house-max" id="cons-sum"></span>
+        </div>
+        <div id="cons-list" class="cons-list"></div>
+        <div class="house-foot" id="cons-foot"></div>
       </div>
 
 
@@ -170,7 +179,7 @@
 
       <div class="card hidden" id="waterheater-card">
         <div class="card-head">
-          <h2><span id="wh-title">Durchlauferhitzer</span></h2>
+          <h2><span id="wh-title">Durchlauferhitzer</span> <span class="cascade-profile-label">· FeWo.02</span></h2>
           <span class="badge" id="wh-status">–</span>
         </div>
         <div class="big-temp" id="wh-power">–</div>
@@ -319,14 +328,6 @@
           </div>
           <div class="form-msg" id="dw-msg"></div>
           <div class="house-foot" id="dw-foot"></div>
-        </div>
-        <div class="card hidden" id="consumers-card">
-          <div class="card-head">
-            <h2>Verbraucher</h2>
-            <span class="house-max" id="cons-sum"></span>
-          </div>
-          <div id="cons-list" class="cons-list"></div>
-          <div class="house-foot" id="cons-foot"></div>
         </div>
         <div class="card" id="meter-card">
         <div class="card-head">
