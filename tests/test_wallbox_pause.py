@@ -59,6 +59,31 @@ class PauseTest(unittest.TestCase):
         self.assertEqual(set(codes), {"wallbox_paused_priority"})
 
 
+class CarIdleTest(unittest.TestCase):
+    def test_car_not_charging_never_pauses(self):
+        # car=3/4 (fertig/vom Fahrzeug pausiert): kein Zähler, keine Pause – auch nach 30 min
+        st = {}
+        for m in range(30):
+            st, code, _ = wp.step(st, T0 + timedelta(minutes=m), 0, MIN_W, charging=False)
+            self.assertEqual(code, "wallbox_car_idle")
+        self.assertFalse(st["paused"])
+        self.assertIsNone(st["below_since"])
+
+    def test_idle_resets_counter(self):
+        st, _ = run({}, range(4), 0)                       # 4 min lädt das Auto zu viel
+        st, code, _ = wp.step(st, T0 + timedelta(minutes=4), 0, MIN_W, charging=False)
+        st, codes = run(st, range(5, 9), 0)                # lädt wieder: Zähler von vorn
+        self.assertFalse(st["paused"])
+        self.assertEqual(codes[-1], "wallbox_pause_pending")
+
+    def test_own_pause_stays_while_car_idle(self):
+        # nach eigener Pause meldet der go-e car=4 – Wiederanlauf-Logik läuft trotzdem
+        st, _ = run({}, range(6), 0)
+        st, code, _ = wp.step(st, T0 + timedelta(minutes=6), 0, MIN_W, charging=False)
+        self.assertTrue(st["paused"])
+        self.assertEqual(code, "wallbox_paused_priority")
+
+
 class ReasonTextTest(unittest.TestCase):
     def test_codes_known_and_headline(self):
         import reasons
@@ -70,6 +95,8 @@ class ReasonTextTest(unittest.TestCase):
                             "code": "wallbox_paused_priority", "data": {"rest_w": 900, "min_w": 1380}}}
         st = _stage("wallbox", devs, {}, None, None, 64.0, True)
         self.assertEqual(st[2], "Wallbox pausiert – Batterie hat Vorrang (Rest 0,9 kW < 1,4 kW).")
+        devs["wallbox"].update(code="wallbox_car_idle")
+        self.assertEqual(_stage("wallbox", devs, {}, None, None, 64.0, True)[2], "Auto fertig/pausiert (Fahrzeug).")
 
 
 class ControllerTest(unittest.TestCase):
@@ -108,7 +135,20 @@ class ControllerTest(unittest.TestCase):
 
     def test_unplugged_never_paused(self):
         d = self.decide(self.fresh(True), frc=1, car=1, by_pv=True)
-        self.assertEqual(d.target_force_state, 0)
+        self.assertEqual((d.action.value, d.target_force_state), ("release", 0))
+
+    def test_unplugged_foreign_pause_untouched(self):
+        d = self.decide({}, frc=1, car=1, by_pv=False)
+        self.assertEqual((d.action.value, d.target_force_state), ("unchanged", 1))
+
+    def test_foreign_pause_untouched_while_plugged(self):
+        d = self.decide(self.fresh(False), frc=1, car=4, by_pv=False)
+        self.assertEqual(d.action.value, "unchanged")
+        self.assertIn("App/Wallbox", d.reason)
+
+    def test_car_idle_no_switching(self):
+        d = self.decide(self.fresh(False), frc=0, car=4)
+        self.assertEqual(d.action.value, "unchanged")
 
     def test_manual_mode_releases_our_pause_only(self):
         d = self.decide(self.fresh(True), frc=1, eco=False, by_pv=True)
@@ -127,7 +167,7 @@ from tests.test_decisions import TempDb  # noqa: E402
 class CascadeWallboxTest(TempDb):
     """14:29-Fall durch die ganze Kaskade: Batterie 48 %, ~0,9 kW Rest, Auto lädt 1,46 kW mit 6 A."""
 
-    def run_once(self, cfg, main_w, wb_w, minutes_ago_state=None):
+    def run_once(self, cfg, main_w, wb_w, car=2):
         from types import SimpleNamespace
         from clients.zendure_client import ZendureStatus
         from cascade_service import CascadeService
@@ -139,7 +179,7 @@ class CascadeWallboxTest(TempDb):
         svc.solax = SimpleNamespace(get_pv_power_w=lambda: 2100.0, get_pv_ac_w=lambda: 2100.0)
         svc.solax2 = None
         amps = []
-        raw = {"lmo": 4, "car": 2, "amp": 6, "frc": 0, "nrg": [0] * 11 + [wb_w]}
+        raw = {"lmo": 4, "car": car, "amp": 6, "frc": 0, "nrg": [0] * 11 + [wb_w]}
         svc.goe = SimpleNamespace(get_status=lambda: raw, set_amp=lambda a: amps.append(a))
         svc.goe_battery = svc.goe
         if svc.zendure_ctl is not None:
@@ -164,3 +204,12 @@ class CascadeWallboxTest(TempDb):
         self.assertEqual(dev["wallbox"]["code"], "wallbox_paused_priority")
         self.assertTrue(st["paused"])
         self.assertIn("Batterie hat Vorrang", dev["wallbox"]["reason"])
+
+    def test_car_idle_no_pause(self):
+        cfg = self.config(runtime={"dry_run": True},
+                          wallbox={"enabled": True, "url": "http://x", "eco_phases": 1, "eco_amps": 16},
+                          zendure={"enabled": True, "ip": "x", "control_enabled": True})
+        dev, st, _ = self.run_once(cfg, -900.0, 0.0, car=4)     # 14:45-Fall: car=4, 0 W
+        self.assertEqual(dev["wallbox"]["code"], "wallbox_car_idle")
+        self.assertIsNone(st["below_since"])
+        self.assertFalse(st["paused"])

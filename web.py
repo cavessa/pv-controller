@@ -44,6 +44,7 @@ from clients.goe_client import GoeClient, GoeError
 from config import Config, load_config
 from controller import ControllerMode, run_controller
 from db import (
+    get_wallbox_frc_by_pv,
     PROTECTED_CASCADE_IDS,
     VALID_CASCADE_TYPES,
     clear_cascade_override,
@@ -276,6 +277,7 @@ def _wallbox_status_to_dict(s: Optional[WallboxStatus]) -> Optional[dict[str, An
         "psm": s.psm,
         "power_w": s.power_w,
         "charging": s.car_state == 2,
+        "paused_by_pv": s.force_state == 1 and get_wallbox_frc_by_pv(),
         "energy_session_wh": s.energy_session_wh,
         "energy_total_wh": s.energy_total_wh,
         "charge_duration_s": s.charge_duration_s,

@@ -326,11 +326,14 @@ function renderStatus(s) {
     } else if (wbStatus.car === 1) {
       stateLabel = "kein Auto angesteckt";
       mode = "idle";
-    } else if (wbStatus.car === 3) {
-      stateLabel = "wartet (Freigabe?)";
+    } else if (wbStatus.paused_by_pv) {
+      stateLabel = "pausiert durch PV Controller – Batterie hat Vorrang";
       mode = "warn";
-    } else if (wbStatus.car === 4) {
-      stateLabel = "fertig geladen";
+    } else if (wbStatus.frc === 1) {
+      stateLabel = "pausiert (App/Wallbox)";
+      mode = "warn";
+    } else if (wbStatus.car === 3 || wbStatus.car === 4) {
+      stateLabel = "Auto fertig/pausiert (Fahrzeug)";
       mode = "done";
     } else {
       stateLabel = `car=${wbStatus.car}`;
@@ -414,7 +417,7 @@ function renderStatus(s) {
         banner.classIfChanged = "wb-banner";
         banner.textIfChanged = `Wallbox freigegeben — kein Auto lädt (Überschuss: ${surplusKw})`;
       }
-    } else if (wbDec.target_force_state === 1 && wbStatus.fup) {
+    } else if (wbStatus.paused_by_pv) {
       banner.classIfChanged = "wb-banner warn";
       banner.textIfChanged = wbDec.reason || "Wallbox pausiert – Batterie hat Vorrang";
     } else if (wbDec.action === "skipped") {
@@ -534,7 +537,8 @@ function renderEnergyFlow(heater, wb, cs, zd, wp, wh) {
         wbS = "Auto lädt";
       } else {
         wbV = wbSt.frc === 1 ? "pausiert" : wbSt.frc === 0 ? "freigeg." : `frc=${wbSt.frc}`;
-        wbS = wbSt.fup ? "Eco/PV" : "manuell";
+        wbS = wbSt.paused_by_pv ? "PV-Controller" : wbSt.frc === 1 ? "App/Wallbox"
+          : (wbSt.car === 3 || wbSt.car === 4) ? "Fahrzeug" : wbSt.fup ? "Eco/PV" : "manuell";
       }
     }
     bots.push({ icon: "🚗", label: "WALLBOX", value: wbV, sub: wbS, aktiv: wbOn, flow: wbOn, target: "wallbox-card" });

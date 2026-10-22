@@ -662,7 +662,15 @@ class Controller:
                 reason=(f"Wallbox pausiert – Batterie hat Vorrang (Rest {_kw(pause.get('rest_w'))} "
                         f"< {_kw(pause.get('min_w'))})."),
             )
+        if status.force_state == 1 and not get_wallbox_frc_by_pv():
+            # Pause von App/Wallbox (nicht vom PV-Controller) – nicht anfassen
+            return status, WallboxDecision(
+                action=WallboxAction.UNCHANGED,
+                target_force_state=1,
+                reason="Wallbox pausiert (App/Wallbox, nicht vom PV-Controller) – keine Änderung.",
+            )
         if status.force_state != 0:
+            # u. a. abgesteckt (car=1) oder Pause abgelaufen: eigene Pause sofort aufheben
             return status, WallboxDecision(
                 action=WallboxAction.RELEASE,
                 target_force_state=0,

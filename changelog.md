@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-22 – Wallbox-Pause nur bei ladendem Auto, abgesteckt sofort frei, fremde Pausen unberührt
+
+Anlass: 14:45 zählte die Pause hoch, obwohl der go-e seit 14:31 `car=4` meldete (0 W, fertig bzw. vom Fahrzeug pausiert) – sie hätte ~14:50 unnötig `frc=1` gesetzt.
+- `wallbox_pause.step(charging=…)`: der Pause-Zähler läuft nur bei `car=2`; bei `car=3/4` ohne eigene Pause wird nichts geschaltet (Code `wallbox_car_idle`). Eine eigene Pause läuft weiter wie bisher (der go-e meldet dann selbst `car=4`).
+- Controller: Auto abgesteckt (`car=1`) → eigene Pause sofort aufheben (`frc=0`). Eine fremd gesetzte Pause (`frc=1` aus App/Wallbox, Merker `wallbox_frc_by_pv` nicht gesetzt) wird nicht mehr angefasst – vorher hat der Eco-Zweig jedes `frc≠0` auf 0 gesetzt.
+- Anzeige: Card „pausiert durch PV Controller – Batterie hat Vorrang“ vs. „Auto fertig/pausiert (Fahrzeug)“ bzw. „pausiert (App/Wallbox)“; Energiefluss-Kachel mit Quelle; `/api/status` liefert `wallbox.status.paused_by_pv` (`app.js?v=20261022b`).
+- Tests: `tests/test_wallbox_pause.py` (car=4 ohne Pause, Zähler-Reset, eigene Pause bei car=4, Abstecken, fremde Pause, Kaskade 14:45-Fall).
+
 ## 2026-10-22 – Wallbox pausiert im PV-Modus, wenn die Batterie (Profil davor) den Überschuss braucht
 
 Anlass: 14:25–14:30 lud das Auto mit 6 A (1,4–1,9 kW) bei 564–1000 W Netzbezug; die Batterie (48 %, Winterprofil ganz oben) bekam 0 W, weil sie nur nimmt, was gerade eingespeist wird. Geprüft: Die Wallbox-Sperre der Batterie sperrt **nur das Entladen** (`zendure_control.plan`), Laden war erlaubt – Ursache war allein die Wallbox. Eine Pausen-Logik gab es nicht mehr (seit 22.07.2026 immer `frc=0`, die Kaskaden-Entscheidung „Wallbox aus“ setzte nur ein DB-Flag).

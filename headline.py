@@ -97,6 +97,8 @@ def _stage(key: str, devs: dict[str, dict], e: dict, temp: Optional[float], comf
         name = "Wallbox"
         if wallbox_connected is False:
             return DONE, name, ""
+    if d.get("code") == "wallbox_car_idle":
+        return DONE, name, "Auto fertig/pausiert (Fahrzeug)."
     if d.get("code") in ("wallbox_paused_priority", "wallbox_resume_pending"):
         data = d.get("data") or {}
         return WAITING, name, (f"Wallbox pausiert – Batterie hat Vorrang (Rest {_kw(data.get('rest_w'))} "

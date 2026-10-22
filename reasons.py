@@ -77,6 +77,7 @@ REASONS: dict[str, str] = {
     "wallbox_paused_priority": "Wallbox pausiert – Batterie hat Vorrang (Rest {rest_w} W < {min_w} W)",
     "wallbox_pause_pending": "Rest {rest_w} W unter {min_w} W – Wallbox lädt mit Mindeststrom, Pause in {remaining_s} s",
     "wallbox_resume_pending": "Wallbox pausiert – Rest {rest_w} W reicht, Start in {remaining_s} s",
+    "wallbox_car_idle": "Auto fertig oder vom Fahrzeug pausiert – keine PV-Pause nötig",
     "wallbox_charging_budget": "Rest {rest_w} W ≥ {min_w} W – Wallbox lädt mit passendem Strom",
     # ── Geräte ───────────────────────────────────────────────────────────────
     "device_unreachable": "Gerät nicht erreichbar – keine Änderung",

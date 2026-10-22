@@ -4,7 +4,9 @@ Reine Logik (testbar, keine I/O). ``budget_w`` ist, was der Wallbox nach den Stu
 (Kaskaden-Rest an ihrer Position, ihre eigene Ladeleistung ist darin schon zurückgerechnet).
 
 - Budget ≥ Mindestleistung (6 A × Phasen × 230 V) → laden (Strom 6–16 A setzt die Kaskade).
-- Budget darunter **5 min am Stück** → pausieren (go-e ``frc=1``), Code ``wallbox_paused_priority``.
+- Budget darunter **5 min am Stück, während das Auto lädt** (go-e ``car=2``) → pausieren (go-e ``frc=1``),
+  Code ``wallbox_paused_priority``. Lädt das Auto nicht (``car=3/4``: fertig oder vom Fahrzeug pausiert),
+  zählt nichts und es wird nichts geschaltet (``wallbox_car_idle``).
 - Wieder starten erst nach **5 min am Stück** Budget ≥ Mindestleistung; danach mindestens **10 min** laden.
 - Wenige Umschaltungen sind Absicht: häufiges ``frc``-Umschalten ließ das Auto früher (Juli 2026) am
   nächsten Tag erst nach Aus-/Einstecken wieder laden. Beim Abstecken setzt der Controller ``frc=0``.
@@ -29,10 +31,12 @@ def _since(ts: Optional[str], now: datetime) -> Optional[float]:
         return None
 
 
-def step(state: dict, now: datetime, budget_w: float, min_w: float) -> tuple[dict, str, dict]:
+def step(state: dict, now: datetime, budget_w: float, min_w: float,
+         charging: bool = True) -> tuple[dict, str, dict]:
     """Zustand fortschreiben → (neuer Zustand, Grund-Code, Zahlen).
 
-    ``state``: ``paused``, ``below_since``, ``above_since``, ``run_since`` (ISO-Zeiten oder None)."""
+    ``state``: ``paused``, ``below_since``, ``above_since``, ``run_since`` (ISO-Zeiten oder None).
+    ``charging``: Auto lädt gerade (go-e ``car=2``) – nur dann zählt die Pause-Verzögerung."""
     st = {k: state.get(k) for k in ("paused", "below_since", "above_since", "run_since")}
     st["paused"] = bool(st["paused"])
     iso = now.isoformat(timespec="seconds")
@@ -40,6 +44,9 @@ def step(state: dict, now: datetime, budget_w: float, min_w: float) -> tuple[dic
     data = {"rest_w": int(round(budget_w)), "min_w": int(round(min_w))}
     if not st["paused"]:
         st["above_since"] = None
+        if not charging:
+            st["below_since"] = None
+            return st, "wallbox_car_idle", data
         if enough:
             st["below_since"] = None
             return st, "wallbox_charging_budget", data

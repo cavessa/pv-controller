@@ -512,14 +512,14 @@ class CascadeService:
         age = self._minutes_since(old.get("at")) * 60
         if age > wallbox_pause.STALE_S:
             old = {}                                     # Kaskade lief nicht: neu anfangen
-        st, code, data = wallbox_pause.step(old, now, remaining, min_w)
+        st, code, data = wallbox_pause.step(old, now, remaining, min_w, charging=raw.get("car") == 2)
         set_wallbox_pause({**st, "rest_w": data["rest_w"], "min_w": data["min_w"]})
         actual = float(actual_device_w.get(device["id"]) or 0.0)
         paused = st["paused"]
         if paused:
             action = "turn_off" if not old.get("paused") else "keep_off"
         else:
-            action = "turn_on" if old.get("paused") else "keep_on"
+            action = "turn_on" if old.get("paused") else ("keep_off" if code == "wallbox_car_idle" else "keep_on")
             self._limit_wallbox_amp(remaining)
         if bool(device["is_on"]) == paused:
             update_cascade_device_state(device["id"], not paused,
@@ -533,6 +533,8 @@ class CascadeService:
                 reason += f", Start frühestens in {data['remaining_s']} s"
         elif code == "wallbox_resume_pending":
             reason = f"Wallbox pausiert – Rest {kw(rest)} ≥ {kw(mn)}, Start in {data['remaining_s']} s"
+        elif code == "wallbox_car_idle":
+            reason = "Auto fertig/pausiert (Fahrzeug) – keine PV-Pause nötig"
         elif code == "wallbox_pause_pending":
             reason = f"Rest {kw(rest)} < {kw(mn)} – Wallbox lädt mit Mindeststrom, Pause in {data['remaining_s']} s"
         else:

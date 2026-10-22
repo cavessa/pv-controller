@@ -504,8 +504,13 @@ class WallboxTextTest(TempDb):
             _s, d = c._decide_wallbox(status, err)
             actions.append(d.action)
             self.assertNotRegex(d.reason, r"(?i)\b(is not|will not|disabled|initialised|could not|unplugged|switching)\b")
+        # frc=1 ohne eigenen Merker = Pause aus App/Wallbox → nicht anfassen (seit 22.10.2026)
         self.assertEqual(actions, [WallboxAction.SKIPPED, WallboxAction.ERROR, WallboxAction.ERROR,
-                                   WallboxAction.RELEASE, WallboxAction.UNCHANGED])
+                                   WallboxAction.UNCHANGED, WallboxAction.UNCHANGED])
+        db.set_wallbox_frc_by_pv(True)                  # eigene Pause, Kaskade will nicht mehr pausieren
+        _s, d = c._decide_wallbox(WallboxStatus(pv_surplus_active=True, force_state=1, car_state=3), None)
+        self.assertEqual((d.action, d.target_force_state), (WallboxAction.RELEASE, 0))
+        db.set_wallbox_frc_by_pv(False)
         _s, d = c._decide_wallbox(st, None)
         self.assertIn("nicht im PV-Überschussmodus", d.reason)
         self.assertEqual((d.target_logic_mode, d.target_amp), (4, c.cfg.wallbox.eco_amps))   # Auto-Rückstellung bleibt
