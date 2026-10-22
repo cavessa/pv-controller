@@ -295,7 +295,8 @@ class CascadeCodeTest(TempDb):
         self.assertEqual((h["data"]["raw_w"], h["data"]["budget_w"], h["data"]["smooth_min"]), (3000, 300, 10))
 
     def test_other_devices(self):
-        cfg = self.config(runtime={"dry_run": True})
+        # eco_amps 7 → Wallbox-Nennleistung 7 × 230 = 1610 W (wie der Seed-Wert); Test prüft das eBike
+        cfg = self.config(runtime={"dry_run": True}, wallbox={"eco_amps": 7})
         db.create_cascade_device("ebike", "E-Bike", "shelly_gen2", 180, 9)
         run = lambda main, heater=0.0: {d["id"]: d for d in self.cascade(cfg, main=main, heater=heater)
                                         .run_cascade()["devices"]}["ebike"]
