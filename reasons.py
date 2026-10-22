@@ -74,6 +74,10 @@ REASONS: dict[str, str] = {
     "charging": "Auto lädt mit {power_w} W im PV-Überschussmodus (Eco)",
     "charging_manual": "Auto lädt mit {power_w} W im normalen Modus – nicht PV-geführt, wird nicht angefasst",
     "wallbox_released": "Wallbox freigegeben – sie regelt den Ladestrom selbst nach Überschuss",
+    "wallbox_paused_priority": "Wallbox pausiert – Batterie hat Vorrang (Rest {rest_w} W < {min_w} W)",
+    "wallbox_pause_pending": "Rest {rest_w} W unter {min_w} W – Wallbox lädt mit Mindeststrom, Pause in {remaining_s} s",
+    "wallbox_resume_pending": "Wallbox pausiert – Rest {rest_w} W reicht, Start in {remaining_s} s",
+    "wallbox_charging_budget": "Rest {rest_w} W ≥ {min_w} W – Wallbox lädt mit passendem Strom",
     # ── Geräte ───────────────────────────────────────────────────────────────
     "device_unreachable": "Gerät nicht erreichbar – keine Änderung",
     "auto_disabled": "Nach wiederholten Fehlern automatisch deaktiviert",

@@ -39,6 +39,9 @@ from db import (
     device_health_update,
     get_cascade_budget,
     get_heater_thermostat,
+    get_wallbox_frc_by_pv,
+    get_wallbox_pause,
+    set_wallbox_frc_by_pv,
     get_last_phase_changes,
     get_last_phase_states,
     log_phase_change,
@@ -48,6 +51,7 @@ from db import (
     smooth_heater_budgets,
 )
 from heater_phases import HeaterParams, PhaseIn, decide_phases, thermostat_step
+from wallbox_pause import STALE_S as WALLBOX_PAUSE_STALE_S
 from heater_power import PhaseRead
 from heater_power import resolve as resolve_heater_power
 from models import (
@@ -69,7 +73,8 @@ SHELLY_READ_TIMEOUT_S = 1.5
 DEVICE_ALERT_MIN = 10
 
 
-def wallbox_reason_code(enabled: bool, status: Optional[WallboxStatus], action: WallboxAction) -> tuple[str, dict]:
+def wallbox_reason_code(enabled: bool, status: Optional[WallboxStatus], action: WallboxAction,
+                        pv_paused: bool = False) -> tuple[str, dict]:
     """Grund-Code zur Wallbox (reasons.py) – nur Protokoll, die Entscheidung fällt in ``_decide_wallbox``.
 
     go-e ``car``: 1 = kein Auto, 2 = lädt, 3 = wartet aufs Auto, 4 = Laden beendet.
@@ -82,6 +87,8 @@ def wallbox_reason_code(enabled: bool, status: Optional[WallboxStatus], action: 
             "phases": {1: 1, 2: 3}.get(status.psm), "power_w": None if status.power_w is None else int(status.power_w)}
     if status.car_state == 1:
         return "not_connected", data
+    if pv_paused:
+        return "wallbox_paused_priority", data
     charging = status.car_state == 2 and (status.power_w or 0) > 100
     if not status.pv_surplus_active:
         return ("charging_manual" if charging else "wallbox_not_eco_mode"), data
@@ -92,6 +99,13 @@ def wallbox_reason_code(enabled: bool, status: Optional[WallboxStatus], action: 
     if action is WallboxAction.RELEASE:
         return "wallbox_released", data
     return "waiting_for_car", data
+
+
+def _kw(w) -> str:
+    try:
+        return f"{float(w) / 1000:.1f} kW".replace(".", ",")
+    except (TypeError, ValueError):
+        return "?"
 
 
 class ControllerMode(str, Enum):
@@ -609,6 +623,13 @@ class Controller:
             )
 
         if cfg.only_control_when_pv_surplus_active and not status.pv_surplus_active:
+            if status.force_state == 1 and get_wallbox_frc_by_pv():
+                # unsere PV-Pause darf manuelles Laden (Basic/Sofort) nie blockieren
+                return status, WallboxDecision(
+                    action=WallboxAction.RELEASE,
+                    target_force_state=0,
+                    reason="Nicht im PV-Überschussmodus – PV-Pause aufgehoben (frc=0).",
+                )
             decision = WallboxDecision(
                 action=WallboxAction.SKIPPED,
                 target_force_state=None,
@@ -627,6 +648,20 @@ class Controller:
                 )
             return status, decision
 
+        pause = get_wallbox_pause()
+        fresh = False
+        try:
+            fresh = (datetime.now() - datetime.fromisoformat(pause["at"])).total_seconds() <= WALLBOX_PAUSE_STALE_S
+        except (KeyError, TypeError, ValueError):
+            pass
+        if status.car_state != 1 and fresh and pause.get("paused"):
+            # Kaskade: Rest nach Batterie/eBike/Wasser seit 5 min unter dem Mindeststrom → Laden pausieren
+            return status, WallboxDecision(
+                action=WallboxAction.PAUSE if status.force_state != 1 else WallboxAction.UNCHANGED,
+                target_force_state=1,
+                reason=(f"Wallbox pausiert – Batterie hat Vorrang (Rest {_kw(pause.get('rest_w'))} "
+                        f"< {_kw(pause.get('min_w'))})."),
+            )
         if status.force_state != 0:
             return status, WallboxDecision(
                 action=WallboxAction.RELEASE,
@@ -672,6 +707,7 @@ class Controller:
             else:
                 try:
                     self.goe.set_force_state(target)
+                    set_wallbox_frc_by_pv(target == 1)
                     decision.executed = True
                     log.info("go-e forceState auf %d gesetzt.", target)
                 except (GoeError, ValueError) as e:
@@ -1001,7 +1037,9 @@ class Controller:
             wallbox_status,
             wallbox_read_error,
         )
-        decision.code, decision.data = wallbox_reason_code(self.cfg.wallbox.enabled, status, decision.action)
+        decision.code, decision.data = wallbox_reason_code(
+            self.cfg.wallbox.enabled, status, decision.action,
+            pv_paused=decision.target_force_state == 1 and status is not None and bool(status.pv_surplus_active))
 
         self._execute_wallbox(decision)
         self._execute_lmo(decision)

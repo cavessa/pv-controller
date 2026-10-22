@@ -23,13 +23,14 @@ from typing import Optional
 
 from clients.goe_client import BATTERY_CHECK_TIMEOUT_S, GoeClient, GoeError, car_charging, charging_now
 from clients.shelly_cascade_client import ShellyCascadeClient, ShellyCascadeError
-from cascade_plan import WALLBOX_MIN_A, wallbox_amp_cap, BATTERY, HEATER_MAX, HEATER_MIN, HEATER_STAGES, HeaterCtx, walk
+from cascade_plan import WALLBOX_MIN_A, WALLBOX_VOLT, wallbox_amp_cap, BATTERY, HEATER_MAX, HEATER_MIN, HEATER_STAGES, HeaterCtx, walk
 from clients.shelly_client import Shelly3EMClient, ShellyPlugClient, ShellyStorageTempClient
 from clients.solax_client import SolaxClient
 from clients.zendure_client import ZendureClient
 from zendure_control import WRITE_DELTA_W
 from heater_phases import RELEASE_DROP_C, THERMOSTAT_OPEN_W
 import meter_ring
+import wallbox_pause
 from config import Config
 from heater_power import PhaseRead
 from heater_power import resolve as resolve_heater_power
@@ -53,6 +54,8 @@ from db import (
     update_cascade_device,
     update_cascade_device_live_status,
     update_cascade_device_state,
+    get_wallbox_pause,
+    set_wallbox_pause,
 )
 
 _MAX_ERRORS = 5
@@ -280,12 +283,16 @@ class CascadeService:
 
         def device_fn(key: str, remaining: float) -> float:
             device = by_id[key]
+            if device["type"] == "wallbox":
+                handled = self._handle_wallbox_pv(device, int(remaining), surplus, actual_device_w)
+                if handled is not None:
+                    new_remaining, result = handled
+                    results.append(result)
+                    return new_remaining
             new_remaining, reason = self._handle_device(
                 device, int(remaining), surplus, effective_surplus, actual_device_w
             )
             results.append(self._result(device, reason, *self._last_code))
-            if device["type"] == "wallbox":
-                self._limit_wallbox_amp(int(remaining))
             return new_remaining
 
         def heater_fn(gross_w: int, battery_w: int, remaining_w: int) -> None:
@@ -484,6 +491,56 @@ class CascadeService:
             return None
         nrg = raw.get("nrg")
         return max(0.0, float(nrg[11])) if isinstance(nrg, list) and len(nrg) >= 12 else 0.0
+
+    def _handle_wallbox_pv(
+        self, device: dict, remaining: int, surplus: int, actual_device_w: dict[str, float],
+    ) -> Optional[tuple[int, dict]]:
+        """Wallbox im PV-/Eco-Modus mit angestecktem Auto: Budget = Rest nach den Stufen davor.
+
+        Laden mit passendem Strom (6–16 A) oder nach 5 min zu wenig pausieren (wallbox_pause.step; den
+        go-e-``frc`` setzt der Controller). Sonst (kein Eco, kein Auto, go-e nicht lesbar) None → alter Weg,
+        Pausen-Zustand zurückgesetzt."""
+        raw = self._goe_raw()
+        if self.goe is None or raw is None or raw.get("lmo") != 4 or raw.get("car") in (None, 1):
+            if get_wallbox_pause():
+                set_wallbox_pause({})
+            return None
+        wb = self.cfg.wallbox
+        min_w = WALLBOX_MIN_A * max(1, int(wb.eco_phases)) * WALLBOX_VOLT
+        now = datetime.now()
+        old = get_wallbox_pause()
+        age = self._minutes_since(old.get("at")) * 60
+        if age > wallbox_pause.STALE_S:
+            old = {}                                     # Kaskade lief nicht: neu anfangen
+        st, code, data = wallbox_pause.step(old, now, remaining, min_w)
+        set_wallbox_pause({**st, "rest_w": data["rest_w"], "min_w": data["min_w"]})
+        actual = float(actual_device_w.get(device["id"]) or 0.0)
+        paused = st["paused"]
+        if paused:
+            action = "turn_off" if not old.get("paused") else "keep_off"
+        else:
+            action = "turn_on" if old.get("paused") else "keep_on"
+            self._limit_wallbox_amp(remaining)
+        if bool(device["is_on"]) == paused:
+            update_cascade_device_state(device["id"], not paused,
+                                        turned_on_at=None if paused else now, turned_off_at=now if paused else None)
+            device = {**device, "is_on": not paused}
+        kw = lambda w: f"{w / 1000:.1f}".replace(".", ",") + " kW"
+        rest, mn = data["rest_w"], data["min_w"]
+        if code == "wallbox_paused_priority":
+            reason = f"Wallbox pausiert – Batterie hat Vorrang (Rest {kw(rest)} < {kw(mn)})"
+            if "remaining_s" in data:
+                reason += f", Start frühestens in {data['remaining_s']} s"
+        elif code == "wallbox_resume_pending":
+            reason = f"Wallbox pausiert – Rest {kw(rest)} ≥ {kw(mn)}, Start in {data['remaining_s']} s"
+        elif code == "wallbox_pause_pending":
+            reason = f"Rest {kw(rest)} < {kw(mn)} – Wallbox lädt mit Mindeststrom, Pause in {data['remaining_s']} s"
+        else:
+            reason = f"Rest {kw(rest)} ≥ {kw(mn)} – Wallbox lädt mit passendem Strom"
+        data["power_w"] = int(actual)
+        self._log(surplus, device["id"], action, reason, int(remaining - actual))
+        log.info("Kaskade: Wallbox → %s, remaining=%d W | %s", action, remaining - actual, reason)
+        return int(remaining - actual), self._result(device, reason, action, code, data)
 
     def _limit_wallbox_amp(self, available_w: int) -> None:
         """Ladestrom des go-e (Eco, lmo=4) auf das begrenzen, was der Wallbox nach Batterie/Heizstab zusteht.

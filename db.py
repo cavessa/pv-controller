@@ -1541,6 +1541,38 @@ def get_cascade_settings() -> dict:
     }
 
 
+def get_wallbox_pause() -> dict:
+    """Zustand der Wallbox-Pause (wallbox_pause.step) inkl. ``at`` (letzter Kaskadenlauf); leer ohne Eintrag."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute("SELECT value FROM cascade_settings WHERE key = 'wallbox_pause'").fetchone()
+        return json.loads(row[0]) if row and row[0] else {}
+    except (sqlite3.Error, ValueError):
+        return {}
+
+
+def set_wallbox_pause(state: dict) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("INSERT OR REPLACE INTO cascade_settings (key, value) VALUES ('wallbox_pause', ?)",
+                     (json.dumps({**state, "at": datetime.now().isoformat(timespec="seconds")}),))
+
+
+def get_wallbox_frc_by_pv() -> bool:
+    """Hat der Controller die Wallbox für die PV-Priorität pausiert (frc=1)? Nur dann gibt er sie wieder frei."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute("SELECT value FROM cascade_settings WHERE key = 'wallbox_frc_by_pv'").fetchone()
+        return bool(row and row[0] == "1")
+    except sqlite3.Error:
+        return False
+
+
+def set_wallbox_frc_by_pv(on: bool) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("INSERT OR REPLACE INTO cascade_settings (key, value) VALUES ('wallbox_frc_by_pv', ?)",
+                     ("1" if on else "0",))
+
+
 def update_cascade_settings(**kwargs: object) -> dict:
     allowed = {"cascade_enabled", "polling_interval_s", "min_surplus_watts", "allow_grid_draw"}
     with sqlite3.connect(DB_PATH) as conn:

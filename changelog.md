@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-22 – Wallbox pausiert im PV-Modus, wenn die Batterie (Profil davor) den Überschuss braucht
+
+Anlass: 14:25–14:30 lud das Auto mit 6 A (1,4–1,9 kW) bei 564–1000 W Netzbezug; die Batterie (48 %, Winterprofil ganz oben) bekam 0 W, weil sie nur nimmt, was gerade eingespeist wird. Geprüft: Die Wallbox-Sperre der Batterie sperrt **nur das Entladen** (`zendure_control.plan`), Laden war erlaubt – Ursache war allein die Wallbox. Eine Pausen-Logik gab es nicht mehr (seit 22.07.2026 immer `frc=0`, die Kaskaden-Entscheidung „Wallbox aus“ setzte nur ein DB-Flag).
+- **Neu `wallbox_pause.py`** (reine Logik): Budget der Wallbox = Kaskaden-Rest an ihrer Position (nach Batterie bis max. Ladeleistung, eBike, Wasser). Budget ≥ 6 A × Phasen × 230 V → laden (Strom 6–16 A wie bisher); 5 min am Stück darunter → pausieren (`wallbox_paused_priority`); wieder starten nach 5 min am Stück genug, danach mindestens 10 min laden.
+- **Kaskade** (`_handle_wallbox_pv`): nur Eco-Modus (lmo=4) mit angestecktem Auto; Zustand in `cascade_settings` (`wallbox_pause`). Sonst alter Weg, Zustand zurückgesetzt.
+- **Controller** (`_decide_wallbox`): Pause frisch (≤ 3 min) und Auto angesteckt → `frc=1`; sonst wie bisher `frc=0`. Abgesteckt, Pausen-Zustand veraltet oder Kaskade aus → Freigabe. Nicht im Eco-Modus wird nur eine **eigene** Pause (`wallbox_frc_by_pv`) aufgehoben – manuelles Laden bleibt unberührt.
+- Batterie entlädt während des Ladens weiterhin nie (unverändert).
+- Anzeige: Überschrift/Card „Wallbox pausiert – Batterie hat Vorrang (Rest 0,9 kW < 1,4 kW)“, Banner mit derselben Begründung (`app.js?v=20261022a`); neue Codes in `reasons.py`.
+- Wenige Umschaltungen sind Absicht: häufiges `frc`-Umschalten ließ das Auto im Juli am nächsten Tag erst nach Aus-/Einstecken wieder laden.
+- Tests: `tests/test_wallbox_pause.py` (Zeiten, Mindestlaufzeit, frc-Entscheidung, manueller Modus, 14:29-Fall durch die Kaskade).
+
 ## 2026-10-22 – Batterie hat Vorrang: Heizstab-Phasen sofort aus, Wallbox-Ladestrom begrenzt
 
 Anlass: 14:07–14:11 lud die Batterie mit 0 W („wartet auf 2400 W“), weil 3 Heizstab-Phasen (4,86 kW, Mindestlaufzeit 7 min) und die Wallbox (go-e Eco, 2,4–3,9 kW) die Einspeisung aufbrauchten.

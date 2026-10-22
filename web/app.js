@@ -414,6 +414,9 @@ function renderStatus(s) {
         banner.classIfChanged = "wb-banner";
         banner.textIfChanged = `Wallbox freigegeben — kein Auto lädt (Überschuss: ${surplusKw})`;
       }
+    } else if (wbDec.target_force_state === 1 && wbStatus.fup) {
+      banner.classIfChanged = "wb-banner warn";
+      banner.textIfChanged = wbDec.reason || "Wallbox pausiert – Batterie hat Vorrang";
     } else if (wbDec.action === "skipped") {
       banner.classIfChanged = "wb-banner";
       banner.textIfChanged = "Wallbox manueller Modus — kein Eingriff";

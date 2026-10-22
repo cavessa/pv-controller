@@ -27,6 +27,10 @@ def _w(w: Optional[float]) -> str:
     return f"{w / 1000:.2f} kW".replace(".", ",") if abs(w) >= 1000 else f"{w:.0f} W"
 
 
+def _kw(w: Optional[float]) -> str:
+    return f"{float(w or 0) / 1000:.1f} kW".replace(".", ",")
+
+
 def _t(t: Optional[float]) -> str:
     return "?" if t is None else f"{t:.1f}".replace(".", ",") + " °C"
 
@@ -93,6 +97,11 @@ def _stage(key: str, devs: dict[str, dict], e: dict, temp: Optional[float], comf
         name = "Wallbox"
         if wallbox_connected is False:
             return DONE, name, ""
+    if d.get("code") in ("wallbox_paused_priority", "wallbox_resume_pending"):
+        data = d.get("data") or {}
+        return WAITING, name, (f"Wallbox pausiert – Batterie hat Vorrang (Rest {_kw(data.get('rest_w'))} "
+                               f"< {_kw(data.get('min_w'))})." if d.get("code") == "wallbox_paused_priority"
+                               else f"Wallbox pausiert – Start in {data.get('remaining_s', '?')} s.")
     if d.get("reason") in ("device_unreachable", "auto_disabled"):
         return DONE, name, f"{name} nicht erreichbar."
     data = d.get("data") or {}
