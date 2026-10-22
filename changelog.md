@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-22 – Wallbox im Standard-Modus: PV Controller greift nicht ein
+
+Modus kommt aus go-e `lmo` (3 = Standard, 4 = Eco/PV, 5 = Next Trip; live 15:00: `lmo=4`). Pause und Ladestrom-Begrenzung liefen schon nur bei `lmo=4`, eine eigene Pause hebt der Controller außerhalb von Eco schon seit `53cf721` sofort auf.
+- Kaskade: bei `lmo≠4` eigener Wallbox-Eintrag `wallbox_not_eco_mode` (nichts schalten, kein `amp`, Pausen-Zustand zurückgesetzt; Leistung nur zur Anzeige aus go-e `nrg`). Vorher lief dort die alte An/Aus-Entscheidung, die nur ins DB-Flag schrieb.
+- Zurück auf Eco: normale Logik inkl. Pause/Freigabe und Ladestrom.
+- Batterie: Auto lädt → keine Entladung, unabhängig vom Modus (unverändert).
+- Anzeige: Card/Banner/Überschrift „Standard – manuell, PV Controller greift nicht ein“; Modus-Feld zeigt Standard/Eco/Next Trip (`app.js?v=20261022c`); Kommentar in `models.py` korrigiert (3 war fälschlich als Eco beschrieben).
+- Unverändert: `wallbox.auto_reset_on_unplug=true` stellt beim Abstecken im Standard-Modus wieder auf Eco (16 A, 1 Phase) zurück.
+- Tests: `tests/test_wallbox_pause.py` (Standard ohne Schalten, eigene Pause sofort frei, zurück auf Eco, Batterie entlädt nicht, Überschrift).
+
 ## 2026-10-22 – Wallbox-Pause nur bei ladendem Auto, abgesteckt sofort frei, fremde Pausen unberührt
 
 Anlass: 14:45 zählte die Pause hoch, obwohl der go-e seit 14:31 `car=4` meldete (0 W, fertig bzw. vom Fahrzeug pausiert) – sie hätte ~14:50 unnötig `frc=1` gesetzt.

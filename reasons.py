@@ -67,7 +67,7 @@ REASONS: dict[str, str] = {
     # ── Wallbox ──────────────────────────────────────────────────────────────
     "wallbox_disabled": "Wallbox-Steuerung ist in den Einstellungen aus",
     "not_connected": "Kein Auto angesteckt",
-    "wallbox_not_eco_mode": "Wallbox ist nicht im PV-Überschussmodus (Eco) – manuelles Laden wird nicht angefasst",
+    "wallbox_not_eco_mode": "Standard – manuell, PV Controller greift nicht ein",
     "car_full": "Laden abgeschlossen – Auto ist voll oder hat das Laden beendet",
     "waiting_for_car": "Wallbox freigegeben, wartet aber: zu wenig Überschuss für den Mindeststrom, "
                        "Freigabe in der App fehlt oder das Auto nimmt nichts",

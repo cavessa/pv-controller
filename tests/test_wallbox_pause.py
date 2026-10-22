@@ -95,6 +95,9 @@ class ReasonTextTest(unittest.TestCase):
                             "code": "wallbox_paused_priority", "data": {"rest_w": 900, "min_w": 1380}}}
         st = _stage("wallbox", devs, {}, None, None, 64.0, True)
         self.assertEqual(st[2], "Wallbox pausiert – Batterie hat Vorrang (Rest 0,9 kW < 1,4 kW).")
+        devs["wallbox"].update(code="wallbox_not_eco_mode", data={"power_w": 0})
+        self.assertEqual(_stage("wallbox", devs, {}, None, None, 64.0, True)[2],
+                         "Wallbox: Standard – manuell, PV Controller greift nicht ein.")
         devs["wallbox"].update(code="wallbox_car_idle")
         self.assertEqual(_stage("wallbox", devs, {}, None, None, 64.0, True)[2], "Auto fertig/pausiert (Fahrzeug).")
 
@@ -150,6 +153,16 @@ class ControllerTest(unittest.TestCase):
         d = self.decide(self.fresh(False), frc=0, car=4)
         self.assertEqual(d.action.value, "unchanged")
 
+    def test_standard_mode_releases_own_pause_immediately(self):
+        # Wechsel auf Standard (lmo=3) mit eigener Pause → sofort frc=0, auch wenn die Pause noch „frisch“ ist
+        d = self.decide(self.fresh(True), frc=1, car=4, eco=False, by_pv=True)
+        self.assertEqual((d.action.value, d.target_force_state), ("release", 0))
+
+    def test_standard_mode_no_frc_without_own_pause(self):
+        for frc in (0, 1):
+            d = self.decide({}, frc=frc, car=2, eco=False, by_pv=False)
+            self.assertEqual((d.action.value, d.target_force_state), ("skipped", None))
+
     def test_manual_mode_releases_our_pause_only(self):
         d = self.decide(self.fresh(True), frc=1, eco=False, by_pv=True)
         self.assertEqual((d.action.value, d.target_force_state), ("release", 0))
@@ -167,7 +180,7 @@ from tests.test_decisions import TempDb  # noqa: E402
 class CascadeWallboxTest(TempDb):
     """14:29-Fall durch die ganze Kaskade: Batterie 48 %, ~0,9 kW Rest, Auto lädt 1,46 kW mit 6 A."""
 
-    def run_once(self, cfg, main_w, wb_w, car=2):
+    def run_once(self, cfg, main_w, wb_w, car=2, lmo=4, amp=6):
         from types import SimpleNamespace
         from clients.zendure_client import ZendureStatus
         from cascade_service import CascadeService
@@ -179,11 +192,12 @@ class CascadeWallboxTest(TempDb):
         svc.solax = SimpleNamespace(get_pv_power_w=lambda: 2100.0, get_pv_ac_w=lambda: 2100.0)
         svc.solax2 = None
         amps = []
-        raw = {"lmo": 4, "car": car, "amp": 6, "frc": 0, "nrg": [0] * 11 + [wb_w]}
+        raw = {"lmo": lmo, "car": car, "amp": amp, "frc": 0, "nrg": [0] * 11 + [wb_w]}
         svc.goe = SimpleNamespace(get_status=lambda: raw, set_amp=lambda a: amps.append(a))
         svc.goe_battery = svc.goe
         if svc.zendure_ctl is not None:
-            svc.zendure_client = SimpleNamespace(get_status=lambda: ZendureStatus(soc=48))
+            svc.zendure_client = SimpleNamespace(get_status=lambda: ZendureStatus(soc=48),
+                                                 set_mode=lambda *a, **k: True, write_props=lambda *a, **k: True)
             svc.zendure_ctl.client = svc.zendure_client
         out = svc.run_cascade()
         return {d["id"]: d for d in out["devices"]}, db.get_wallbox_pause(), amps
@@ -213,3 +227,28 @@ class CascadeWallboxTest(TempDb):
         self.assertEqual(dev["wallbox"]["code"], "wallbox_car_idle")
         self.assertIsNone(st["below_since"])
         self.assertFalse(st["paused"])
+
+    def cfg_wb(self):
+        return self.config(runtime={"dry_run": False, "enabled": True},
+                           wallbox={"enabled": True, "url": "http://x", "eco_phases": 1, "eco_amps": 16},
+                           zendure={"enabled": True, "ip": "x", "control_enabled": True})
+
+    def test_standard_mode_no_switching(self):
+        import db
+        cfg = self.cfg_wb()
+        # eigene Pause lief, dann stellt der User auf Standard (lmo=3): Auto lädt 3,7 kW manuell
+        db.set_wallbox_pause({"paused": True})
+        dev, st, amps = self.run_once(cfg, 3000.0, 3700.0, car=2, lmo=3, amp=16)
+        self.assertEqual(dev["wallbox"]["code"], "wallbox_not_eco_mode")
+        self.assertEqual(dev["wallbox"]["data"]["power_w"], 3700)
+        self.assertEqual(amps, [])                     # kein Ladestrom geändert
+        self.assertFalse(st.get("paused"))             # Pausen-Zustand weg → Controller hebt eigene Pause auf
+        # Batterie: Auto lädt → nie entladen, auch im Standard-Modus (Netzbezug 3 kW)
+        self.assertNotEqual(dev["zendure"]["action"], "discharge")
+
+    def test_back_to_eco_normal_logic(self):
+        cfg = self.cfg_wb()
+        self.run_once(cfg, 3000.0, 3700.0, car=2, lmo=3)
+        dev, st, amps = self.run_once(cfg, 564.0, 1460.0, car=2, lmo=4, amp=16)
+        self.assertEqual(dev["wallbox"]["code"], "wallbox_pause_pending")
+        self.assertEqual(amps, [6])                    # Eco: Strom wieder geregelt (16 → 6 A)

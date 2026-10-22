@@ -320,7 +320,12 @@ function renderStatus(s) {
     ci.classList.remove("hidden");
     ci.classList.toggle("charging", wbCharging);
     let stateLabel, mode;
-    if (wbCharging) {
+    // lmo: 3 = Standard, 4 = Eco/PV, 5 = Next Trip – nur Eco steuert der PV Controller
+    const wbManual = wbStatus.lmo != null && wbStatus.lmo !== 4;
+    if (wbManual && wbStatus.car !== 1) {
+      stateLabel = (wbCharging ? "lädt – " : "") + "Standard – manuell, PV Controller greift nicht ein";
+      mode = wbCharging ? "ok" : "idle";
+    } else if (wbCharging) {
       stateLabel = "lädt";
       mode = "ok";
     } else if (wbStatus.car === 1) {
@@ -360,7 +365,7 @@ function renderStatus(s) {
     ce.classList.add("hidden");
   }
 
-  const lmoLabel = wbStatus.lmo === 3 ? "Basic" : wbStatus.lmo === 4 ? "Eco" : (wbStatus.lmo ?? "–");
+  const lmoLabel = wbStatus.lmo === 3 ? "Standard" : wbStatus.lmo === 4 ? "Eco" : wbStatus.lmo === 5 ? "Next Trip" : (wbStatus.lmo ?? "–");
   $("#wallbox-kv").htmlIfChanged = `
     <div><span>Modus (lmo)</span><b>${lmoLabel}</b></div>
     <div><span>forceState (frc)</span><b>${wbStatus.frc ?? "–"}</b></div>
@@ -422,7 +427,7 @@ function renderStatus(s) {
       banner.textIfChanged = wbDec.reason || "Wallbox pausiert – Batterie hat Vorrang";
     } else if (wbDec.action === "skipped") {
       banner.classIfChanged = "wb-banner";
-      banner.textIfChanged = "Wallbox manueller Modus — kein Eingriff";
+      banner.textIfChanged = "Wallbox: Standard – manuell, PV Controller greift nicht ein";
     } else {
       banner.classIfChanged = "wb-banner warn";
       banner.textIfChanged = `Wallbox pausiert — Überschuss: ${surplusKw} (zu gering)`;
@@ -538,7 +543,8 @@ function renderEnergyFlow(heater, wb, cs, zd, wp, wh) {
       } else {
         wbV = wbSt.frc === 1 ? "pausiert" : wbSt.frc === 0 ? "freigeg." : `frc=${wbSt.frc}`;
         wbS = wbSt.paused_by_pv ? "PV-Controller" : wbSt.frc === 1 ? "App/Wallbox"
-          : (wbSt.car === 3 || wbSt.car === 4) ? "Fahrzeug" : wbSt.fup ? "Eco/PV" : "manuell";
+          : (wbSt.lmo != null && wbSt.lmo !== 4) ? "Standard"
+          : (wbSt.car === 3 || wbSt.car === 4) ? "Fahrzeug" : "Eco/PV";
       }
     }
     bots.push({ icon: "🚗", label: "WALLBOX", value: wbV, sub: wbS, aktiv: wbOn, flow: wbOn, target: "wallbox-card" });

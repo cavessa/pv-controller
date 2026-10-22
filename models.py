@@ -170,7 +170,7 @@ class WallboxStatus:
     energy_session_wh: Optional[float] = None
     energy_total_wh: Optional[float] = None
     charge_duration_s: Optional[float] = None
-    logic_mode: Optional[int] = None  # go-e lmo: 3=eco/PV, 4=next-trip, other=standard
+    logic_mode: Optional[int] = None  # go-e lmo: 3=Standard, 4=Eco/PV, 5=Next Trip
     psm: Optional[int] = None  # go-e psm: 1=einphasig, 2=dreiphasig
 
 

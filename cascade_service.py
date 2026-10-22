@@ -502,8 +502,19 @@ class CascadeService:
         Pausen-Zustand zurückgesetzt."""
         raw = self._goe_raw()
         if self.goe is None or raw is None or raw.get("lmo") != 4 or raw.get("car") in (None, 1):
-            if get_wallbox_pause():
+            if any(get_wallbox_pause().get(k) for k in ("paused", "below_since", "above_since", "run_since")):
                 set_wallbox_pause({})
+            if raw is not None and raw.get("lmo") is not None and raw.get("lmo") != 4:
+                # Standard/Next Trip: manuell – nichts schalten. Ihre Leistung sieht der Hauptzähler schon
+                # (nicht im Brutto, actual_device_w = 0); für die Anzeige die go-e-Messung.
+                actual = float(actual_device_w.get(device["id"]) or 0.0)
+                shown = self._wallbox_power_w() or 0.0
+                action = "keep_on" if shown > 100 else "keep_off"
+                reason = "Standard – manuell, PV Controller greift nicht ein"
+                self._log(surplus, device["id"], action, reason, int(remaining - actual))
+                log.info("Kaskade: Wallbox → %s, remaining=%d W | %s", action, remaining - actual, reason)
+                return int(remaining - actual), self._result(
+                    device, reason, action, "wallbox_not_eco_mode", {"lmo": raw.get("lmo"), "power_w": int(shown)})
             return None
         wb = self.cfg.wallbox
         min_w = WALLBOX_MIN_A * max(1, int(wb.eco_phases)) * WALLBOX_VOLT
