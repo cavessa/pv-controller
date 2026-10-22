@@ -27,7 +27,7 @@ from cascade_plan import WALLBOX_MIN_A, WALLBOX_VOLT, wallbox_amp_cap, BATTERY, 
 from clients.shelly_client import Shelly3EMClient, ShellyPlugClient, ShellyStorageTempClient
 from clients.solax_client import SolaxClient
 from clients.zendure_client import ZendureClient
-from zendure_control import WRITE_DELTA_W
+from zendure_control import DEVICE_MAX_W, WRITE_DELTA_W
 from heater_phases import RELEASE_DROP_C, THERMOSTAT_OPEN_W
 import meter_ring
 import wallbox_pause
@@ -133,7 +133,7 @@ class CascadeService:
         wb_cfg = self.cfg.wallbox
         for d in devices:
             if d["type"] == "wallbox":
-                d["power_watts"] = max(int(d["power_watts"]), int(wb_cfg.eco_phases * wb_cfg.eco_amps * 230))
+                d["power_watts"] = max(int(d["power_watts"]), int(wb_cfg.eco_phase_count * wb_cfg.eco_amps * 230))
         by_id = {d["id"]: d for d in devices}
         heater_dev = next((d for d in devices if d["type"] == "heizstab"), None)
         battery_dev = by_id.get(BATTERY)
@@ -284,7 +284,10 @@ class CascadeService:
         def device_fn(key: str, remaining: float) -> float:
             device = by_id[key]
             if device["type"] == "wallbox":
-                handled = self._handle_wallbox_pv(device, int(remaining), surplus, actual_device_w)
+                buffer_w = self._wallbox_battery_buffer_w(
+                    battery_dev is not None and BATTERY in order and order.index(BATTERY) < order.index(key),
+                    zd_status, battery_failsafe)
+                handled = self._handle_wallbox_pv(device, int(remaining), surplus, actual_device_w, buffer_w)
                 if handled is not None:
                     new_remaining, result = handled
                     results.append(result)
@@ -492,8 +495,25 @@ class CascadeService:
         nrg = raw.get("nrg")
         return max(0.0, float(nrg[11])) if isinstance(nrg, list) and len(nrg) >= 12 else 0.0
 
+    def _wallbox_battery_buffer_w(self, battery_before: bool, st, failsafe: Optional[str]) -> int:
+        """Puffer für die Batterie im Wallbox-Budget (``wallbox.battery_buffer_w``).
+
+        Nur wenn die Batterie im Profil vor der Wallbox steht, nicht voll ist (SoC < Ziel) und noch nicht
+        mit voller Ladeleistung lädt – dann fängt der Puffer kurze Einbrüche ab, bevor der Wächter die
+        Batterie drosselt. Batterie voll oder auf Max: kein Puffer."""
+        if not battery_before or st is None or failsafe or self.zendure_ctl is None:
+            return 0
+        zc = self.cfg.zendure
+        if st.soc is None or st.soc >= zc.target_soc:
+            return 0
+        max_c = int(min(zc.max_charge_w, DEVICE_MAX_W))
+        if st.charge_w >= max_c - WRITE_DELTA_W:
+            return 0
+        return int(self.cfg.wallbox.battery_buffer_w)
+
     def _handle_wallbox_pv(
         self, device: dict, remaining: int, surplus: int, actual_device_w: dict[str, float],
+        buffer_w: int = 0,
     ) -> Optional[tuple[int, dict]]:
         """Wallbox im PV-/Eco-Modus mit angestecktem Auto: Budget = Rest nach den Stufen davor.
 
@@ -517,13 +537,15 @@ class CascadeService:
                     device, reason, action, "wallbox_not_eco_mode", {"lmo": raw.get("lmo"), "power_w": int(shown)})
             return None
         wb = self.cfg.wallbox
-        min_w = WALLBOX_MIN_A * max(1, int(wb.eco_phases)) * WALLBOX_VOLT
+        min_w = WALLBOX_MIN_A * wb.eco_phase_count * WALLBOX_VOLT
         now = datetime.now()
         old = get_wallbox_pause()
         age = self._minutes_since(old.get("at")) * 60
         if age > wallbox_pause.STALE_S:
             old = {}                                     # Kaskade lief nicht: neu anfangen
-        st, code, data = wallbox_pause.step(old, now, remaining, min_w, charging=raw.get("car") == 2)
+        budget = remaining - buffer_w                    # Puffer: Batterie lädt noch nicht voll
+        st, code, data = wallbox_pause.step(old, now, budget, min_w, charging=raw.get("car") == 2)
+        data["buffer_w"] = buffer_w
         set_wallbox_pause({**st, "rest_w": data["rest_w"], "min_w": data["min_w"]})
         actual = float(actual_device_w.get(device["id"]) or 0.0)
         paused = st["paused"]
@@ -531,7 +553,7 @@ class CascadeService:
             action = "turn_off" if not old.get("paused") else "keep_off"
         else:
             action = "turn_on" if old.get("paused") else ("keep_off" if code == "wallbox_car_idle" else "keep_on")
-            self._limit_wallbox_amp(remaining)
+            self._limit_wallbox_amp(budget)
         if bool(device["is_on"]) == paused:
             update_cascade_device_state(device["id"], not paused,
                                         turned_on_at=None if paused else now, turned_off_at=now if paused else None)
@@ -550,6 +572,8 @@ class CascadeService:
             reason = f"Rest {kw(rest)} < {kw(mn)} – Wallbox lädt mit Mindeststrom, Pause in {data['remaining_s']} s"
         else:
             reason = f"Rest {kw(rest)} ≥ {kw(mn)} – Wallbox lädt mit passendem Strom"
+        if buffer_w:
+            reason += f" (Rest nach {buffer_w} W Puffer für die Batterie)"
         data["power_w"] = int(actual)
         self._log(surplus, device["id"], action, reason, int(remaining - actual))
         log.info("Kaskade: Wallbox → %s, remaining=%d W | %s", action, remaining - actual, reason)
@@ -569,11 +593,11 @@ class CascadeService:
             current = int(raw.get("amp"))
         except (TypeError, ValueError):
             return
-        cap = wallbox_amp_cap(available_w, wb.eco_phases, int(wb.eco_amps))
+        cap = wallbox_amp_cap(available_w, wb.eco_phase_count, int(wb.eco_amps))
         if cap == current:
             return
         text = (f"Wallbox: Ladestrom {current} → {cap} A (zusteht {available_w} W, "
-                f"{wb.eco_phases} Phase(n), Min {WALLBOX_MIN_A} A, Max {int(wb.eco_amps)} A)")
+                f"{wb.eco_phase_count} Phase(n), Min {WALLBOX_MIN_A} A, Max {int(wb.eco_amps)} A)")
         if self.cfg.runtime.dry_run or not self.cfg.runtime.enabled:
             log.info("DRY-RUN/aus: %s – nicht gesetzt", text)
             return

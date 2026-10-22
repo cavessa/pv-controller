@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-22 – Wallbox-Budget mit Puffer für die Batterie; Eco dreiphasig richtig gerechnet
+
+Anlass: 15:26 Batterie 2310 W, Wallbox 14 A (3,3 kW); beim nächsten Einbruch drosselte der Wächter die Batterie (2310 → 490 W), weil die Wallbox erst langsamer nachregelt.
+- Neu `wallbox.battery_buffer_w` (Default 400 W, Einstellungen → Wallbox, 0 = aus): Im Eco-Modus ist das Wallbox-Budget (Ladestrom und Pause) = Rest nach den Stufen davor minus Puffer – aber nur, solange die Batterie im Profil vor der Wallbox steht, nicht voll ist (SoC < Ziel) und noch nicht mit voller Ladeleistung lädt. Batterie voll oder auf Max → kein Puffer (`_wallbox_battery_buffer_w`).
+- Fix: `eco_phases` ist der go-e-Wert `psm` (1 = einphasig, **2 = dreiphasig**). Mindestleistung, Nennleistung und Ladestrom rechneten mit 2 statt 3 Leitern; jetzt `WallboxConfig.eco_phase_count`. (Prod ist einphasig – bisher ohne Auswirkung.)
+- Prod: Feld erst nach dem Deploy speichern (ohne Eintrag gilt 400 W).
+- Tests: `tests/test_wallbox_pause.py` (`BufferTest`: Puffer bei Batterie unter Max, keiner bei Max/voll, 15 → 13 A, dreiphasig).
+
 ## 2026-10-22 – Überschrift: Wallbox-Leistung live wie die Kachel; Pause-Merker bei fremdem frc=0 löschen
 
 Standard-Test 15:10 (Prod): Moduswechsel erkannt, kein Eingriff, Batterie nie entladen („Entladung gesperrt: Wallbox lädt“, `discharge_w` 0).

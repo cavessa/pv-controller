@@ -184,10 +184,8 @@ if __name__ == "__main__":
 from tests.test_decisions import TempDb  # noqa: E402
 
 
-class CascadeWallboxTest(TempDb):
-    """14:29-Fall durch die ganze Kaskade: Batterie 48 %, ~0,9 kW Rest, Auto lädt 1,46 kW mit 6 A."""
-
-    def run_once(self, cfg, main_w, wb_w, car=2, lmo=4, amp=6):
+class CascadeHarness(TempDb):
+    def run_once(self, cfg, main_w, wb_w, car=2, lmo=4, amp=6, soc=48, charge_w=0.0, pv=2100.0):
         from types import SimpleNamespace
         from clients.zendure_client import ZendureStatus
         from cascade_service import CascadeService
@@ -196,18 +194,23 @@ class CascadeWallboxTest(TempDb):
         svc.heater_meter = SimpleNamespace(get_total_power_w=lambda: 0.0)
         svc.main_meter = SimpleNamespace(get_total_power_w=lambda: main_w)
         svc.storage = SimpleNamespace(get_temperature_c=lambda: 54.0)
-        svc.solax = SimpleNamespace(get_pv_power_w=lambda: 2100.0, get_pv_ac_w=lambda: 2100.0)
+        svc.solax = SimpleNamespace(get_pv_power_w=lambda: pv, get_pv_ac_w=lambda: pv)
         svc.solax2 = None
         amps = []
         raw = {"lmo": lmo, "car": car, "amp": amp, "frc": 0, "nrg": [0] * 11 + [wb_w]}
         svc.goe = SimpleNamespace(get_status=lambda: raw, set_amp=lambda a: amps.append(a))
         svc.goe_battery = svc.goe
         if svc.zendure_ctl is not None:
-            svc.zendure_client = SimpleNamespace(get_status=lambda: ZendureStatus(soc=48),
+            svc.zendure_client = SimpleNamespace(get_status=lambda: ZendureStatus(soc=soc, charge_w=charge_w),
                                                  set_mode=lambda *a, **k: True, write_props=lambda *a, **k: True)
             svc.zendure_ctl.client = svc.zendure_client
         out = svc.run_cascade()
         return {d["id"]: d for d in out["devices"]}, db.get_wallbox_pause(), amps
+
+
+
+class CascadeWallboxTest(CascadeHarness):
+    """14:29-Fall durch die ganze Kaskade: Batterie 48 %, ~0,9 kW Rest, Auto lädt 1,46 kW mit 6 A."""
 
     def test_pause_after_five_minutes(self):
         import db
@@ -271,3 +274,45 @@ class FrcFlagTest(TempDb):
         db.set_wallbox_frc_by_pv(True)
         c._handle_wallbox(WallboxStatus(pv_surplus_active=False, force_state=0, car_state=2), None)
         self.assertFalse(db.get_wallbox_frc_by_pv())
+
+
+class BufferTest(CascadeHarness):
+    """Puffer für die Batterie im Wallbox-Budget (15:26-Fall: Batterie 2310 W, Wallbox 14 A, Einbruch)."""
+
+    def cfg_buf(self, buffer_w=None):
+        wb = {"enabled": True, "url": "http://x", "eco_phases": 1, "eco_amps": 16}
+        if buffer_w is not None:
+            wb["battery_buffer_w"] = buffer_w
+        return self.config(runtime={"dry_run": False, "enabled": True}, wallbox=wb,
+                           zendure={"enabled": True, "ip": "x", "control_enabled": True})
+
+    # Einspeisung 3000 W bei Wallbox 3000 W → brutto ≈ 6000 + Batterie-Ladung; Batterie will 2400 W
+    def test_buffer_while_battery_below_max(self):
+        cfg = self.cfg_buf()
+        self.assertEqual(cfg.wallbox.battery_buffer_w, 400)                  # Default
+        dev, _, amps = self.run_once(cfg, -3000.0, 3000.0, amp=16, charge_w=1500.0, pv=7000.0)
+        wb = dev["wallbox"]
+        self.assertEqual(wb["data"]["buffer_w"], 400)
+        no_buf = self.run_once(self.cfg_buf(0), -3000.0, 3000.0, amp=16, charge_w=1500.0, pv=7000.0)[0]["wallbox"]
+        self.assertEqual(no_buf["data"]["rest_w"] - wb["data"]["rest_w"], 400)
+        self.assertIn("Puffer", wb["reason"])
+
+    def test_no_buffer_when_battery_at_max(self):
+        dev, _, _ = self.run_once(self.cfg_buf(), -3000.0, 3000.0, amp=16, charge_w=2400.0, pv=7000.0)
+        self.assertEqual(dev["wallbox"]["data"]["buffer_w"], 0)
+
+    def test_no_buffer_when_battery_full(self):
+        dev, _, _ = self.run_once(self.cfg_buf(), -3000.0, 3000.0, amp=16, soc=100, pv=7000.0)
+        self.assertEqual(dev["wallbox"]["data"]["buffer_w"], 0)
+
+    def test_buffer_lowers_amps(self):
+        # brutto 1500 + 3000 + 1500 = 6000 W, Batterie 2400 → Rest 3600 W (15 A) bzw. 3200 W (13 A)
+        _, _, amps_buf = self.run_once(self.cfg_buf(), -1500.0, 3000.0, amp=16, charge_w=1500.0, pv=7000.0)
+        _, _, amps_0 = self.run_once(self.cfg_buf(0), -1500.0, 3000.0, amp=16, charge_w=1500.0, pv=7000.0)
+        self.assertTrue(amps_buf and amps_0)
+        self.assertEqual((amps_0[0], amps_buf[0]), (15, 13))                 # 400 W Puffer = 2 A weniger
+
+    def test_three_phase_min_power(self):
+        from config import WallboxConfig
+        self.assertEqual(WallboxConfig(eco_phases=2).eco_phase_count, 3)
+        self.assertEqual(WallboxConfig(eco_phases=1).eco_phase_count, 1)

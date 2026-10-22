@@ -935,6 +935,8 @@
               </select>
             </label>
             <label>Basic Ampere<input type="number" min="6" max="32" step="1" name="wallbox.basic_amps"></label>
+            <label>Puffer für die Batterie (W)<input type="number" min="0" max="3000" name="wallbox.battery_buffer_w">
+              <small class="field-hint">Im Eco-Modus bekommt die Wallbox so viel weniger, solange die Batterie (im Profil davor) nicht voll ist und noch nicht mit voller Leistung lädt. 0 = aus.</small></label>
             <label class="check"><input type="checkbox" name="wallbox.auto_reset_on_unplug"> Nach Abstecken automatisch auf Eco/PV zurücksetzen</label>
           </fieldset>
 
@@ -1144,7 +1146,7 @@
     </form>
   </div>
 
-  <script src="/static/app.js?v=20261022c" defer></script>
+  <script src="/static/app.js?v=20261022d" defer></script>
   <script src="/static/heating.js?v=20261014a" defer></script>
   <script src="/static/shutters.js?v=20261013j" defer></script>
 </body>

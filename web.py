@@ -961,6 +961,7 @@ _ALLOWED_WALLBOX_KEYS = {
     "basic_phases",
     "basic_amps",
     "auto_reset_on_unplug",
+    "battery_buffer_w",
 }
 _ALLOWED_SOLAX_KEYS = {"url", "pwd"}
 _ALLOWED_SOLAX2_KEYS = {"enabled", "url", "pwd", "name"}
@@ -1043,6 +1044,9 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
             elif k in {"eco_amps", "basic_amps"}:
                 if not isinstance(v, int) or isinstance(v, bool) or not 6 <= v <= 32:
                     raise HTTPException(400, f"wallbox.{k} must be an integer between 6 and 32")
+            elif k == "battery_buffer_w":
+                if not isinstance(v, int) or isinstance(v, bool) or not 0 <= v <= 3000:
+                    raise HTTPException(400, "wallbox.battery_buffer_w must be an integer between 0 and 3000")
             elif k == "fail_safe":
                 if v != "no_change":
                     raise HTTPException(

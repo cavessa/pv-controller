@@ -3913,6 +3913,7 @@ async function loadSettings() {
     setFormValue(f, "wallbox.basic_phases", lastConfig.wallbox?.basic_phases ?? 2);
     setFormValue(f, "wallbox.basic_amps", lastConfig.wallbox?.basic_amps ?? 10);
     setFormValue(f, "wallbox.auto_reset_on_unplug", lastConfig.wallbox?.auto_reset_on_unplug ?? true);
+    setFormValue(f, "wallbox.battery_buffer_w", lastConfig.wallbox?.battery_buffer_w ?? 400);
     setFormValue(f, "auth.enabled", lastConfig.auth_enabled ?? false);
     setFormValue(f, "auth.user", lastConfig.auth_user ?? "admin");
     // Gesetztes Passwort kommt maskiert ("********"); unverändert zurückgeschickt bleibt es erhalten
@@ -4061,6 +4062,7 @@ async function saveSettings(e) {
       basic_phases: numField("wallbox.basic_phases"),
       basic_amps: numField("wallbox.basic_amps"),
       auto_reset_on_unplug: boolField("wallbox.auto_reset_on_unplug"),
+      battery_buffer_w: numField("wallbox.battery_buffer_w"),
     },
     auth: {
       enabled: boolField("auth.enabled"),

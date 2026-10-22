@@ -96,7 +96,8 @@
     "eco_amps": 16,
     "basic_phases": 2,
     "basic_amps": 10,
-    "auto_reset_on_unplug": true
+    "auto_reset_on_unplug": true,
+    "battery_buffer_w": 400
   },
   "auth_enabled": false,
   "auth_user": "admin",

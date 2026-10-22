@@ -348,8 +348,18 @@ class WallboxConfig:
     basic_phases: int = 2
     basic_amps: int = 10
     auto_reset_on_unplug: bool = True
+    # Puffer für die Batterie: so viel weniger bekommt die Wallbox (Eco), solange die Batterie im Profil
+    # davor nicht voll ist und noch nicht mit voller Ladeleistung lädt
+    battery_buffer_w: int = 400
+
+    @property
+    def eco_phase_count(self) -> int:
+        """Leiter im Eco-Modus (go-e psm: 1 = einphasig, 2 = dreiphasig)."""
+        return 3 if self.eco_phases == 2 else 1
 
     def __post_init__(self) -> None:
+        if not 0 <= self.battery_buffer_w <= 3000:
+            raise ValueError(f"wallbox.battery_buffer_w must be between 0 and 3000 (got {self.battery_buffer_w})")
         if self.release_above_storage_temp <= self.pause_below_storage_temp:
             raise ValueError(
                 "wallbox.release_above_storage_temp must be > "
