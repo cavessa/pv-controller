@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-10-22 – Batterie hat Vorrang: Heizstab-Phasen sofort aus, Wallbox-Ladestrom begrenzt
+
+Anlass: 14:07–14:11 lud die Batterie mit 0 W („wartet auf 2400 W“), weil 3 Heizstab-Phasen (4,86 kW, Mindestlaufzeit 7 min) und die Wallbox (go-e Eco, 2,4–3,9 kW) die Einspeisung aufbrauchten.
+- **Heizstab**: Wartet die Batterie (Einspeise-Deckel), schaltet der Controller überzählige Phasen (über dem Budget-Ziel) ohne Mindestlaufzeit ab (`budget_shed_now` in `cascade_devices`, `decide_phases(shed_now)`, Code `below_stop_threshold` mit `battery_priority`). Einschalten und manuelle Übersteuerung unverändert.
+- **Wallbox**: `_limit_wallbox_amp` setzt den go-e-Ladestrom (`amp`) auf das, was der Wallbox nach Batterie/Heizstab zusteht (`wallbox_amp_cap`: abgerundet, 6 A bis `eco_amps`, 230 V × `eco_phases`). Nur im Eco-Modus (lmo=4) mit angestecktem Auto, nicht im dry_run/bei `runtime.enabled=false`. Kein `frc`-Umschalten: unter dem Anteil bleibt sie bei 6 A (go-e pausiert selbst), ein echtes Stoppen gibt es weiterhin nicht.
+- Tests: `tests/test_battery_priority.py`.
+- Prod: DB-Spalte wird beim Start automatisch angelegt; nach dem Deploy Log auf „Wallbox: Ladestrom … → … A“ und Heizstab-Phasen „Batterie hat Vorrang“ prüfen.
+
+## 2026-10-22 – Kaskade: Wallbox-Nennleistung aus Eco-Einstellung statt DB-Wert
+
+Anlass: 14:00–14:07 bei 7–8 kW PV lud die Batterie nur mit 0,4–1,8 kW statt 2,4 kW. Die Wallbox (Kaskaden-Eintrag 1610 W) zog real ~3,9 kW (Eco, 1 Phase × 16 A, wird nicht nachgeregelt), dazu startete der Heizstab → Netzbezug → der Wächter drosselte die Batterie (2400 → 1890 → 1790 W), statt dass die nachrangigen Lasten Platz machten.
+- `cascade_service.run_cascade`: Nennleistung des Wallbox-Eintrags = mindestens `eco_phases × eco_amps × 230 W` (3680 W). Start/Weiterlaufen der Wallbox braucht damit den realen Bedarf; der DB-Wert (Prioritäten-Seite) bleibt unverändert.
+- Läuft die Wallbox, zählt für das Weiterlaufen ihre gemessene Leistung (go-e `nrg`), wenn sie über der Nennleistung liegt (`_decide(running_w)`); die Mindestlaufzeit gilt weiter.
+- Offen: die Wallbox wird nicht stufenlos gedrosselt (nur an/aus). Automatisches Drosseln per `amp` wäre ein eigenes Feature.
+
 ## 2026-10-19 – Dashboard: Verbraucher-Card direkt unter Hausverbrauch
 
 - Die Card „Verbraucher“ steht jetzt in der linken Spalte unmittelbar unter „Hausverbrauch“ (vorher rechte Spalte unter PV/Wallbox). Nur Verschiebung in `web/index.html`, keine Logik geändert.

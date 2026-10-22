@@ -199,3 +199,15 @@ def walk(
     res.heater_phases = phases_for(budget, heater.phase_w, heater.grid_assist_w, heater.n_phases)
     res.remaining_w = int(round(remaining))
     return res
+
+
+WALLBOX_MIN_A = 6            # go-e kann nicht weniger laden (darunter pausiert er selbst)
+WALLBOX_VOLT = 230
+
+
+def wallbox_amp_cap(available_w: float, phases: int, max_a: int) -> int:
+    """Ladestrom-Obergrenze (A) für die Wallbox aus dem, was ihr nach den Geräten davor zusteht.
+
+    Abgerundet auf ganze A, zwischen ``WALLBOX_MIN_A`` und ``max_a`` (Abrunden wirkt als Hysterese)."""
+    want = int(max(0.0, available_w) // (WALLBOX_VOLT * max(1, phases)))
+    return max(WALLBOX_MIN_A, min(int(max_a), want))

@@ -23,7 +23,7 @@ from typing import Optional
 
 from clients.goe_client import BATTERY_CHECK_TIMEOUT_S, GoeClient, GoeError, car_charging, charging_now
 from clients.shelly_cascade_client import ShellyCascadeClient, ShellyCascadeError
-from cascade_plan import BATTERY, HEATER_MAX, HEATER_MIN, HEATER_STAGES, HeaterCtx, walk
+from cascade_plan import WALLBOX_MIN_A, wallbox_amp_cap, BATTERY, HEATER_MAX, HEATER_MIN, HEATER_STAGES, HeaterCtx, walk
 from clients.shelly_client import Shelly3EMClient, ShellyPlugClient, ShellyStorageTempClient
 from clients.solax_client import SolaxClient
 from clients.zendure_client import ZendureClient
@@ -124,6 +124,13 @@ class CascadeService:
             d for d in get_cascade_devices()
             if d["enabled"] and (d["type"] != "zendure" or self.zendure_ctl is not None)
         ]
+        # Wallbox: Nennleistung nie unter dem, was der Wagen im Eco-Modus wirklich zieht (Phasen × A × 230 V).
+        # Ein zu niedriger DB-Wert (z. B. 1610 W bei 3,7 kW) ließ Wallbox und Heizstab über das Budget laufen →
+        # Netzbezug → der Wächter drosselte die Batterie statt der nachrangigen Lasten.
+        wb_cfg = self.cfg.wallbox
+        for d in devices:
+            if d["type"] == "wallbox":
+                d["power_watts"] = max(int(d["power_watts"]), int(wb_cfg.eco_phases * wb_cfg.eco_amps * 230))
         by_id = {d["id"]: d for d in devices}
         heater_dev = next((d for d in devices if d["type"] == "heizstab"), None)
         battery_dev = by_id.get(BATTERY)
@@ -277,6 +284,8 @@ class CascadeService:
                 device, int(remaining), surplus, effective_surplus, actual_device_w
             )
             results.append(self._result(device, reason, *self._last_code))
+            if device["type"] == "wallbox":
+                self._limit_wallbox_amp(int(remaining))
             return new_remaining
 
         def heater_fn(gross_w: int, battery_w: int, remaining_w: int) -> None:
@@ -338,7 +347,7 @@ class CascadeService:
             if battery_waiting:
                 down = min(down, gross_w)
             budget, budget_down, force = int(round(up)) - battery_w, int(round(down)) - battery_w, None
-        set_cascade_budget(device["id"], budget, gross_w, force, budget_down)
+        set_cascade_budget(device["id"], budget, gross_w, force, budget_down, shed_now=battery_waiting and not force)
 
         target = max(0, min(n_ph, math.floor((budget + h.grid_assist_w) / h.phase_power_w)))
         now = datetime.now()
@@ -426,7 +435,8 @@ class CascadeService:
             self._dispatch(device, "turn_on" if override == "on" else "turn_off")
             return remaining, reason
 
-        action, reason = self._decide(device, effective_surplus, remaining)
+        running_w = actual_device_w.get(device["id"]) if device["type"] == "wallbox" else None
+        action, reason = self._decide(device, effective_surplus, remaining, running_w)
         self._last_code = (action, *self._reason_code(device, action, remaining, effective_surplus))
 
         # Zustand in DB aktualisieren und remaining korrekt anpassen:
@@ -474,6 +484,35 @@ class CascadeService:
             return None
         nrg = raw.get("nrg")
         return max(0.0, float(nrg[11])) if isinstance(nrg, list) and len(nrg) >= 12 else 0.0
+
+    def _limit_wallbox_amp(self, available_w: int) -> None:
+        """Ladestrom des go-e (Eco, lmo=4) auf das begrenzen, was der Wallbox nach Batterie/Heizstab zusteht.
+
+        Der go-e regelt im Eco-Modus selbst bis zu ``amp``; ohne Obergrenze nimmt er sich vor der Batterie,
+        was eingespeist wird. Nie unter 6 A (darunter pausiert er selbst), kein frc-Umschalten. Nur wenn ein
+        Auto angesteckt ist; ohne Schreibfreigabe (dry_run/enabled) nur Log."""
+        raw = self._goe_raw()
+        if self.goe is None or raw is None or raw.get("lmo") != 4 or raw.get("car") in (None, 1):
+            return
+        wb = self.cfg.wallbox
+        try:
+            current = int(raw.get("amp"))
+        except (TypeError, ValueError):
+            return
+        cap = wallbox_amp_cap(available_w, wb.eco_phases, int(wb.eco_amps))
+        if cap == current:
+            return
+        text = (f"Wallbox: Ladestrom {current} → {cap} A (zusteht {available_w} W, "
+                f"{wb.eco_phases} Phase(n), Min {WALLBOX_MIN_A} A, Max {int(wb.eco_amps)} A)")
+        if self.cfg.runtime.dry_run or not self.cfg.runtime.enabled:
+            log.info("DRY-RUN/aus: %s – nicht gesetzt", text)
+            return
+        try:
+            self.goe.set_amp(cap)
+            self._goe_cache = None
+            log.info("Kaskade: %s", text)
+        except GoeError as e:
+            log.warning("Kaskade: Wallbox-Ladestrom nicht gesetzt: %s", e)
 
     def _wallbox_charging(self) -> bool:
         """Lädt gerade ein Auto (go-e car=2 ODER > 100 W)? Bei Lesefehler konservativ True,
@@ -546,10 +585,15 @@ class CascadeService:
     # ── Entscheidungslogik ───────────────────────────────────────────────────
 
     def _decide(
-        self, device: dict, surplus: int, remaining: int
+        self, device: dict, surplus: int, remaining: int, running_w: Optional[float] = None
     ) -> tuple[str, str]:
-        """Gibt (action, reason) zurück; Zustandsänderungen passieren beim Aufrufer."""
+        """Gibt (action, reason) zurück; Zustandsänderungen passieren beim Aufrufer.
+
+        ``running_w``: gemessene Leistung eines laufenden Geräts (Wallbox) – zählt für das Weiterlaufen
+        statt der Nennleistung, wenn sie höher ist."""
         power = device["power_watts"]
+        if device["is_on"] and running_w is not None:
+            power = max(int(power), int(running_w))
         hyst = device["hysteresis_watts"]
 
         if device["is_on"]:

@@ -882,9 +882,11 @@ class Controller:
         budget_w: Optional[float] = None
         budget_down_w: Optional[float] = None
         force: Optional[str] = None
+        shed_now = False
         info = get_cascade_budget("heizstab")
         if info is not None:
             budget_w, budget_down_w, force = float(info["budget_w"]), float(info["budget_down_w"]), info["force"]
+            shed_now = bool(info.get("shed_now"))
             log.info("Heizstab-Budget (Kaskade): %.0f W zu / %.0f W ab (roh %s W)%s", budget_w,
                      budget_down_w, info["raw_w"], f", manuell {force}" if force else "")
         elif readings.true_surplus_w is not None:
@@ -929,6 +931,7 @@ class Controller:
             now,
             budget_down_w=budget_down_w,
             force=force,
+            shed_now=shed_now,
             summer="stop" if sm_stop else "heat" if sm_heating else None,
             summer_reason=sm_reason,
             surplus_fail_safe=bool(critical),

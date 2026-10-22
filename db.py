@@ -1190,6 +1190,7 @@ def init_cascade_tables() -> None:
             ("budget_w",            "INTEGER"),   # Heizstab-Budget (geglättet), Kaskade -> Controller
             ("budget_raw_w",        "INTEGER"),
             ("budget_down_w",       "INTEGER"),   # kürzeres Mittel (Abschalten)
+            ("budget_shed_now",     "INTEGER DEFAULT 0"),  # Batterie wartet: Phasen ohne Mindestlaufzeit abschalten
             ("budget_force",        "TEXT"),      # 'on' | 'off' (manuelle Übersteuerung)
             ("budget_at",           "TEXT"),
             ("consecutive_errors",  "INTEGER DEFAULT 0"),
@@ -1585,14 +1586,14 @@ def set_cascade_profile(season: str, order: list[str], min_stage: bool = False) 
 
 def set_cascade_budget(
     device_id: str, budget_w: int, raw_w: int, force: Optional[str] = None,
-    budget_down_w: Optional[int] = None,
+    budget_down_w: Optional[int] = None, shed_now: bool = False,
 ) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             "UPDATE cascade_devices SET budget_w = ?, budget_raw_w = ?, budget_force = ?, "
-            "budget_down_w = ?, budget_at = ? WHERE id = ?",
+            "budget_down_w = ?, budget_shed_now = ?, budget_at = ? WHERE id = ?",
             (int(budget_w), int(raw_w), force,
-             int(budget_w if budget_down_w is None else budget_down_w),
+             int(budget_w if budget_down_w is None else budget_down_w), 1 if shed_now else 0,
              datetime.now().isoformat(timespec="seconds"), device_id),
         )
 
@@ -1602,7 +1603,7 @@ def get_cascade_budget(device_type: str, max_age_s: float = 180.0) -> Optional[d
     try:
         with sqlite3.connect(DB_PATH) as conn:
             row = conn.execute(
-                "SELECT budget_w, budget_raw_w, budget_force, budget_at, budget_down_w FROM cascade_devices "
+                "SELECT budget_w, budget_raw_w, budget_force, budget_at, budget_down_w, budget_shed_now FROM cascade_devices "
                 "WHERE type = ? AND enabled = 1 ORDER BY priority ASC LIMIT 1",
                 (device_type,),
             ).fetchone()
@@ -1614,7 +1615,7 @@ def get_cascade_budget(device_type: str, max_age_s: float = 180.0) -> Optional[d
     if age > max_age_s:
         return None
     return {"budget_w": row[0], "raw_w": row[1], "force": row[2], "age_s": age,
-            "budget_down_w": row[4] if row[4] is not None else row[0]}
+            "budget_down_w": row[4] if row[4] is not None else row[0], "shed_now": bool(row[5])}
 
 
 def smooth_heater_budgets(

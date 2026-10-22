@@ -104,6 +104,7 @@ def decide_phases(
     surplus_fail_safe: bool = False,      # Hauptzähler/Wechselrichter nicht lesbar
     thermostat_open: Optional[dict] = None,   # {"open_min", "temp_c"}: Relais an, Heizstab zieht nichts
     practically_full: Optional[dict] = None,  # {"open_min", "temp_c", "release_c"}
+    shed_now: bool = False,               # Batterie (vorrangig) wartet: überzählige Phasen ohne Mindestlaufzeit aus
 ) -> list[PhaseOut]:
     n_active = sum(1 for ph in phases if not ph.disabled)
     p = replace(p, n_phases=min(p.n_phases, n_active))
@@ -245,7 +246,11 @@ def decide_phases(
                 turned_on += 1
                 out.append(tag(PhaseOut(PhaseAction.TURN_ON, f"{head}; schalte EIN"), on_code))
         elif i not in wanted and ph.state:
-            if elapsed(ph) < p.min_on_s:
+            if shed_now and elapsed(ph) < p.min_on_s:
+                out.append(tag(PhaseOut(PhaseAction.TURN_OFF,
+                                        f"{head}; Batterie hat Vorrang – schalte vor Ablauf der Mindestlaufzeit AUS"),
+                               "below_stop_threshold", battery_priority=True))
+            elif elapsed(ph) < p.min_on_s:
                 out.append(tag(PhaseOut(PhaseAction.UNCHANGED,
                                         f"{head}; Mindestlaufzeit {elapsed(ph):.0f}/{p.min_on_s:.0f} s"),
                                "min_on_time", remaining_s=rest(ph, p.min_on_s)))
