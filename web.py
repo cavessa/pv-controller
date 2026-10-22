@@ -428,6 +428,8 @@ def _cascade_summary(cfg: Config, r, heater_full: bool = False) -> dict[str, Any
                     measured[d["id"]] = float(d["last_status_power_w"])
         except Exception:
             log.debug("Kaskaden-Messwerte nicht lesbar", exc_info=True)
+        if r.wallbox_power_w is not None:
+            measured["wallbox"] = float(r.wallbox_power_w)    # wie die Energiefluss-Kachel (go-e live)
         return headline.cascade_headline(snap, order, r.storage_temp_c, comfort, tmax, heater_full=heater_full,
                                          measured=measured)
     grid = r.main_meter_power_w

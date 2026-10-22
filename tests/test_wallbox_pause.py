@@ -98,6 +98,13 @@ class ReasonTextTest(unittest.TestCase):
         devs["wallbox"].update(code="wallbox_not_eco_mode", data={"power_w": 0})
         self.assertEqual(_stage("wallbox", devs, {}, None, None, 64.0, True)[2],
                          "Wallbox: Standard – manuell, PV Controller greift nicht ein.")
+        # Überschrift nimmt die live gemessene Leistung (wie die Kachel), nicht den Wert aus dem Lauf
+        devs["wallbox"].update(code="wallbox_not_eco_mode", action="keep_on", data={"power_w": 1480})
+        st = _stage("wallbox", devs, {}, None, None, 64.0, True, measured={"wallbox": 8250.0})
+        self.assertIn("8,25 kW", st[2])
+        devs["wallbox"].update(code="keep_running", data={"power_w": 1480})
+        st = _stage("wallbox", devs, {}, None, None, 64.0, True, measured={"wallbox": 8250.0})
+        self.assertEqual(st[2], "Wallbox läuft (8,25 kW).")
         devs["wallbox"].update(code="wallbox_car_idle")
         self.assertEqual(_stage("wallbox", devs, {}, None, None, 64.0, True)[2], "Auto fertig/pausiert (Fahrzeug).")
 
@@ -252,3 +259,15 @@ class CascadeWallboxTest(TempDb):
         dev, st, amps = self.run_once(cfg, 564.0, 1460.0, car=2, lmo=4, amp=16)
         self.assertEqual(dev["wallbox"]["code"], "wallbox_pause_pending")
         self.assertEqual(amps, [6])                    # Eco: Strom wieder geregelt (16 → 6 A)
+
+
+class FrcFlagTest(TempDb):
+    def test_frc0_from_outside_clears_own_flag(self):
+        # 15:10: Moduswechsel auf Standard, go-e/App setzt frc=0 selbst – unser Merker darf nicht stehen bleiben
+        import db
+        from controller import Controller
+        from models import WallboxStatus
+        c = Controller(self.config(wallbox={"enabled": True, "url": "http://wb"}))
+        db.set_wallbox_frc_by_pv(True)
+        c._handle_wallbox(WallboxStatus(pv_surplus_active=False, force_state=0, car_state=2), None)
+        self.assertFalse(db.get_wallbox_frc_by_pv())

@@ -1045,6 +1045,8 @@ class Controller:
             wallbox_status,
             wallbox_read_error,
         )
+        if status is not None and status.force_state == 0 and not self._read_only and get_wallbox_frc_by_pv():
+            set_wallbox_frc_by_pv(False)        # frc=0 (App/go-e/Moduswechsel): keine eigene Pause mehr offen
         decision.code, decision.data = wallbox_reason_code(
             self.cfg.wallbox.enabled, status, decision.action,
             pv_paused=decision.target_force_state == 1 and status is not None and bool(status.pv_surplus_active))

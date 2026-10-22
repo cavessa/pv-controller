@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-22 – Überschrift: Wallbox-Leistung live wie die Kachel; Pause-Merker bei fremdem frc=0 löschen
+
+Standard-Test 15:10 (Prod): Moduswechsel erkannt, kein Eingriff, Batterie nie entladen („Entladung gesperrt: Wallbox lädt“, `discharge_w` 0).
+- Überschrift zeigte „Wallbox läuft (1,48 kW)“ (Wert aus dem Kaskadenlauf, Auto lief noch mit 6 A an), die Kachel 8,25 kW. `web._summary` gibt jetzt die live gelesene Wallbox-Leistung (`r.wallbox_power_w`, wie die Kachel) als Messwert an `headline` weiter.
+- `frc=0` kam beim Moduswechsel vom go-e/der App, nicht vom Controller – der Merker `wallbox_frc_by_pv` blieb auf 1 und eine spätere App-Pause in Eco wäre als eigene aufgehoben worden. Der Controller löscht den Merker jetzt, sobald der go-e `frc=0` meldet.
+- Tests: `tests/test_wallbox_pause.py`.
+
 ## 2026-10-22 – Wallbox im Standard-Modus: PV Controller greift nicht ein
 
 Modus kommt aus go-e `lmo` (3 = Standard, 4 = Eco/PV, 5 = Next Trip; live 15:00: `lmo=4`). Pause und Ladestrom-Begrenzung liefen schon nur bei `lmo=4`, eine eigene Pause hebt der Controller außerhalb von Eco schon seit `53cf721` sofort auf.

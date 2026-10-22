@@ -98,7 +98,9 @@ def _stage(key: str, devs: dict[str, dict], e: dict, temp: Optional[float], comf
         if wallbox_connected is False:
             return DONE, name, ""
     if d.get("code") == "wallbox_not_eco_mode":
-        pw = (d.get("data") or {}).get("power_w") or 0
+        pw = (measured or {}).get(key)
+        if pw is None:
+            pw = (d.get("data") or {}).get("power_w") or 0
         if pw > 100:
             return ACTIVE, name, f"Wallbox lädt {_w(pw)} (Standard – manuell, PV Controller greift nicht ein)."
         return DONE, name, "Wallbox: Standard – manuell, PV Controller greift nicht ein."
