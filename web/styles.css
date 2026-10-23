@@ -2024,9 +2024,8 @@ body.sheet-open { overflow: hidden; }
 .cons-row.stale .cons-bar i { background: rgba(255,255,255,0.3); }
 .cons-row.rest .cons-bar i { background: rgba(255,255,255,0.35); }
 .cons-row.rest { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 2px; }
-.cons-other summary { list-style: none; cursor: pointer; }
-.cons-other summary::-webkit-details-marker { display: none; }
-.cons-other[open] summary { margin-bottom: 6px; }
+.cons-other-head { cursor: pointer; padding: 4px 0; -webkit-tap-highlight-color: transparent; }
+.cons-other.open > .cons-other-head { margin-bottom: 2px; }
 .cons-other > .cons-row { margin-bottom: 6px; }
 .cons-edit { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 8px; }
 .cons-edit-head, .cons-edit-row { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr) 54px 28px; gap: 6px; align-items: center; }

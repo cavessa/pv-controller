@@ -3012,7 +3012,7 @@ async function dishwasherAction(kind) {
 }
 
 // ---------- Verbraucher (openHAB, nur lesen) ----------
-let consOtherOpen = false;
+let consOtherOpen = false, consLast = null;
 function renderConsumersCard(c) {
   const card = document.getElementById("consumers-card");
   if (!card) return;
@@ -3053,17 +3053,28 @@ function renderConsumersCard(c) {
   }
   if (small.length) {
     const sw = small.filter(d => fresh(d) && !d.covered && d.in_sum).reduce((a, d) => a + d.power_w, 0);
-    html += `<details class="cons-other"${consOtherOpen ? " open" : ""}><summary>${row(`Sonstige (${small.length})`, sw,
-      { title: `Ø 24 h unter ${c.small_avg_w} W` })}</summary>`
-      + small.sort(sortW).map(d => row(d.name, d.power_w, { indent: true, cls: d.stale ? "stale" : "child", note: note(d), title: d.item })).join("")
-      + "</details>";
+    html += `<div class="cons-other${consOtherOpen ? " open" : ""}"><div class="cons-other-head" role="button" tabindex="0" aria-expanded="${consOtherOpen}">${row(`${consOtherOpen ? "▾" : "▸"} Sonstige (${small.length})`, sw,
+      { title: `Ø 24 h unter ${c.small_avg_w} W` })}</div>`
+      + (consOtherOpen ? small.sort(sortW).map(d => row(d.name, d.power_w, { indent: true, cls: d.stale ? "stale" : "child", note: note(d), title: d.item })).join("") : "")
+      + "</div>";
   }
   if (c.rest_w != null)
     html += row("Rest (nicht einzeln gemessen)", Math.max(0, c.rest_w), { cls: "rest",
       title: "Hausverbrauch − Heizstab/Wallbox/Whirlpool/Durchlauferhitzer − gemessene Geräte" });
   list.htmlIfChanged = html;
-  const det = list.querySelector("details.cons-other");
-  if (det) det.ontoggle = () => { consOtherOpen = det.open; };
+  consLast = c;
+  if (!list._consBound) {
+    list._consBound = true;
+    const flip = e => {
+      if (!e.target.closest(".cons-other-head")) return;
+      if (e.type === "keydown" && e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      consOtherOpen = !consOtherOpen;
+      renderConsumersCard(consLast);
+    };
+    list.addEventListener("click", flip);
+    list.addEventListener("keydown", flip);
+  }
   sumEl.textIfChanged = `Σ ${kw(c.sum_w)} gemessen`;
   const loads = (c.heater_w || 0) + (c.wallbox_w || 0) + (c.whirlpool_w || 0) + (c.waterheater_w || 0);
   const nStale = devs.filter(d => d.stale).length;

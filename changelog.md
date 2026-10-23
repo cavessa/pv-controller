@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-23 – Verbraucher-Card: „Sonstige“ aufklappbar per JS statt `<details>`
+
+Auf dem iPhone ließ sich „Sonstige (n)“ nicht aufklappen. Die Zeile ist jetzt ein eigener Schalter (Klick/Tastatur per Event-Delegation, Zustand `consOtherOpen`, Pfeil ▸/▾); die Einzelgeräte werden nur bei geöffnetem Zustand gerendert (`web/app.js`, `web/styles.css`).
+- Waschmaschine fehlt in der Liste, weil sie nicht unter `consumers.devices` eingetragen ist (Einstellungen → Verbraucher, Item mit Leistung aus openHAB eintragen) – keine Code-Änderung nötig.
+
 ## 2026-10-22 – Wallbox-Budget mit Puffer für die Batterie; Eco dreiphasig richtig gerechnet
 
 Anlass: 15:26 Batterie 2310 W, Wallbox 14 A (3,3 kW); beim nächsten Einbruch drosselte der Wächter die Batterie (2310 → 490 W), weil die Wallbox erst langsamer nachregelt.
