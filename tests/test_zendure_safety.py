@@ -9,6 +9,7 @@ from unittest import mock
 
 import db
 import main
+import suntime
 import zendure_watchdog as wd
 from clients.zendure_client import ZendureStatus
 from config import ZendureConfig
@@ -146,7 +147,9 @@ class CascadeFailsafeTest(unittest.TestCase):
         self.assertIn("Hauptzähler nicht lesbar", db.get_zendure_ctl()["decision"])
 
     def test_inverter_unreadable_standby(self):
-        dev = self.run_svc(-3000.0, pv=None)
+        noon = datetime(2026, 6, 21, 12, 0, tzinfo=suntime.TZ)         # tagsüber: echte PV fehlt → Fail-safe
+        with mock.patch("cascade_service.CascadeService._now", return_value=noon):
+            dev = self.run_svc(-3000.0, pv=None)
         self.assertEqual(dev.writes[-1], (None, 0, 0))
         self.assertIn("Wechselrichter nicht lesbar", db.get_zendure_ctl()["decision"])
 

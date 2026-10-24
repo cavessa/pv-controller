@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-10-24 – Batterie: Haupt-WR nachts offline gilt als PV = 0 W (kein Fail-safe)
+
+Anlass: Haupt-WR (.195) ab 21:42 offline → Batterie im Fail-safe-Standby („Wechselrichter nicht lesbar“). Heute folgenlos (SoC schon auf Mindest-SoC 10 %), bei SoC über dem Minimum hätte das Haus nachts Netzstrom statt Batteriestrom gezogen.
+- `cascade_service._read_pv_total_w`: Ist der Haupt-WR nicht lesbar und die Sonne sicher weg (nach Sonnenuntergang + 30 min bzw. vor Sonnenaufgang − 30 min, `NIGHT_MARGIN`), zählt das als PV = 0 W. Die Batterie regelt dann mit dem Hauptzähler allein (Grundlast = Netzbezug + Entladung − Ladung). Tagsüber bleibt „nicht lesbar“ → Fail-safe. Hauptzähler nicht lesbar → weiter Fail-safe.
+- Neu `Config.location` (aus `latitude`/`longitude` der config.json, Sonnenzeiten über `suntime`). Der Heizstab-Controller bleibt unverändert im Fail-safe.
+- Tests: `tests/test_night_pv_zero.py` (Zeitfenster inkl. Sommer, Lesewert nie ersetzt, ganzer Kaskadenlauf nachts/tagsüber/ohne Zähler); `test_zendure_safety.test_inverter_unreadable_standby` läuft jetzt mit fester Tageszeit.
+
+## 2026-10-24 – Dashboard lädt schnell, auch wenn der Pergola-WR offline ist; WAL; gzip; keine externen Requests
+
+Anlass: Die Prod-Seite brauchte teils ~10 s. Messung: Alles unter 0,05 s außer `/api/solax` (3,3–6,5 s, bei mehreren gleichzeitigen Aufrufen bis 16 s). Der Pergola-WR ist offline, sobald er nichts produziert (auch tagsüber); jeder Aufruf wartete auf dessen Connect-Timeout (2 Versuche), und das Dashboard rendert erst, wenn `/api/solax` antwortet.
+- **Solax-Client** (`clients/solax_client.py`): nach Totalausfall 30 s Pause für dieses Gerät (`_FAIL_BACKOFF_S`), ein Lesender je Gerät (Lock, die Wartenden prüfen danach Cache/Backoff), Fallback auf Cache-Daten nur noch bis 180 s Alter (`_STALE_MAX_S`; vorher wurden 3,4 h alte Pergola-Werte als aktuell geliefert – auch in `update_pv_peak`, Status und Hausverbrauch), Connect-Timeout 1 s **nur für den Pergola-WR** (`SOLAX2_CONNECT_TIMEOUT_S`; der Haupt-WR behält sein Timeout, sein Dongle nimmt Verbindungen langsam an). „Verbindung testen" (`/api/solax2/test`) setzt den Backoff zurück.
+- **Frontend** (`web/app.js`): `refreshStatus` rendert das Dashboard aus `/api/status` (hat alle Livewerte) und zeichnet `/api/solax` (Tageswerte, Peak) nach, sobald es antwortet; die String-Warnung nutzt die Strings aus `/api/status` statt eines zweiten `/api/solax`.
+- **Web** (`web.py`): `GZipMiddleware` (~490 KB → ~123 KB); `/static` mit `Cache-Control: public, max-age=31536000, immutable` für `?v=`-URLs und Schriften, sonst `no-cache`; `index.html` setzt `?v=` je Asset automatisch aus der Dateiänderung (kein manuelles Hochzählen mehr) und antwortet mit ETag/304.
+- **SQLite WAL** (`db.py`, `_enable_wal`): einmaliges `journal_mode=WAL` in `init_db`. `.gitignore`: `*.db-wal/-shm/-journal`. `backup.sh` nutzt schon die Python-Backup-API und sichert die Live-DB nicht per `tar` – unverändert korrekt; Restore-Test in Dev (Snapshot während Schreiben, `integrity_check` ok). Hinweis in `deploy/README.md`.
+- **Keine externen Requests beim Laden:** DM Mono lokal (`web/fonts/*.woff2`, `@font-face` in `styles.css`, SIL OFL), Google-Fonts-Links entfernt; IP-Geolokalisierung (`ip-api.com`, `ipapi.co`) aus „Standort vom Gerät übernehmen" entfernt (nur noch Browser-Ortung über HTTPS). Die Ortssuche (nominatim.openstreetmap.org) läuft nur beim Tippen im Einstellungsfeld.
+- **Offline-Meldungen gedrosselt:** Totalausfall eines Wechselrichters wird nur beim Wechsel und danach höchstens alle 30 min geloggt (Zustand in `data/offline_log_state.json`, je Prozessart); Einzelversuche DEBUG; „Pergola-WR nicht erreichbar" im Controller DEBUG. Vorher mehrere WARNING/ERROR-Zeilen pro Minute (14 MB des 73-MB-`cron.log`).
+- **Log-Rotation:** `deploy/logrotate.conf` (täglich, 14 Generationen, komprimiert) + User-Cron-Zeile (siehe `deploy/README.md`). Dev-`cron.log` (756 MB, Altbestand vom 12.10.) und `dev-web.log` gelöscht.
+- Messung (Pergola offline, Fake-Haupt-WR, 5 Ladevorgänge, Median): erstes Dashboard-Bild 5,6 s → 0,12 s; `/api/solax` 5,6 s → 0,05 s (alle 30 s einmal ~2,3 s); übertragen 504 KB → 126 KB.
+- Tests: `tests/test_web_speed.py`, `tests/test_offline_log.py`.
+
 ## 2026-10-23 – Verbraucher-Card: „Sonstige“ aufklappbar per JS statt `<details>`
 
 Auf dem iPhone ließ sich „Sonstige (n)“ nicht aufklappen. Die Zeile ist jetzt ein eigener Schalter (Klick/Tastatur per Event-Delegation, Zustand `consOtherOpen`, Pfeil ▸/▾); die Einzelgeräte werden nur bei geöffnetem Zustand gerendert (`web/app.js`, `web/styles.css`).

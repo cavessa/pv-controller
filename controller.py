@@ -123,7 +123,8 @@ class Controller:
         )
         self.solax2: Optional[SolaxClient] = None
         if config.solax2_active:
-            self.solax2 = SolaxClient(config.solax2.url, config.solax2.pwd, config.solax2_timeout)
+            self.solax2 = SolaxClient(config.solax2.url, config.solax2.pwd, config.solax2_timeout,
+                                       config.solax2_connect_timeout)
         self.zendure: Optional[ZendureClient] = None
         if config.zendure_active:
             self.zendure = ZendureClient(config.zendure.ip, config.zendure.sn)
@@ -208,7 +209,7 @@ class Controller:
             log.warning("Pergola-WR: Lesefehler", exc_info=True)
             return
         if d is None:
-            log.warning("Pergola-WR nicht erreichbar (n/a)")
+            log.debug("Pergola-WR nicht erreichbar (n/a)")      # Meldung kommt gedrosselt aus dem Solax-Client
             return
         r.solax_pergola = d
         r.pv2_power_w = d.pv_ac_w

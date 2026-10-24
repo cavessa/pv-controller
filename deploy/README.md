@@ -48,3 +48,24 @@ Voraussetzung: `/etc/sudoers.d/pvcontroller` (siehe `sudoers.pvcontroller`) – 
 **Alltag nach dem Umzug:** in `~/pvcontroller` (Dev, Dry-Run) entwickeln → committen → pushen (nach Freigabe) → `~/pvcontroller-prod/deploy/deploy.sh`.
 
 **Wartung:** `python3 deploy/maintenance/prune_once.py` (Dry-Run) bzw. `--apply` räumt `cascade_log` einmalig auf (Snapshot, Lock, VACUUM, integrity_check). Danach hält `db.prune()` im Minuten-Lauf (täglich ab 03:00) die Tabellen klein.
+
+## SQLite im WAL-Modus
+
+`db.init_db()` schaltet `pvcontroller.db` einmalig auf `journal_mode=WAL` (steckt danach in der Datei). Dadurch warten Web-Leser nicht auf den Minutenlauf, und das Schreiben braucht weniger fsync. Neben der DB liegen jetzt `pvcontroller.db-wal` und `-shm` (gleiche Rechte wie die DB, per `.gitignore` ausgeschlossen).
+- **Nie die DB-Datei allein mit `cp`/`tar`/`rsync` kopieren** – Daten, die nur im `-wal` stehen, gehen sonst verloren. Immer die Python-Backup-API nehmen (`sqlite3.connect(quelle).backup(ziel)`, wie `backup.sh`, `prune_once.py` und der Umzug oben) oder vorher `PRAGMA wal_checkpoint(TRUNCATE)`.
+- Ein per Backup-API erzeugter Snapshot ist eine ganz normale, eigenständige DB-Datei (`integrity_check`, Restore = Datei an die Stelle kopieren, solange nichts schreibt). Restore-Test: `tests/test_web_speed.py` (`WalTest`).
+- Docker: `entrypoint.sh` verlinkt `/app/pvcontroller.db` auf `/data`; SQLite legt `-wal`/`-shm` neben die echte Datei – das Verzeichnis `/data` muss als Volume gemountet sein (nicht nur die einzelne Datei).
+
+## Log-Rotation (Prod-`cron.log`, ohne root)
+
+`deploy/logrotate.conf`: täglich, 14 Generationen, komprimiert. Der Cron hängt mit `>>` an und öffnet die Datei bei jedem Lauf neu, deshalb genügt Umbenennen (kein `copytruncate`). Einmalig in der User-Crontab eintragen (vorher `crontab -l > ~/crontab.bak`):
+
+```
+20 4 * * * /usr/sbin/logrotate -s $HOME/.logrotate.state $HOME/pvcontroller-prod/deploy/logrotate.conf >/dev/null 2>&1
+```
+
+Prüfen ohne Änderung: `logrotate -d -s /tmp/lr.state ~/pvcontroller-prod/deploy/logrotate.conf`.
+
+## Offline-Meldungen der Wechselrichter
+
+`clients/solax_client.py` meldet einen Totalausfall nur beim Wechsel (offline / wieder erreichbar) und danach höchstens alle 30 min („weiterhin nicht erreichbar, seit …"); die Einzelversuche stehen auf DEBUG. Der Zustand liegt je Prozessart in `data/offline_log_state.json` (jeder Cron-Lauf ist ein neuer Prozess). Nach einem Totalausfall wird das Gerät 30 s lang nicht erneut abgefragt (Web und Cron), und Cache-Daten gelten nur 180 s als Ersatz – ältere Werte zählen als „nicht erreichbar".

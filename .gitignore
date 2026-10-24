@@ -3,13 +3,18 @@ config*.json
 !config.example.json
 config.json.bak-*
 
-# Datenbanken
+# Datenbanken (WAL: -wal/-shm liegen neben der DB)
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 
 # Laufzeit-Daten
 temp_history.json
 *.log
 data/logs/
+data/offline_log_state.json
+data/*.tmp
 
 # Python
 .venv/

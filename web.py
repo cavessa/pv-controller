@@ -12,6 +12,7 @@ Wichtig:
 from __future__ import annotations
 
 import base64
+import hashlib
 import copy
 import os
 import sqlite3
@@ -22,13 +23,15 @@ import secrets
 import shutil
 import threading
 import time
+from urllib.parse import parse_qs
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -92,7 +95,21 @@ async def _lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="PV-Controller Web", docs_url=None, redoc_url=None, lifespan=_lifespan)
-app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
+
+
+class _StaticAssets(StaticFiles):
+    """Statische Dateien: Versions-URLs (``?v=``) und Schriften ein Jahr cachen, alles andere revalidieren."""
+
+    async def get_response(self, path: str, scope):
+        resp = await super().get_response(path, scope)
+        if resp.status_code in (200, 304):
+            versioned = "v" in parse_qs(scope.get("query_string", b"").decode("latin-1"))
+            immutable = versioned or path.startswith("fonts/")
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable" if immutable else "no-cache"
+        return resp
+
+
+app.mount("/static", _StaticAssets(directory=str(WEB_DIR)), name="static")
 
 
 # ---- Auth middleware -------------------------------------------------------
@@ -129,6 +146,10 @@ async def _auth_middleware(request: Request, call_next):
         status_code=401,
         headers={"WWW-Authenticate": 'Basic realm="PV Controller"'},
     )
+
+
+# gzip als äußerste Schicht (zuletzt registriert): JS/CSS/HTML/JSON schrumpfen auf ~¼
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 
 # ---- Helpers --------------------------------------------------------------
@@ -706,9 +727,34 @@ def _cached_status() -> tuple[ControllerResult, Config]:
 # ---- Routes: static --------------------------------------------------------
 
 
+_ASSET_REF_RE = re.compile(r'(/static/[\w./-]+)\?v=[\w.-]+')
+_index_cache: dict[str, Any] = {"key": None, "html": "", "etag": ""}
+
+
+def _render_index() -> tuple[str, str]:
+    """index.html mit ``?v=<Änderungszeit>`` je Asset: Dateien dürfen ewig gecacht werden und ändern ihre
+    URL von selbst, sobald sich JS/CSS ändert (kein manuelles Hochzählen mehr nötig)."""
+    src = WEB_DIR / "index.html"
+    raw = src.read_text(encoding="utf-8")
+    refs = sorted({m.group(1) for m in _ASSET_REF_RE.finditer(raw)})
+    key = (src.stat().st_mtime_ns, tuple((r, (WEB_DIR / r[len("/static/"):]).stat().st_mtime_ns) for r in refs
+                                         if (WEB_DIR / r[len("/static/"):]).exists()))
+    if _index_cache["key"] != key:
+        def _ver(m: re.Match) -> str:
+            f = WEB_DIR / m.group(1)[len("/static/"):]
+            return f"{m.group(1)}?v={f.stat().st_mtime_ns // 1_000_000_000:x}" if f.exists() else m.group(0)
+        html = _ASSET_REF_RE.sub(_ver, raw)
+        _index_cache.update(key=key, html=html, etag='"' + hashlib.md5(html.encode()).hexdigest() + '"')
+    return _index_cache["html"], _index_cache["etag"]
+
+
 @app.get("/", include_in_schema=False)
-def index() -> FileResponse:
-    return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-cache"})
+def index(request: Request) -> Response:
+    html, etag = _render_index()
+    headers = {"Cache-Control": "no-cache", "ETag": etag}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return HTMLResponse(html, headers=headers)
 
 
 # ---- Routes: API -----------------------------------------------------------
@@ -1432,7 +1478,8 @@ def _read_pergola(cfg: Config):
         return None
     from clients.solax_client import SolaxClient
     try:
-        return SolaxClient(cfg.solax2.url, cfg.solax2.pwd, cfg.solax2_timeout).get_realtime_data()
+        return SolaxClient(cfg.solax2.url, cfg.solax2.pwd, cfg.solax2_timeout,
+                           cfg.solax2_connect_timeout).get_realtime_data()
     except Exception:
         log.warning("Pergola-WR: Lesefehler", exc_info=True)
         return None
@@ -1609,7 +1656,9 @@ def api_solax2_test(req: Solax2TestRequest, response: Response) -> dict[str, Any
         if not pwd:
             raise HTTPException(400, "kein gespeichertes Passwort – bitte eintragen")
     timeout = max(cfg.runtime.request_timeout_seconds, 8)
-    d = SolaxClient(req.url, pwd, timeout).get_realtime_data()
+    tester = SolaxClient(req.url, pwd, timeout)
+    tester.reset_backoff()                               # Test fragt immer live, auch kurz nach einem Ausfall
+    d = tester.get_realtime_data()
     if d is None:
         raise HTTPException(503, "Solax nicht erreichbar oder Passwort falsch")
     return {

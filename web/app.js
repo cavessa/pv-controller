@@ -2311,14 +2311,14 @@ function renderStringAlertsList(alerts) {
   }).join("");
 }
 
-async function _checkLiveStringAlert() {
+async function _checkLiveStringAlert(status) {
   const el = document.getElementById("string-dash-alert");
   if (!el) return;
   try {
     const data = await api("/api/strings/alerts?days=1");
-    // Nur anzeigen, solange der Fehler live noch besteht (Alert-Log hält 24 h).
-    const live = await api("/api/solax").catch(() => null);
-    const p1 = live?.pv1_power_w, p2 = live?.pv2_power_w;
+    // Nur anzeigen, solange der Fehler live noch besteht (Alert-Log hält 24 h); Strings aus /api/status.
+    const strings = status?.live?.strings;
+    const p1 = strings?.[0]?.w, p2 = strings?.[1]?.w;
     const stillFaulty = p1 == null || p2 == null ||
       (p1 < 10 && p2 > 200) || (p2 < 10 && p1 > 200);
     const active = stillFaulty ? (data.entries || []) : [];
@@ -3799,7 +3799,6 @@ async function refreshStatus() {
   loadPhaseLogs();
   loadForecast();
   drawHausverbrauchSparkline();
-  _checkLiveStringAlert();
   if (activeTab === "prioritaeten") loadCascade();
 
   cascadeP.then(cascadeStatus => {
@@ -3811,22 +3810,36 @@ async function refreshStatus() {
   hourlyP.then(hourlyToday => { renderStringChart(hourlyToday.entries || [], "pv-strings-chart-wrap", sunWindow(hourlyToday)); syncTopCards(); });
   historyP.then(history => renderWbChart(history.entries));
 
+  // Erstes Bild nur aus /api/status (alle Livewerte); /api/solax (Tageswerte, Peak) kann langsam sein
+  // und rendert nach, sobald es da ist.
+  let data;
   try {
-    const [data, solax] = await Promise.all([statusP, solaxP]);
-    if (solax !== null) {
-      lastSolaxData = solax;
-    } else {
-      console.log("[refreshStatus] /api/solax failed – using cached data:", lastSolaxData ? "available" : "none");
-    }
-    const effectiveSolax = withLive(solax !== null ? solax : lastSolaxData, data);
-    renderStatus(data);
+    data = await statusP;
+  } catch (e) {
+    showError("Status-Abfrage fehlgeschlagen: " + e.message);
+    return;
+  }
+  const paint = solax => {
+    const effectiveSolax = withLive(solax, data);
     renderSolax(effectiveSolax);
     setPvPill(effectiveSolax ? effectiveSolax.pv_total_w : null);
     syncTopCards();
-    const history = await historyP;
+  };
+  try {
+    renderStatus(data);
+    paint(lastSolaxData);
+    _checkLiveStringAlert(data);
     loadStorage().catch(() => {});
     loadHouseDash().catch(() => {});
     loadZendureChart().catch(() => {});
+
+    const solax = await solaxP;
+    if (solax !== null) {
+      lastSolaxData = solax;
+      paint(solax);
+    } else {
+      console.log("[refreshStatus] /api/solax failed – using cached data:", lastSolaxData ? "available" : "none");
+    }
   } catch (e) {
     showError("Status-Abfrage fehlgeschlagen: " + e.message);
   }
@@ -5288,7 +5301,7 @@ async function getDeviceLocation(event) {
   btn.textContent = '📍 Ermittle Standort...';
   btn.disabled = true;
 
-  // Versuch 1: Browser Geolocation (funktioniert nur über HTTPS/localhost)
+  // Browser-Geolocation (nur über HTTPS/localhost); keine IP-Ortung über Drittdienste
   if (navigator.geolocation && location.protocol === 'https:') {
     try {
       const pos = await new Promise((resolve, reject) => {
@@ -5303,33 +5316,9 @@ async function getDeviceLocation(event) {
     }
   }
 
-  // Versuch 2: IP-Geolocation (funktioniert immer)
-  try {
-    const response = await fetch('http://ip-api.com/json/?fields=lat,lon,city');
-    const data = await response.json();
-    if (data.lat && data.lon) {
-      setLocation(data.lat, data.lon, btn, data.city);
-      return;
-    }
-  } catch(e) {
-    // Nächster Fallback
-  }
-
-  // Versuch 3: ipapi.co als zweiter Fallback
-  try {
-    const response = await fetch('https://ipapi.co/json/');
-    const data = await response.json();
-    if (data.latitude && data.longitude) {
-      setLocation(data.latitude, data.longitude, btn, data.city);
-      return;
-    }
-  } catch(e) {
-    // Alle Fallbacks fehlgeschlagen
-  }
-
   btn.textContent = '📍 Standort vom Gerät übernehmen';
   btn.disabled = false;
-  alert('Standort konnte nicht ermittelt werden. Bitte manuell eingeben oder Google Maps nutzen.');
+  alert('Standort konnte nicht ermittelt werden (Geräte-Ortung geht nur über HTTPS). Bitte Ort suchen oder Koordinaten manuell eingeben.');
 }
 
 function setLocation(lat, lon, btn, city) {

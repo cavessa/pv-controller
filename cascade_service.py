@@ -30,6 +30,7 @@ from clients.zendure_client import ZendureClient
 from zendure_control import DEVICE_MAX_W, WRITE_DELTA_W
 from heater_phases import RELEASE_DROP_C, THERMOSTAT_OPEN_W
 import meter_ring
+import suntime
 import wallbox_pause
 from config import Config
 from heater_power import PhaseRead
@@ -61,6 +62,7 @@ from db import (
 _MAX_ERRORS = 5
 _METER_READ_TIMEOUT_S = 1.5   # Lesen darf kurz warten; ein toter Zähler bremst sonst jeden Lauf
 _AUTO_RETRY_HOURS = 1
+NIGHT_MARGIN = timedelta(minutes=30)   # Haupt-WR offline gilt erst so lange nach Sonnenuntergang (vor Aufgang) als PV 0 W
 
 log = logging.getLogger(__name__)
 
@@ -83,7 +85,8 @@ class CascadeService:
         )
         self.solax2: Optional[SolaxClient] = None
         if config.solax2_active:
-            self.solax2 = SolaxClient(config.solax2.url, config.solax2.pwd, config.solax2_timeout)
+            self.solax2 = SolaxClient(config.solax2.url, config.solax2.pwd, config.solax2_timeout,
+                                       config.solax2_connect_timeout)
         self.goe: Optional[GoeClient] = None
         self._goe_cache: Optional[dict] = None
         if config.wallbox.enabled and config.wallbox.url:
@@ -626,10 +629,30 @@ class CascadeService:
             log.warning("Kaskade: Speichertemperatur nicht lesbar", exc_info=True)
             return None
 
+    def _now(self) -> datetime:
+        return datetime.now(suntime.TZ)
+
+    def _night_without_sun(self) -> bool:
+        """Sonne sicher weg: nach Sonnenuntergang + NIGHT_MARGIN bzw. vor Sonnenaufgang − NIGHT_MARGIN."""
+        if self.cfg.location is None:
+            return False
+        now = self._now()
+        rise, sset = suntime.sun_times(now.date(), *self.cfg.location)
+        if rise is None or sset is None:
+            return False
+        return now < rise - NIGHT_MARGIN or now > sset + NIGHT_MARGIN
+
     def _read_pv_total_w(self) -> Optional[float]:
-        """Gesamt-PV als AC-Leistung (Haupt-WR + Pergola) – Solax-Lesewerte sind prozessweit gecacht."""
+        """Gesamt-PV als AC-Leistung (Haupt-WR + Pergola) – Solax-Lesewerte sind prozessweit gecacht.
+
+        Haupt-WR nicht lesbar: nachts (Sonne sicher weg) zählt das als PV = 0 W, damit die Batterie mit dem
+        Hauptzähler allein weiterregelt (Grundlast = Netzbezug + Entladung − Ladung) statt in den Fail-safe
+        zu gehen. Tagsüber bleibt „nicht lesbar“ (None → Fail-safe): dort fehlt echte PV-Leistung."""
         pv = self.solax.get_pv_ac_w()
         if pv is None:
+            if self._night_without_sun():
+                log.debug("Kaskade: Haupt-WR nachts nicht lesbar – PV = 0 W (Batterie regelt mit dem Hauptzähler)")
+                return 0.0
             return None
         if self.solax2 is not None:
             try:

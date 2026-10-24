@@ -52,7 +52,22 @@ def append_temp_history(
         pass
 
 
+def _enable_wal() -> None:
+    """WAL: Leser (Web) warten nicht auf den Schreiber (Minutenlauf), und das Schreiben braucht weniger
+    fsync. Der Modus steckt in der DB-Datei (einmalig nötig); schlägt das Umschalten wegen eines gerade
+    offenen Schreibers fehl, versucht es der nächste Start erneut."""
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        logging.getLogger(__name__).warning("WAL konnte nicht aktiviert werden: %s", e)
+
+
 def init_db() -> None:
+    _enable_wal()
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """

@@ -418,6 +418,8 @@ class Config:
     solax2: Optional[SolaxConfig] = None
     # Warnmarke für die Hausanschluss-Belastung (kW), Lastspitzen-Anzeige
     house_max_load_kw: float = 11.0
+    # Standort (Breite, Länge) für Sonnenzeiten; None = nicht gesetzt
+    location: Optional[tuple[float, float]] = None
     zendure: Optional[ZendureConfig] = None
     cascade: CascadeConfig = field(default_factory=CascadeConfig)
     whirlpool_meter: Optional[WhirlpoolMeterConfig] = None
@@ -464,6 +466,11 @@ class Config:
         """HTTP-Timeout für den Pergola-WR (eigener Wert, sonst Standard 3 s)."""
         t = self.solax2.timeout_s if self.solax2 is not None else None
         return float(SOLAX2_TIMEOUT_S if t is None else t)
+
+    @property
+    def solax2_connect_timeout(self) -> float:
+        """Kurzes Limit für den Verbindungsaufbau zum Pergola-WR (ohne Sonne offline)."""
+        return SOLAX2_CONNECT_TIMEOUT_S
 
     @property
     def solax2_active(self) -> bool:
@@ -519,6 +526,7 @@ def parse_zendure(raw: dict) -> Optional[ZendureConfig]:
 
 
 SOLAX2_TIMEOUT_S = 3.0      # Default für den Pergola-WR (solax2.timeout_s)
+SOLAX2_CONNECT_TIMEOUT_S = 1.0   # Verbindungsaufbau Pergola-WR: offline (ohne Sonne) soll schnell auffallen
 
 
 def parse_solax2(raw: dict) -> Optional[SolaxConfig]:
@@ -534,6 +542,11 @@ def parse_solax2(raw: dict) -> Optional[SolaxConfig]:
         max_w=float(block.get("max_w", 1000.0)),
         timeout_s=float(block.get("timeout_s", SOLAX2_TIMEOUT_S)),
     )
+
+
+def _location(raw: dict) -> Optional[tuple[float, float]]:
+    import suntime
+    return suntime.location(raw)
 
 
 def load_config(path: str | Path) -> Config:
@@ -558,6 +571,7 @@ def load_config(path: str | Path) -> Config:
         }),
         solax2=parse_solax2(raw),
         house_max_load_kw=float(raw.get("house_max_load_kw", 11.0)),
+        location=_location(raw),
         zendure=parse_zendure(raw),
         whirlpool_meter=parse_whirlpool_meter(raw),
         waterheater_meter=parse_waterheater_meter(raw),
