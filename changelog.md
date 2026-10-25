@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-25 – Dashboard-Darstellung: gleiche Card-Abstände, Energiefluss füllt die Card, Pergola „offline“
+
+- Rechte Spalte: Cards standen 32 px auseinander (Grid-Gap 16 px + `.card` margin 16 px), links 16 px → Reihen beider Spalten versetzt (z. B. „Eigenverbrauch“ vs. „Heizstab Phasen“). Jetzt überall nur der Card-Abstand (`.dashboard-right .grid { row-gap: 0 }`, `.dashboard-bottom` ohne Extra-Abstand). Toter CSS-Rest `#flow-svg { max-width }` entfernt.
+- Energiefluss (iPad/Desktop): Wird die Card auf die Höhe der PV-Card gestreckt, rücken die Reihen des Diagramms auseinander (max. 90 viewBox-Einheiten, `syncTopCards` → `flowExtraU`), statt oben/unten Leerraum zu lassen. iPad 820 px: Diagramm 194 → 250 px Höhe in derselben Card, Restabstand = Padding. Beim Neuzeichnen werden Kaskade/Batterie/Whirlpool/Durchlauferhitzer aus dem aktuellen Stand genommen.
+- Pergola-WR nicht erreichbar: im Energiefluss „offline“ (gedimmte Kachel, statt „n/a“), in der PV-Card „offline“ bei Balkonkraftwerk und Pergola-Zeile (statt „0 W“, Balken leer).
+
 ## 2026-10-25 – Ursache des nächtlichen 02:00-Neustarts gefunden; DST-Check angepasst
 
 - Ursache: Der Shelly-Plug „Fritz.Box“ hatte einen Zeitplan täglich 02:00 Aus / 5 s später An; der Pi hängt seit dem 20.10. an derselben Steckdose (Neustart 21.–25.10., am 25.10. zweimal wegen der doppelten 02:00-Stunde). Zeitplan deaktiviert. Damit ist auch der frühere „02:01-Aussetzer“ aller Geräte erklärt (nicht 3EM-Firmware/UTC).

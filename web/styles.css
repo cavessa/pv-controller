@@ -1218,10 +1218,6 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 
   .dashboard-right .grid { grid-template-columns: 1fr; }
 
-  /* Hauptzähler + Bedarf pro Nacht in der rechten Spalte (linke ist länger) */
-  .dashboard-bottom { margin-top: 0; }
-
-  #flow-svg { max-width: 500px; }
 }
 
 /* ═══════════════════ Prioritäten Tab ═══════════════════ */
@@ -1619,7 +1615,10 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 .storage-hour.hidden { display: none; }
 
 /* Hauptzähler-Card: volle Breite ganz unten im Dashboard */
-.dashboard-bottom { margin-top: 20px; }
+.dashboard-bottom { margin-top: 0; }
+/* Abstand zwischen Cards überall nur über .card margin-bottom (16 px) – kein zusätzlicher Grid-Gap,
+   sonst stehen die Cards rechts 32 px auseinander und die Reihen beider Spalten versetzt */
+.dashboard-right .grid { row-gap: 0; }
 
 /* -------- Batterie-Card (Zendure) -------- */
 .zendure-card.hidden { display: none; }

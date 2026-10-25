@@ -442,9 +442,15 @@ function renderStatus(s) {
 // ══════════════════════════════════════════════════════════════════
 // Energiefluss – haus-zentriertes Layout
 // ══════════════════════════════════════════════════════════════════
+// Zusätzliche Höhe (viewBox-Einheiten) zwischen den Reihen, damit das Diagramm eine gestreckte
+// Energiefluss-Card ausfüllt statt oben/unten Leerraum zu lassen (gesetzt von syncTopCards)
+let flowExtraU = 0, lastFlowArgs = null;
+const FLOW_EXTRA_MAX = 90;
+
 function renderEnergyFlow(heater, wb, cs, zd, wp, wh) {
   const el = document.getElementById("flow-diagram");
   if (!el) return;
+  lastFlowArgs = [heater, wb];   // Rest beim Neuzeichnen aus den aktuellen Globals (Kaskade kommt oft später)
 
   const W = 360, ACTIVE = "#2ed8a3", PVC = "#fbbf24";
   const NW = 88, NH = 52, H_W = 100;
@@ -454,6 +460,7 @@ function renderEnergyFlow(heater, wb, cs, zd, wp, wh) {
   const pergolaOn_  = heater.pv2_enabled === true;
   const pv1W    = pergolaOn_ ? (heater.pv1_power ?? 0) : pvW;
   const pgW     = heater.pv2_power ?? 0;
+  const pgOffline = heater.pv2_power == null;    // Pergola-WR nicht erreichbar (offline, sobald er nichts erzeugt)
   const pgName  = (heater.pv2_name || "Pergola").toUpperCase().slice(0, 11);
   const gridW   = heater.main_meter_power ?? 0;
   const heaterW = heater.heater_meter_power ?? 0;
@@ -497,7 +504,8 @@ function renderEnergyFlow(heater, wb, cs, zd, wp, wh) {
   const hvStr = kwOrW(hvW);
 
   // node geometry (SVG coordinates, viewBox 0 0 360 H)
-  const TOP_Y = 4, MID_Y = 74, BUS_Y = 138, BOT_Y = 148;
+  const EX = flowExtraU;
+  const TOP_Y = 4, MID_Y = 74 + EX / 2, BOT_Y = 148 + EX, BUS_Y = (MID_Y + NH + BOT_Y) / 2;
   const PG_W = 76;
   const pv = pergolaOn_
     ? { x: W / 2 - 8 - NW, y: TOP_Y, cx: W / 2 - 8 - NW / 2, by: TOP_Y + NH }
@@ -680,7 +688,7 @@ function renderEnergyFlow(heater, wb, cs, zd, wp, wh) {
   el.htmlIfChanged = `<svg viewBox="0 0 ${W} ${SVG_H}" width="100%" style="display:block;margin-top:8px">
 ${conn.join("\n")}
 ${node(pv.x, pv.y, NW, NH, { icon:"☀️", label:"PV", value:kwOrW(pv1W), sub:"", aktiv:pv1On, accent:PVC, always:true, target:"pv-card" })}
-${pergolaOn_ ? node(pg.x, pg.y, PG_W, pg.nh, { icon:"☀️", label:pgName, value: heater.pv2_power == null ? "n/a" : kwOrW(pgW), sub:"", aktiv:pgOn, accent:PVC, always:true, target:"pv-card" }) : ""}
+${pergolaOn_ ? node(pg.x, pg.y, PG_W, pg.nh, { icon:"☀️", label:pgName, value: pgOffline ? "offline" : kwOrW(pgW), sub:"", aktiv:pgOn, accent:PVC, always:!pgOffline, target:"pv-card" }) : ""}
 ${pergolaOn_ ? `<text x="${W/2}" y="${pv.by + 6.5}" text-anchor="middle" font-size="6.5" fill="rgba(255,255,255,0.5)" letter-spacing="1" font-family="'DM Mono',monospace">${esc(pvSumStr)}</text>` : ""}
 ${node(nz.x, nz.y, NW, NH, { icon:"⚡", label:"NETZ", value:nzVal, sub:nzSub, aktiv:gridOn, target:"meter-card" })}
 ${hausNode()}
@@ -764,16 +772,19 @@ function renderSolax(d) {
     const pergola = d.pergola_enabled === true;
     const fmtMax = w => w >= 1000 ? `${+(w / 1000).toFixed(1)} kW` : `${Math.round(w)} W`;
     const row = s => {
-      const pct = Math.max(2, Math.min(100, s.w / s.max * 100)).toFixed(1);
+      const pct = Math.max(2, Math.min(100, (s.w ?? 0) / s.max * 100)).toFixed(1);
+      const val = s.off ? `<span style="color:#6a6d75">offline</span>`
+        : `<span style="color:#e0e2e6">${s.w == null ? "n/a" : Math.round(s.w) + " W"}</span><span style="color:#6a6d75;font-size:11px;margin-left:6px">/ ${fmtMax(s.max)}</span>`;
       return `<div class="pv-string">
         <div class="pv-string-label">${s.n}</div>
-        <div class="pv-string-bar-wrap"><div class="pv-string-bar ${s.cls}" style="width:${pct}%"></div></div>
-        <div class="pv-string-val"><span style="color:#e0e2e6">${s.w == null ? "n/a" : Math.round(s.w) + " W"}</span><span style="color:#6a6d75;font-size:11px;margin-left:6px">/ ${fmtMax(s.max)}</span></div>
+        <div class="pv-string-bar-wrap"><div class="pv-string-bar ${s.cls}" style="width:${s.off ? 0 : pct}%"></div></div>
+        <div class="pv-string-val">${val}</div>
         <div class="pv-string-sub">${s.v == null ? "" : s.v.toFixed(0) + " V · " + s.a.toFixed(1) + " A" + (s.dc ? " · DC" : "")}</div>
       </div>`;
     };
     // Abschnittskopf mit Summe (AC-Leistung des Wechselrichters); Zeilen darunter = DC je String
-    const group = (name, w) => `<div class="pv-group"><span>${name}</span><b>${w == null ? "n/a" : Math.round(w) + " W"}</b></div>`;
+    const group = (name, w, off = false) => `<div class="pv-group"><span>${name}</span>${off
+      ? `<b style="color:var(--text-muted);font-weight:500">offline</b>` : `<b>${w == null ? "n/a" : Math.round(w) + " W"}</b>`}</div>`;
     const str1Max = d.str1_max_w ?? 11500, str2Max = d.str2_max_w ?? 6500;
     const strs = [
       { n: "STR1 (Dach)", w: d.pv1_power_w, v: d.pv1_voltage_v, a: d.pv1_current_a, cls: "str1", max: str1Max, dc: true },
@@ -785,8 +796,8 @@ function renderSolax(d) {
       const pgName = d.pergola_name || "Pergola";
       stringsEl.htmlIfChanged =
         group("PV-Anlage", d.main_total_w) + strs +
-        group("Balkonkraftwerk", d.pergola_ok ? d.pergola_power_w : 0) +
-        row({ n: pgName, w: d.pergola_ok ? (d.pergola_dc_w ?? d.pergola_power_w) : 0,
+        group("Balkonkraftwerk", d.pergola_power_w, !d.pergola_ok) +
+        row({ n: pgName, w: d.pergola_ok ? (d.pergola_dc_w ?? d.pergola_power_w) : null, off: !d.pergola_ok,
               v: d.pergola_ok ? d.pergola_voltage_v : null, a: d.pergola_current_a, cls: "str3",
               max: d.pergola_max_w ?? 1000, dc: d.pergola_dc_w != null });
     }
@@ -3775,12 +3786,25 @@ function withLive(solax, status) {
 
 // iPad/Desktop (zwei Spalten): PV-Card und Energiefluss-Card enden auf gleicher Höhe – die kürzere
 // der beiden wird gestreckt (PV: Chart rutscht nach unten, Energiefluss: Diagramm mittig).
+// Ist die Energiefluss-Card kürzer, wächst zuerst das Diagramm (Reihenabstand, max. FLOW_EXTRA_MAX),
+// erst der Rest wird als Leerraum aufgefüllt.
 function syncTopCards() {
   const pv = document.getElementById("pv-card");
   const flow = document.querySelector(".flow-card");
   if (!pv || !flow) return;
   pv.style.minHeight = ""; flow.style.minHeight = "";
-  if (!window.matchMedia("(min-width: 768px)").matches) return;
+  const twoCols = window.matchMedia("(min-width: 768px)").matches;
+  const svg = flow.querySelector("#flow-diagram svg");
+  if (svg && lastFlowArgs) {
+    let want = 0;
+    if (twoCols) {
+      const scale = svg.getBoundingClientRect().width / 360;      // px je viewBox-Einheit
+      const baseBottom = flow.getBoundingClientRect().bottom - flowExtraU * scale;
+      want = Math.max(0, Math.min(FLOW_EXTRA_MAX, (pv.getBoundingClientRect().bottom - baseBottom) / scale));
+    }
+    if (Math.abs(want - flowExtraU) > 1) { flowExtraU = Math.round(want); renderEnergyFlow(...lastFlowArgs, lastCascadeStatus, lastZendure, lastWhirlpool, lastWaterheater); }
+  }
+  if (!twoCols) return;
   const pb = pv.getBoundingClientRect().bottom, fb = flow.getBoundingClientRect().bottom;
   if (pb < fb - 1) pv.style.minHeight = Math.round(pv.offsetHeight + fb - pb) + "px";
   else if (fb < pb - 1) flow.style.minHeight = Math.round(flow.offsetHeight + pb - fb) + "px";
