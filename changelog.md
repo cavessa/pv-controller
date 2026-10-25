@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-25 – Ursache des nächtlichen 02:00-Neustarts gefunden; DST-Check angepasst
+
+- Ursache: Der Shelly-Plug „Fritz.Box“ hatte einen Zeitplan täglich 02:00 Aus / 5 s später An; der Pi hängt seit dem 20.10. an derselben Steckdose (Neustart 21.–25.10., am 25.10. zweimal wegen der doppelten 02:00-Stunde). Zeitplan deaktiviert. Damit ist auch der frühere „02:01-Aussetzer“ aller Geräte erklärt (nicht 3EM-Firmware/UTC).
+- SD-Karte nach den harten Stromausfällen geprüft: ext4 clean, keine ext4-/mmc-Fehler, `integrity_check` der Prod-DB ok.
+- `deploy/maintenance/check_dst.py` Punkt 4 wertet nur noch Shelly-Things aus und behauptet keine UTC-Bestätigung mehr.
+- `CLAUDE.md`: Abschnitt „Offene Prüfungen“ (UTC-Theorie) entfernt.
+
 ## 2026-10-24 – Batterie: Haupt-WR nachts offline gilt als PV = 0 W (kein Fail-safe)
 
 Anlass: Haupt-WR (.195) ab 21:42 offline → Batterie im Fail-safe-Standby („Wechselrichter nicht lesbar“). Heute folgenlos (SoC schon auf Mindest-SoC 10 %), bei SoC über dem Minimum hätte das Haus nachts Netzstrom statt Batteriestrom gezogen.

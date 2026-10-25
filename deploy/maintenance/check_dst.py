@@ -55,13 +55,13 @@ for r in ev:
 for k, v in mass.items():
     if len(v) >= 4: print(f"   Sammelausfall {k} ({len(v)} Geräte: {', '.join(v[:6])}…)")
 # 4) openHAB
-print("4) openHAB ONLINE→OFFLINE (Shelly 3EM etc.) 00:00–04:00:")
+print("4) openHAB ONLINE→OFFLINE (nur Shelly-Things) 00:00–04:00:")
 n = 0
 with open('/var/log/openhab/events.log', errors='replace') as f:
     for l in f:
-        if l.startswith(D) and 'ONLINE to OFFLINE' in l and '00:00' <= l[11:16] < '04:00':
+        if l.startswith(D) and 'ONLINE to OFFLINE' in l and 'shelly' in l.lower() and '00:00' <= l[11:16] < '04:00':
             n += 1; print('  ', l[:23], re.sub(r".*Thing '([^']+)'.*", r"\1", l.strip())[:80])
-print("   Anzahl:", n, "→ Aussetzer um 01:01 (statt 02:01) = UTC-Mitternacht-Theorie bestätigt" if n else "")
+print("   Anzahl:", n, "(Pi-Neustart/Fritz.Box-Steckdose war bis 25.10.2026 der Auslöser des 02:01-Aussetzers; seitdem sollte hier nichts mehr kommen)" if n else "(keine)")
 # 5) Sonnenzeiten (Config nur Koordinaten)
 sys.path.insert(0, PROD)
 import suntime
