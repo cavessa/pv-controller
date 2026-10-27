@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-27 – Akku-Packs beobachten: Zellen-Differenz, Temperatur, erste BMS-Begrenzung pro Tag
+
+Nur Lesen und Aufzeichnen, keine Regelung geändert. Anlass: Pack 1 mit 3,53/3,36 V (170 mV) bei 84 % SoC, BMS begrenzt ab 80 %.
+- `clients/zendure_client.parse_packs`: `packData` des Reports → je Pack Index, Typ, SoC, Zellspannung max./min. (mV), Temperatur (°C). `ZendureStatus.packs`. Seriennummern werden nicht übernommen.
+- Neue Tabelle `zendure_pack_hour` (pro Stunde und Pack): größte Zellen-Differenz der Stunde mit den Zellspannungen und dem SoC in diesem Moment, höchste Temperatur, letzter SoC. Geschrieben aus dem Minutenlauf (`controller._read_zendure`), Fehler dabei nur als Warnung.
+- Neue Tabelle `zendure_bms_limit`: pro Tag die erste Ladebegrenzung (Beginn und SoC der Lücke aus `charge_acceptance`, Ladeleistung, Sollwert).
+- `GET /api/zendure/packs?days=7`: Stundenwerte, letzter Stand je Pack, Hinweise (Differenz > 150 mV bei SoC < 90 %, Temperatur > 45 °C), BMS-Begrenzungen der letzten 14 Tage.
+- Batterie-Card: Zeile „Zellen-Differenz Pack 1/2/3“ mit den jetzigen Werten, 7-Tage-Verlauf (Linie bei 150 mV), gelber Hinweis, Zeile „BMS begrenzt heute ab … bei … %“ mit den Vortagen.
+- Tests: `tests/test_zendure_packs.py` (echter Report vom 27.10., Stunden-Aggregation, Schwellen, Beginn der Lücke, Tageseintrag aus dem Kaskadenlauf).
+
 ## 2026-10-27 – Kaskade: Batterie nimmt weniger auf als angeboten → Rest an den Heizstab
 
 Anlass: Ab 80 % SoC (27.10. 13:50) lud die Zendure nur noch ~505 W bei `inputLimit` 2400 W: im ersten Pack hatte eine Zelle 3,53 V (niedrigste 3,36 V), das BMS stoppte dieses Pack, die beiden AB3000L luden mit je ~200 W. Die Kaskade zog trotzdem 2400 W für die Batterie vom Heizstab-Budget ab → Heizstab mit 1 Phase, ~2,9 kW Einspeisung.

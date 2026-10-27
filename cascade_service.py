@@ -27,7 +27,7 @@ from cascade_plan import WALLBOX_MIN_A, WALLBOX_VOLT, wallbox_amp_cap, BATTERY, 
 from clients.shelly_client import Shelly3EMClient, ShellyPlugClient, ShellyStorageTempClient
 from clients.solax_client import SolaxClient
 from clients.zendure_client import ZendureClient
-from zendure_control import DEVICE_MAX_W, WRITE_DELTA_W, charge_acceptance
+from zendure_control import DEVICE_MAX_W, WRITE_DELTA_W, acceptance_onset, charge_acceptance
 from heater_phases import RELEASE_DROP_C, THERMOSTAT_OPEN_W
 import meter_ring
 import suntime
@@ -47,6 +47,7 @@ from db import (
     get_cascade_settings,
     get_heater_thermostat,
     get_zendure_ctl,
+    record_bms_limit,
     get_last_phase_states,
     increment_cascade_device_errors,
     reset_cascade_device_errors,
@@ -276,6 +277,11 @@ class CascadeService:
                 try:
                     ctl = get_zendure_ctl()
                     accept_w = charge_acceptance(zd_status, ctl["mode"], int(ctl["limit_w"]))
+                    if accept_w is not None:          # nur Aufzeichnung: erste BMS-Begrenzung des Tages
+                        at, soc = acceptance_onset()
+                        if at is not None and record_bms_limit(at, soc, zd_status.charge_w, int(ctl["limit_w"])):
+                            log.info("Kaskade: erste BMS-Ladebegrenzung heute seit %s bei SoC %s %%",
+                                     at.strftime("%H:%M"), "?" if soc is None else f"{soc:.0f}")
                 except Exception:
                     log.warning("Kaskade: Aufnahmegrenze der Batterie nicht prüfbar", exc_info=True)
             charge_w, reason = self._handle_zendure(

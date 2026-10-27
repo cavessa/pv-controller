@@ -226,8 +226,13 @@ class Controller:
             if st is None:
                 return
             r.zendure = st
-            from db import record_zendure
+            from db import record_zendure, record_zendure_packs
             record_zendure(st.soc, st.charge_w, st.discharge_w)
+            if st.packs:
+                try:
+                    record_zendure_packs(st.packs)
+                except Exception:
+                    log.warning("Zendure: Pack-Werte nicht gespeichert", exc_info=True)
         except Exception:
             log.warning("Zendure-Lesen fehlgeschlagen", exc_info=True)
 

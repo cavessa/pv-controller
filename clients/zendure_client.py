@@ -52,6 +52,7 @@ class ZendureStatus:
     product: Optional[str] = None
     version: Optional[str] = None
     props: dict = field(default_factory=dict)
+    packs: list = field(default_factory=list)   # je Akku-Pack (parse_packs), nur Anzeige/Aufzeichnung
 
     @property
     def state(self) -> str:
@@ -61,6 +62,29 @@ class ZendureStatus:
         if self.discharge_w > 10:
             return "discharging"
         return "standby"
+
+
+def _kelvin10(v) -> Optional[float]:
+    """Zendure-Temperatur (Kelvin × 10, 2731 = 0 °C) → °C."""
+    t = _num(v)
+    return round((t - 2731) / 10.0, 1) if t is not None and t > 1000 else t
+
+
+def parse_packs(raw) -> list[dict]:
+    """``packData`` des Reports → je Pack: Index (1…), Typ, SoC, Zellspannung max./min. (mV), Temperatur.
+    Spannungen kommen in 10 mV (353 = 3,53 V). Seriennummern werden nicht übernommen."""
+    out = []
+    for i, pk in enumerate(raw if isinstance(raw, list) else [], start=1):
+        if not isinstance(pk, dict):
+            continue
+        vmax, vmin = _num(pk.get("maxVol")), _num(pk.get("minVol"))
+        out.append({
+            "idx": i, "type": pk.get("packType"), "soc": _num(pk.get("socLevel")),
+            "max_mv": round(vmax * 10) if vmax is not None else None,
+            "min_mv": round(vmin * 10) if vmin is not None else None,
+            "temp_c": _kelvin10(pk.get("maxTemp")), "power_w": _num(pk.get("power")), "state": pk.get("state"),
+        })
+    return out
 
 
 def _num(v) -> Optional[float]:
@@ -119,6 +143,7 @@ class ZendureClient:
             product=j.get("product") if isinstance(j.get("product"), str) else None,
             version=str(j["version"]) if j.get("version") is not None else None,
             props=props,
+            packs=parse_packs(j.get("packData")),
         )
 
     # ---- Schreiben (Phase 2) --------------------------------------------

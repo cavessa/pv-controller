@@ -152,6 +152,33 @@ def init_pv_logging_tables() -> None:
                 n            INTEGER NOT NULL
             )
         """)
+        # Akku-Packs stündlich (nur Beobachtung, 27.10.2026): größte Zellspannungs-Differenz der Stunde
+        # mit den Zellspannungen und dem SoC in diesem Moment, höchste Temperatur, letzter SoC
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS zendure_pack_hour (
+                hour         TEXT NOT NULL,      -- YYYY-MM-DD HH
+                pack         INTEGER NOT NULL,   -- 1, 2, 3 (Reihenfolge packData)
+                pack_type    INTEGER,
+                soc          REAL,
+                max_mv       INTEGER,
+                min_mv       INTEGER,
+                diff_mv      INTEGER,
+                soc_at_diff  REAL,
+                temp_max_c   REAL,
+                n            INTEGER NOT NULL,
+                PRIMARY KEY (hour, pack)
+            )
+        """)
+        # Erste Ladebegrenzung durch das BMS pro Tag (Aufnahmegrenze der Kaskade)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS zendure_bms_limit (
+                day       TEXT PRIMARY KEY,      -- YYYY-MM-DD
+                at        TEXT NOT NULL,         -- Beginn der Lücke (ISO)
+                soc       REAL,
+                charge_w  INTEGER,
+                limit_w   INTEGER
+            )
+        """)
         # Zendure-Regelzustand (Phase 2): eine Zeile, überlebt Cron-Läufe
         conn.execute("""
             CREATE TABLE IF NOT EXISTS zendure_ctl (
@@ -603,6 +630,67 @@ def record_zendure(soc, charge_w: float, discharge_w: float) -> None:
         )
         if ts.endswith(":00"):
             conn.execute("DELETE FROM zendure_min WHERE ts < date('now', ?)", (f"-{RETENTION_DAYS['minute_tables']} days",))
+
+
+def record_zendure_packs(packs: list, now: Optional[datetime] = None) -> None:
+    """Pack-Werte in die laufende Stunde einrechnen (größte Differenz der Stunde gewinnt)."""
+    hour = (now or datetime.now()).strftime("%Y-%m-%d %H")
+    with sqlite3.connect(DB_PATH) as conn:
+        for p in packs:
+            mx, mn = p.get("max_mv"), p.get("min_mv")
+            diff = mx - mn if mx is not None and mn is not None else None
+            conn.execute(
+                """INSERT INTO zendure_pack_hour (hour, pack, pack_type, soc, max_mv, min_mv, diff_mv,
+                                                 soc_at_diff, temp_max_c, n)
+                   VALUES (?,?,?,?,?,?,?,?,?,1)
+                   ON CONFLICT(hour, pack) DO UPDATE SET
+                     pack_type = excluded.pack_type,
+                     soc = excluded.soc,
+                     max_mv = CASE WHEN excluded.diff_mv > IFNULL(diff_mv, -1) THEN excluded.max_mv ELSE max_mv END,
+                     min_mv = CASE WHEN excluded.diff_mv > IFNULL(diff_mv, -1) THEN excluded.min_mv ELSE min_mv END,
+                     soc_at_diff = CASE WHEN excluded.diff_mv > IFNULL(diff_mv, -1) THEN excluded.soc_at_diff
+                                        ELSE soc_at_diff END,
+                     diff_mv = MAX(IFNULL(diff_mv, -1), IFNULL(excluded.diff_mv, -1)),
+                     temp_max_c = MAX(IFNULL(temp_max_c, -273), IFNULL(excluded.temp_max_c, -273)),
+                     n = n + 1""",
+                (hour, int(p["idx"]), p.get("type"), p.get("soc"), mx, mn, diff, p.get("soc"), p.get("temp_c")),
+            )
+
+
+def get_zendure_packs(days: int = 7) -> list[dict]:
+    """Stundenwerte aller Packs der letzten ``days`` Tage, älteste zuerst."""
+    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H")
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM zendure_pack_hour WHERE hour >= ? ORDER BY hour, pack", (since,)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d["diff_mv"] is not None and d["diff_mv"] < 0:
+            d["diff_mv"] = None
+        if d["temp_max_c"] is not None and d["temp_max_c"] <= -273:
+            d["temp_max_c"] = None
+        out.append(d)
+    return out
+
+
+def record_bms_limit(at: datetime, soc, charge_w: float, limit_w: int) -> bool:
+    """Erste Ladebegrenzung des Tages festhalten (spätere am selben Tag ignorieren). True = neu."""
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO zendure_bms_limit (day, at, soc, charge_w, limit_w) VALUES (?,?,?,?,?)",
+            (at.strftime("%Y-%m-%d"), at.isoformat(timespec="seconds"), soc, int(round(charge_w)), int(limit_w)),
+        )
+        return cur.rowcount > 0
+
+
+def get_bms_limits(days: int = 14) -> list[dict]:
+    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM zendure_bms_limit WHERE day >= ? ORDER BY day", (since,)).fetchall()]
 
 
 CONSUMER_READ_MARK = "__read__"

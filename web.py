@@ -821,6 +821,39 @@ def api_zendure_history(response: Response, date: Optional[str] = Query(default=
     return {"date": day, "points": get_zendure_day(day), **get_zendure_energy(day)}
 
 
+PACK_DIFF_WARN_MV = 150       # Hinweis: Zellen-Differenz darüber, solange der SoC unter PACK_DIFF_WARN_SOC liegt
+PACK_DIFF_WARN_SOC = 90       # (LiFePO4: kurz vor voll ist eine größere Differenz normal)
+PACK_TEMP_WARN_C = 45
+
+
+@app.get("/api/zendure/packs")
+def api_zendure_packs(response: Response, days: int = Query(default=7, ge=1, le=60)) -> dict[str, Any]:
+    """Akku-Packs (nur Beobachtung): Stundenwerte der letzten Tage, letzter Stand je Pack, Hinweise und
+    die erste BMS-Ladebegrenzung pro Tag."""
+    response.headers["Cache-Control"] = "no-store"
+    from db import get_bms_limits, get_zendure_packs
+    rows = get_zendure_packs(days)
+    latest: dict[int, dict] = {}
+    recent = (datetime.now() - timedelta(hours=2)).strftime("%Y-%m-%d %H")
+    for r in rows:
+        if r["hour"] >= recent:
+            latest[r["pack"]] = r                      # Zeilen sind nach Stunde sortiert → letzte gewinnt
+    alerts = []
+    for r in sorted(latest.values(), key=lambda x: x["pack"]):
+        d, soc, t = r["diff_mv"], r["soc_at_diff"], r["temp_max_c"]
+        if d is not None and d > PACK_DIFF_WARN_MV and soc is not None and soc < PACK_DIFF_WARN_SOC:
+            alerts.append(f"Pack {r['pack']}: Zellen-Differenz {d} mV bei {soc:.0f} % SoC "
+                          f"(über {PACK_DIFF_WARN_MV} mV unter {PACK_DIFF_WARN_SOC} %)")
+        if t is not None and t > PACK_TEMP_WARN_C:
+            alerts.append(f"Pack {r['pack']}: {t:.0f} °C (über {PACK_TEMP_WARN_C} °C)")
+    series: dict[int, list] = {}
+    for r in rows:
+        series.setdefault(r["pack"], []).append([r["hour"], r["diff_mv"], r["soc_at_diff"], r["temp_max_c"]])
+    return {"latest": [latest[k] for k in sorted(latest)], "series": series, "alerts": alerts,
+            "bms_limits": get_bms_limits(max(days, 14)),
+            "warn": {"diff_mv": PACK_DIFF_WARN_MV, "soc": PACK_DIFF_WARN_SOC, "temp_c": PACK_TEMP_WARN_C}}
+
+
 @app.get("/api/history/zendure/month/{year_month}")
 def api_zendure_month(year_month: str, response: Response) -> dict[str, Any]:
     """Batterie: geladen/entladen (kWh) pro Tag + Zyklen-Schätzung (Σ geladen / Kapazität)."""

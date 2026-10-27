@@ -303,26 +303,40 @@ def charge_acceptance(st: Optional[ZendureStatus], ctl_mode: str, ctl_limit_w: i
         old = json.loads(path.read_text()) if path.exists() else {}
         runs, plateau = int(old.get("runs", 0)), float(old.get("plateau_w") or 0.0)
         confirmed = datetime.fromisoformat(old["confirmed_at"]) if old.get("confirmed_at") else None
+        onset_at, onset_soc = old.get("onset_at"), old.get("onset_soc")
     except (OSError, ValueError, AttributeError, TypeError, KeyError):
-        runs, plateau, confirmed = 0, 0.0, None
+        runs, plateau, confirmed, onset_at, onset_soc = 0, 0.0, None, None, None
     charging = st is not None and ctl_mode == "charge" and ctl_limit_w > 0
     if charging and ctl_limit_w - st.charge_w >= ACCEPT_GAP_W:
+        if runs == 0:                         # Beginn der Lücke (für die Tagesaufzeichnung)
+            onset_at, onset_soc = now.isoformat(timespec="seconds"), st.soc
         runs, plateau, confirmed = runs + 1, st.charge_w, now
     elif (charging and runs >= ACCEPT_RUNS and st.charge_w < plateau + ACCEPT_RISE_W
           and confirmed is not None and (now - confirmed).total_seconds() < ACCEPT_RECHECK_S):
         pass                                  # eigener Deckel verdeckt die Lücke – Grenze gilt weiter
     else:
-        runs, plateau, confirmed = 0, 0.0, None
+        runs, plateau, confirmed, onset_at, onset_soc = 0, 0.0, None, None, None
     try:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps({"runs": runs, "plateau_w": round(plateau), "limit_w": ctl_limit_w,
-                                   "confirmed_at": confirmed.isoformat(timespec="seconds") if confirmed else None}))
+                                   "confirmed_at": confirmed.isoformat(timespec="seconds") if confirmed else None,
+                                   "onset_at": onset_at, "onset_soc": onset_soc}))
         os.replace(tmp, path)
     except OSError:
         log.warning("Zendure: Aufnahme-Zustand nicht speicherbar", exc_info=True)
     if runs >= ACCEPT_RUNS:
         return int(round(plateau)) + ACCEPT_HEADROOM_W
     return None
+
+
+def acceptance_onset(state_path: Optional[Path] = None) -> tuple[Optional[datetime], Optional[float]]:
+    """Beginn (Zeit, SoC) der aktuell erkannten Aufnahmegrenze aus dem Zustand von ``charge_acceptance``."""
+    path = state_path or Path(db.DB_PATH).resolve().parent / ACCEPT_STATE_NAME
+    try:
+        d = json.loads(path.read_text())
+        return (datetime.fromisoformat(d["onset_at"]) if d.get("onset_at") else None), d.get("onset_soc")
+    except (OSError, ValueError, AttributeError, TypeError, KeyError):
+        return None, None
 
 def device_drift(st: ZendureStatus, mode: str, limit_w: int) -> str:
     """Abweichung der am Gerät gemeldeten Sollwerte (acMode/inputLimit/outputLimit) vom

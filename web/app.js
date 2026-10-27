@@ -3221,10 +3221,60 @@ function renderZendureForeign(f) {
   }
 }
 
+// Akku-Packs (nur Beobachtung): Zellen-Differenz je Pack jetzt + 7-Tage-Verlauf, Hinweise, BMS-Begrenzung
+const PACK_COLORS = ["#a78bfa", "#2ed8a3", "#5b8cff", "#fbbf24"];
+async function loadZendurePacks() {
+  const box = document.getElementById("zd-packs");
+  if (!box) return;
+  const d = await api("/api/zendure/packs?days=7");
+  const series = d.series || {};
+  const packs = Object.keys(series).map(Number).sort((a, b) => a - b);
+  box.classList.toggle("hidden", packs.length === 0);
+  if (!packs.length) return;
+  const latest = new Map((d.latest || []).map(r => [r.pack, r]));
+  $("#zd-packs-label").textIfChanged = `Zellen-Differenz Pack ${packs.join("/")}`;
+  $("#zd-packs-diff").textIfChanged = packs.map(p => latest.get(p)?.diff_mv ?? "–").join(" / ") + " mV";
+
+  // 7 Tage, Stundenwerte; Linie bei der Hinweis-Schwelle
+  const t0 = Date.now() - 7 * 86400e3, W = 300, H = 48;
+  const tx = h => (new Date(h.replace(" ", "T") + ":00").getTime() - t0) / (7 * 86400e3) * W;
+  const warn = d.warn?.diff_mv ?? 150;
+  const ymax = Math.max(warn * 1.3, ...packs.flatMap(p => series[p].map(x => x[1] ?? 0)));
+  const ty = v => H - 2 - v / ymax * (H - 4);
+  const lines = packs.map((p, i) => {
+    let path = "", pen = false;
+    series[p].forEach(([h, v]) => {
+      if (v == null) { pen = false; return; }
+      path += `${pen ? "L" : "M"}${tx(h).toFixed(1)},${ty(v).toFixed(1)} `; pen = true;
+    });
+    return `<path d="${path}" fill="none" stroke="${PACK_COLORS[i % PACK_COLORS.length]}" stroke-width="1.5"/>`;
+  }).join("");
+  const days = [...Array(7)].map((_, i) => `<line x1="${(i * W / 7).toFixed(1)}" y1="0" x2="${(i * W / 7).toFixed(1)}" y2="${H}" stroke="rgba(255,255,255,0.06)"/>`).join("");
+  $("#zd-packs-chart").htmlIfChanged =
+    `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Zellen-Differenz je Pack, 7 Tage">`
+    + days + `<line x1="0" y1="${ty(warn).toFixed(1)}" x2="${W}" y2="${ty(warn).toFixed(1)}" stroke="rgba(251,191,36,0.45)" stroke-dasharray="3 3"/>`
+    + lines + `</svg><div class="zd-packs-legend">`
+    + packs.map((p, i) => `<span><i style="background:${PACK_COLORS[i % PACK_COLORS.length]}"></i>Pack ${p}</span>`).join("")
+    + `<span>7 Tage · Linie ${warn} mV</span></div>`;
+
+  const al = $("#zd-packs-alert");
+  al.classList.toggle("hidden", !(d.alerts || []).length);
+  al.htmlIfChanged = (d.alerts || []).map(escapeHtml).join("<br>");
+
+  const bms = d.bms_limits || [];
+  const today = new Date().toLocaleDateString("sv-SE");
+  const fmt = r => `${r.day.slice(8, 10)}.${r.day.slice(5, 7)}. ${Math.round(r.soc ?? 0)} %`;
+  const tod = bms.find(r => r.day === today);
+  $("#zd-packs-bms").textIfChanged = !bms.length ? ""
+    : (tod ? `BMS begrenzt heute ab ${tod.at.slice(11, 16)} bei ${Math.round(tod.soc ?? 0)} % (${tod.charge_w} W statt ${tod.limit_w} W)`
+           : "BMS-Begrenzung heute: keine") + (bms.length > (tod ? 1 : 0) ? ` · zuvor: ${bms.filter(r => r !== tod).slice(-5).map(fmt).join(", ")}` : "");
+}
+
 async function loadZendureChart() {
   const wrap = document.getElementById("zd-chart-wrap");
   const card = document.getElementById("zendure-card");
   if (!wrap || !card || card.classList.contains("hidden")) return;
+  loadZendurePacks().catch(() => {});
   const d = await api("/api/zendure/history");
   const pts = (d.points || []).filter(p => p[1] != null);
   if (pts.length < 2) { wrap.htmlIfChanged = '<div class="chart-empty">Noch keine Verlaufsdaten.</div>'; return; }
