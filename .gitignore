@@ -31,3 +31,4 @@ CLAUDE.md
 # Deploy (Produktionsverzeichnis)
 deploy.log
 .deploy_history
+battery_accept_state.*

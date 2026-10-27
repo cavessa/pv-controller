@@ -41,10 +41,13 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, Iterator, Optional
 
 import db
@@ -100,6 +103,18 @@ FOREIGN_GRACE_S = 10.0          # so lange nach einem eigenen Befehl keine Fremd
 FOREIGN_ACTIVE_S = 15 * 60      # Hinweis bleibt so lange nach der letzten Erkennung stehen
 MIN_SOC_REFIX_S = 3600          # minSoc höchstens einmal pro Stunde nachschreiben (Flash)
 UNLIMITED = float("inf")        # Grundlast nicht begrenzt (Tests/Aufrufer ohne Grundlast-Angabe)
+
+# Aufnahmegrenze: Die Batterie nimmt weniger auf als geschrieben (BMS – Zelle voll/Ausgleich eines Packs,
+# Temperatur; z. B. 27.10.2026 ab 80 % nur ~505 W bei inputLimit 2400). Nach ACCEPT_RUNS Läufen in Folge
+# mit ≥ ACCEPT_GAP_W Lücke reserviert die Kaskade nur noch Ist + ACCEPT_HEADROOM_W statt des Wunschwerts.
+# Der Puffer bleibt für die Batterie frei: nimmt sie ihn wieder auf, schließt sich die Lücke und es gilt
+# sofort wieder der volle Wunschwert (Heizstab macht Platz).
+ACCEPT_GAP_W = 200
+ACCEPT_RUNS = 3
+ACCEPT_HEADROOM_W = 300
+ACCEPT_RISE_W = 150             # so viel über dem Plateau = nimmt wieder mehr auf → Grenze aufheben
+ACCEPT_RECHECK_S = 15 * 60      # spätestens dann neu prüfen (volle Anforderung, Heizstab macht Platz)
+ACCEPT_STATE_NAME = "battery_accept_state.json"   # neben der DB (Tests: eigene Temp-DB → eigener Zustand)
 
 
 @dataclass
@@ -271,6 +286,43 @@ def plan(
             desired.data = {**desired.data, "drift": drift}
     return desired
 
+
+
+def charge_acceptance(st: Optional[ZendureStatus], ctl_mode: str, ctl_limit_w: int,
+                      state_path: Optional[Path] = None, now: Optional[datetime] = None) -> Optional[int]:
+    """Einmal pro Kaskadenlauf (vor dem Schreiben) aufrufen: ``ctl_*`` ist der Sollwert, der seit dem
+    letzten Lauf am Gerät gilt. Liefert die Leistung, die für die Batterie reserviert werden soll,
+    wenn sie seit ACCEPT_RUNS Läufen deutlich weniger aufnimmt als angeboten; sonst None.
+
+    Ist die Grenze erkannt und senkt danach der eigene Einspeise-Deckel den Sollwert (Lücke scheinbar
+    weg), bleibt sie bestehen – bis die Batterie wirklich mehr aufnimmt (Plateau + ACCEPT_RISE_W) oder
+    ACCEPT_RECHECK_S ohne bestätigte Lücke vergangen sind (dann neu prüfen)."""
+    path = state_path or Path(db.DB_PATH).resolve().parent / ACCEPT_STATE_NAME
+    now = now or datetime.now()
+    try:
+        old = json.loads(path.read_text()) if path.exists() else {}
+        runs, plateau = int(old.get("runs", 0)), float(old.get("plateau_w") or 0.0)
+        confirmed = datetime.fromisoformat(old["confirmed_at"]) if old.get("confirmed_at") else None
+    except (OSError, ValueError, AttributeError, TypeError, KeyError):
+        runs, plateau, confirmed = 0, 0.0, None
+    charging = st is not None and ctl_mode == "charge" and ctl_limit_w > 0
+    if charging and ctl_limit_w - st.charge_w >= ACCEPT_GAP_W:
+        runs, plateau, confirmed = runs + 1, st.charge_w, now
+    elif (charging and runs >= ACCEPT_RUNS and st.charge_w < plateau + ACCEPT_RISE_W
+          and confirmed is not None and (now - confirmed).total_seconds() < ACCEPT_RECHECK_S):
+        pass                                  # eigener Deckel verdeckt die Lücke – Grenze gilt weiter
+    else:
+        runs, plateau, confirmed = 0, 0.0, None
+    try:
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"runs": runs, "plateau_w": round(plateau), "limit_w": ctl_limit_w,
+                                   "confirmed_at": confirmed.isoformat(timespec="seconds") if confirmed else None}))
+        os.replace(tmp, path)
+    except OSError:
+        log.warning("Zendure: Aufnahme-Zustand nicht speicherbar", exc_info=True)
+    if runs >= ACCEPT_RUNS:
+        return int(round(plateau)) + ACCEPT_HEADROOM_W
+    return None
 
 def device_drift(st: ZendureStatus, mode: str, limit_w: int) -> str:
     """Abweichung der am Gerät gemeldeten Sollwerte (acMode/inputLimit/outputLimit) vom

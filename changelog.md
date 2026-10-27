@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-27 – Kaskade: Batterie nimmt weniger auf als angeboten → Rest an den Heizstab
+
+Anlass: Ab 80 % SoC (27.10. 13:50) lud die Zendure nur noch ~505 W bei `inputLimit` 2400 W: im ersten Pack hatte eine Zelle 3,53 V (niedrigste 3,36 V), das BMS stoppte dieses Pack, die beiden AB3000L luden mit je ~200 W. Die Kaskade zog trotzdem 2400 W für die Batterie vom Heizstab-Budget ab → Heizstab mit 1 Phase, ~2,9 kW Einspeisung.
+- `zendure_control.charge_acceptance`: Liegt die gemessene Ladeleistung 3 Läufe in Folge ≥ 200 W unter dem Sollwert, der seit dem letzten Lauf am Gerät gilt, reserviert die Kaskade nur noch Ist + 300 W Puffer (kein „Batterie wartet“). Der Puffer bleibt für die Batterie frei.
+- Aufgehoben, sobald die Batterie ≥ 150 W über ihrem Plateau aufnimmt (dann sofort wieder volle Reservierung, Heizstab macht Platz), wenn sie nicht mehr lädt, oder spätestens 15 min ohne bestätigte Lücke (neu prüfen). Senkt der eigene Einspeise-Deckel den Sollwert auf ~Ist, bleibt die Grenze bestehen (kein Flattern des Heizstabs).
+- Zustand in `battery_accept_state.json` neben der DB (nicht in Git). Log: „Batterie nimmt nur … W auf (Sollwert … W) – reserviere … W“.
+- Tests: `tests/test_battery_acceptance.py` (Erkennung, Deckel, Wiederaufnahme, 15-min-Prüfung, kaputte Datei, ganzer Kaskadenlauf: Heizstab-Budget 2105 → 3700 W).
+
 ## 2026-10-25 – Dashboard-Darstellung: gleiche Card-Abstände, Energiefluss füllt die Card, Pergola „offline“
 
 - Rechte Spalte: Cards standen 32 px auseinander (Grid-Gap 16 px + `.card` margin 16 px), links 16 px → Reihen beider Spalten versetzt (z. B. „Eigenverbrauch“ vs. „Heizstab Phasen“). Jetzt überall nur der Card-Abstand (`.dashboard-right .grid { row-gap: 0 }`, `.dashboard-bottom` ohne Extra-Abstand). Toter CSS-Rest `#flow-svg { max-width }` entfernt.

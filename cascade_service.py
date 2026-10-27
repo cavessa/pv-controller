@@ -27,7 +27,7 @@ from cascade_plan import WALLBOX_MIN_A, WALLBOX_VOLT, wallbox_amp_cap, BATTERY, 
 from clients.shelly_client import Shelly3EMClient, ShellyPlugClient, ShellyStorageTempClient
 from clients.solax_client import SolaxClient
 from clients.zendure_client import ZendureClient
-from zendure_control import DEVICE_MAX_W, WRITE_DELTA_W
+from zendure_control import DEVICE_MAX_W, WRITE_DELTA_W, charge_acceptance
 from heater_phases import RELEASE_DROP_C, THERMOSTAT_OPEN_W
 import meter_ring
 import suntime
@@ -46,6 +46,7 @@ from db import (
     get_cascade_devices_due_for_retry,
     get_cascade_settings,
     get_heater_thermostat,
+    get_zendure_ctl,
     get_last_phase_states,
     increment_cascade_device_errors,
     reset_cascade_device_errors,
@@ -269,6 +270,14 @@ class CascadeService:
             # ist dort nichts übrig, bleibt es dabei – kein Laden auf ein besseres Mittel hin)
             if avail_w > 0:
                 avail_w = max(0.0, avail_w + bat_delta)
+            # Aufnahmegrenze: gegen den Sollwert prüfen, der seit dem letzten Lauf am Gerät gilt
+            accept_w = None
+            if zd_status is not None and not battery_failsafe:
+                try:
+                    ctl = get_zendure_ctl()
+                    accept_w = charge_acceptance(zd_status, ctl["mode"], int(ctl["limit_w"]))
+                except Exception:
+                    log.warning("Kaskade: Aufnahmegrenze der Batterie nicht prüfbar", exc_info=True)
             charge_w, reason = self._handle_zendure(
                 battery_dev, avail_w, surplus, zd_status, -bat_feed_in, base_load_w,
                 self._active_override(battery_dev), failsafe=battery_failsafe, export_cap_w=export_cap_w,
@@ -278,10 +287,16 @@ class CascadeService:
             if code == "charging_surplus" and HEATER_MAX in order and order.index(BATTERY) < order.index(HEATER_MAX):
                 code = "priority_first"               # Batterie steht im Profil vor dem Heizstab
             results.append(self._result(battery_dev, reason, p.action, code, {**p.data, "limit_w": p.limit_w}))
-            battery_plan["charge_w"] = charge_w
             # Batterie wartet (Einspeise-Deckel): bekommt weniger, als ihr zusteht
-            battery_plan["waiting"] = (p.mode == "charge" and p.want_w is not None
-                                       and p.want_w - p.limit_w > WRITE_DELTA_W)
+            waiting = (p.mode == "charge" and p.want_w is not None and p.want_w - p.limit_w > WRITE_DELTA_W)
+            if accept_w is not None and p.mode == "charge" and charge_w > accept_w:
+                # nimmt seit Minuten weniger auf als angeboten → nur Ist + Puffer reservieren, kein Warten
+                log.info("Kaskade: Batterie nimmt nur %.0f W auf (Sollwert %d W) – reserviere %d W statt %.0f W",
+                         zd_status.charge_w, p.limit_w, accept_w, charge_w)
+                charge_w, waiting = float(accept_w), False
+                results[-1]["data"] = {**(results[-1].get("data") or {}), "accept_w": accept_w}
+            battery_plan["charge_w"] = charge_w
+            battery_plan["waiting"] = waiting
             return charge_w
 
         def device_fn(key: str, remaining: float) -> float:
