@@ -3237,17 +3237,24 @@ async function loadZendurePacks() {
 
   // 7 Tage, Stundenwerte; Linie bei der Hinweis-Schwelle
   const t0 = Date.now() - 7 * 86400e3, W = 300, H = 48;
-  const tx = h => (new Date(h.replace(" ", "T") + ":00").getTime() - t0) / (7 * 86400e3) * W;
+  const tx = h => 3 + (new Date(h.replace(" ", "T") + ":00").getTime() - t0) / (7 * 86400e3) * (W - 6);   // 3 px Rand für Punkte
   const warn = d.warn?.diff_mv ?? 150;
   const ymax = Math.max(warn * 1.3, ...packs.flatMap(p => series[p].map(x => x[1] ?? 0)));
   const ty = v => H - 2 - v / ymax * (H - 4);
+  // Linie je Pack; Einzelwerte (ohne Nachbarn) und der letzte Wert als Punkt – sonst wäre z. B. die
+  // erste Stunde nach dem Start unsichtbar. Punkte als kurze Striche mit runder Kappe (Achsen sind gestaucht).
   const lines = packs.map((p, i) => {
-    let path = "", pen = false;
-    series[p].forEach(([h, v]) => {
-      if (v == null) { pen = false; return; }
-      path += `${pen ? "L" : "M"}${tx(h).toFixed(1)},${ty(v).toFixed(1)} `; pen = true;
+    const c = PACK_COLORS[i % PACK_COLORS.length], pts = series[p];
+    let path = "", dots = "";
+    pts.forEach(([h, v], k) => {
+      if (v == null) return;
+      const x = tx(h).toFixed(1), y = ty(v).toFixed(1);
+      const prev = k > 0 && pts[k - 1][1] != null, next = k < pts.length - 1 && pts[k + 1][1] != null;
+      path += `${prev ? "L" : "M"}${x},${y} `;
+      if (!(prev || next) || k === pts.length - 1)
+        dots += `<line x1="${x}" y1="${y}" x2="${x}" y2="${y}" stroke="${c}" stroke-width="5" stroke-linecap="round"/>`;
     });
-    return `<path d="${path}" fill="none" stroke="${PACK_COLORS[i % PACK_COLORS.length]}" stroke-width="1.5"/>`;
+    return `<path d="${path}" fill="none" stroke="${c}" stroke-width="1.5"/>${dots}`;
   }).join("");
   const days = [...Array(7)].map((_, i) => `<line x1="${(i * W / 7).toFixed(1)}" y1="0" x2="${(i * W / 7).toFixed(1)}" y2="${H}" stroke="rgba(255,255,255,0.06)"/>`).join("");
   $("#zd-packs-chart").htmlIfChanged =

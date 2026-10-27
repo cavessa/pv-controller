@@ -7,7 +7,7 @@ Nur Lesen und Aufzeichnen, keine Regelung geändert. Anlass: Pack 1 mit 3,53/3,3
 - Neue Tabelle `zendure_pack_hour` (pro Stunde und Pack): größte Zellen-Differenz der Stunde mit den Zellspannungen und dem SoC in diesem Moment, höchste Temperatur, letzter SoC. Geschrieben aus dem Minutenlauf (`controller._read_zendure`), Fehler dabei nur als Warnung.
 - Neue Tabelle `zendure_bms_limit`: pro Tag die erste Ladebegrenzung (Beginn und SoC der Lücke aus `charge_acceptance`, Ladeleistung, Sollwert).
 - `GET /api/zendure/packs?days=7`: Stundenwerte, letzter Stand je Pack, Hinweise (Differenz > 150 mV bei SoC < 90 %, Temperatur > 45 °C), BMS-Begrenzungen der letzten 14 Tage.
-- Batterie-Card: Zeile „Zellen-Differenz Pack 1/2/3“ mit den jetzigen Werten, 7-Tage-Verlauf (Linie bei 150 mV), gelber Hinweis, Zeile „BMS begrenzt heute ab … bei … %“ mit den Vortagen.
+- Batterie-Card: Zeile „Zellen-Differenz Pack 1/2/3“ mit den jetzigen Werten, 7-Tage-Verlauf (Linie bei 150 mV; Einzelwerte und letzter Wert als Punkt, sonst war die erste Stunde unsichtbar), gelber Hinweis, Zeile „BMS begrenzt heute ab … bei … %“ mit den Vortagen.
 - Tests: `tests/test_zendure_packs.py` (echter Report vom 27.10., Stunden-Aggregation, Schwellen, Beginn der Lücke, Tageseintrag aus dem Kaskadenlauf).
 
 ## 2026-10-27 – Kaskade: Batterie nimmt weniger auf als angeboten → Rest an den Heizstab
