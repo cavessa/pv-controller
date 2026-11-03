@@ -222,8 +222,13 @@ def _consumers_status_block(cfg: Config, result: ControllerResult) -> dict[str, 
         d["avg_w"] = round(avgs.get(d["item"], 0.0) if avgs else (d["power_w"] or 0.0), 1)
         # Zähler mit Geräten dahinter nie unter „Sonstige“
         d["small"] = not d.get("children") and d["avg_w"] < cc.small_avg_w
+    wm = cfg.waterheater_meter
+    # eigener Zähler → eigene Zeile in der Liste (nicht in Σ der openHAB-Geräte)
+    wh = ({"name": wm.name, "power_w": round(r.waterheater_power_w) if r.waterheater_reachable
+           and r.waterheater_power_w is not None else None, "reachable": bool(r.waterheater_reachable)}
+          if wm is not None and wm.enabled else None)
     return {"enabled": True, "ok": True, "small_avg_w": cc.small_avg_w, "house_w": r.house_consumption_w,
-            **{k: round(v) for k, v in loads.items()}, **ev}
+            **{k: round(v) for k, v in loads.items()}, "waterheater": wh, **ev}
 
 
 _DW_TTL_S = 10.0

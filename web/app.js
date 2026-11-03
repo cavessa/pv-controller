@@ -3041,7 +3041,8 @@ function renderConsumersCard(c) {
   const devs = c.devices || [];
   const byItem = Object.fromEntries(devs.map(d => [d.item, d]));
   const fresh = d => !d.stale && d.power_w != null;
-  const max = Math.max(100, ...devs.filter(fresh).map(d => d.power_w), c.rest_w || 0);
+  const wh = c.waterheater;  // eigener 3EM, eigene Zeile (nicht in Σ gemessen)
+  const max = Math.max(100, ...devs.filter(fresh).map(d => d.power_w), c.rest_w || 0, wh?.power_w || 0);
   const row = (name, w, opts = {}) => {
     const pct = w != null && w > 0 ? Math.min(100, w / max * 100) : 0;
     return `<div class="cons-row${opts.cls ? " " + opts.cls : ""}"${opts.title ? ` title="${esc(opts.title)}"` : ""}>
@@ -3056,7 +3057,15 @@ function renderConsumersCard(c) {
   const small = devs.filter(d => d.small);
   const sortW = (a, b) => (fresh(b) ? b.power_w : -1) - (fresh(a) ? a.power_w : -1);
   let html = "";
-  for (const d of big.filter(d => !d.parent || !byItem[d.parent]).sort(sortW)) {
+  const top = big.filter(d => !d.parent || !byItem[d.parent]);
+  if (wh) top.push({ item: "", name: wh.name || "Durchlauferhitzer", power_w: wh.power_w, in_sum: true, meter: true,
+    stale: !wh.reachable });
+  for (const d of top.sort(sortW)) {
+    if (d.meter) {
+      html += row(d.name, d.power_w, { cls: d.stale ? "stale" : "", note: d.stale ? "offline" : "",
+        title: "eigener Zähler (Shelly 3EM) – nicht in Σ gemessen, im Rest schon abgezogen" });
+      continue;
+    }
     html += row(d.name, d.power_w, { cls: d.stale ? "stale" : d.in_sum ? "" : "aside", note: note(d),
       title: `${d.item}${d.own_w != null ? ` · davon nicht einzeln gemessen ${kw(d.own_w)}` : ""}` });
     for (const k of devs.filter(k => k.parent === d.item && !k.small).sort(sortW))

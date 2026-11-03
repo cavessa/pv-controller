@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-11-03 – Durchlauferhitzer: Zähler in Prod eingeschaltet, eigene Zeile in der Verbraucher-Card
+
+- In der Prod-`config.json` war `waterheater_meter` aus und ohne Adresse, deshalb lief der Durchlauferhitzer (~19 kW) komplett unter „Rest“ in der Verbraucher-Card. Werte aus der Dev-Config über `PUT /api/config` übernommen (enabled, url, type, name). Kein Code geändert.
+- Verbraucher-Card: Der Durchlauferhitzer (eigener 3EM) erscheint als eigene Zeile, nach Leistung einsortiert (offline → „–“, ausgegraut). Nicht in „Σ gemessen“, im Rest wie bisher abgezogen. `/api/status` → `consumers.waterheater` (name, power_w, reachable). Test `test_status_block_waterheater_row`.
+
 ## 2026-11-03 – Akku-Kalibrierung: volle Zyklen mit Laden aus dem Netz (Schalter in den Settings)
 
 Anlass: Der Zendure-Support vermutet einen SoC-Versatz (BMS begrenzt schon bei ~80 % auf ~500 W; Pack 1 oben 160 mV, unten bei 10 % SoC ausgeglichen) und empfiehlt mehrere volle Zyklen. Im November reicht die PV nicht.

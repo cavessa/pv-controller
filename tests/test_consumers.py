@@ -296,6 +296,28 @@ class WebTest(unittest.TestCase):
         self.assertFalse(d["Zaehler_W"]["small"])                          # Zähler mit Geräten nie „Sonstige“
         self.assertTrue(d["Klima_W"]["small"])                             # nie ≥ 1 W gespeichert → Ø 0
 
+    def test_status_block_waterheater_row(self):
+        consumers._links.update(ts=-1e12, url="", map={})
+        raw = json.loads(self.cfg_path.read_text())
+        raw["consumers"] = {"enabled": True, "devices": DEVICES}
+        self.cfg_path.write_text(json.dumps(raw))
+        cfg = load_config(self.cfg_path)
+        mk = lambda r: ControllerResult(timestamp=datetime.now(), controller_active=True, dry_run=True,
+                                        temp_status=None, storage_max_temp=60, heat_resume_temp=50, readings=r)
+        r = Readings(pv_power_w=0.0, main_meter_power_w=20000.0, consumers=consumers.read(cfg.consumers, fake()),
+                     waterheater_power_w=19177.2, waterheater_reachable=True)
+        with mock.patch("db.get_consumer_avg", return_value={}):
+            self.assertIsNone(self.web._consumers_status_block(cfg, mk(r))["waterheater"])   # Zähler aus
+            raw["waterheater_meter"] = {"enabled": True, "url": "http://x", "name": "DLE"}
+            self.cfg_path.write_text(json.dumps(raw))
+            cfg = load_config(self.cfg_path)
+            b = self.web._consumers_status_block(cfg, mk(r))
+            self.assertEqual(b["waterheater"], {"name": "DLE", "power_w": 19177, "reachable": True})
+            self.assertEqual(b["waterheater_w"], 19177)
+            r.waterheater_reachable = False
+            b = self.web._consumers_status_block(cfg, mk(r))
+            self.assertEqual(b["waterheater"], {"name": "DLE", "power_w": None, "reachable": False})
+
     def test_openhab_down_block(self):
         raw = json.loads(self.cfg_path.read_text())
         raw["consumers"] = {"enabled": True, "devices": DEVICES}
