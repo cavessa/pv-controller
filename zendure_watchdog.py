@@ -14,6 +14,8 @@ jemand einen neuen schreibt.
   Standby (höchstens alle ``FOREIGN_STANDBY_MIN_S``).
 - Hauptzähler: jeden Takt gelesen und mit der Batterie-Ist-Leistung in den Ringpuffer
   ``meter_ring`` gelegt (der Minutenlauf nimmt für die Batterie das 60-s-Mittel „Netz ohne Batterie“).
+- Laden aus dem Netz gewollt (``zendure_ctl.grid_charge``: „calib“ Kalibrierung, „override“ Laden erzwungen):
+  keine Lade-Drosselung; bei „calib“ und ladender Wallbox sofort Standby (Kalibrierung pausiert).
 - Lade-/Entlade-Drosselung (gleicher Takt), nur senken, nie erhöhen (das macht der Minutenlauf):
   lädt die Batterie und misst der Zähler zwei Takte in Folge Bezug > ``THROTTLE_IMPORT_W`` →
   Ladung sofort um den Bezug senken (bis 0; Zähler nicht lesbar → nichts tun). Entlädt sie und
@@ -153,9 +155,19 @@ def guard_tick(cfg, client, goe, device_discharging: bool = False, state: Option
     from zendure_control import force_standby
     state = {} if state is None else state
     try:
-        mode = db.get_zendure_ctl().get("mode")
+        ctl = db.get_zendure_ctl()
+        mode = ctl.get("mode")
     except Exception:
-        mode = None                                       # DB nicht lesbar → vorsichtshalber prüfen
+        ctl, mode = {}, None                              # DB nicht lesbar → vorsichtshalber prüfen
+    if mode == "charge" and ctl.get("grid_charge") == "calib":
+        # Kalibrierung lädt aus dem Netz: lädt das Auto, sofort pausieren (nicht beides aus dem Netz)
+        if goe is None or not charging_now(goe):
+            return "ok"
+        if cfg.runtime.dry_run and state.get("stopped"):
+            return "standby"
+        force_standby(client, "Wächter: Wallbox lädt – Kalibrier-Laden pausiert", cfg.runtime.dry_run)
+        state["stopped"] = True
+        return "standby"
     if mode != "discharge" and not (device_discharging and not state.get("stopped")) and mode is not None:
         return "idle"
     if goe is None or not charging_now(goe):              # keine Wallbox konfiguriert: nichts zu sperren
@@ -211,7 +223,8 @@ def throttle_tick(cfg, client, grid: Optional[float], state: dict,
     from zendure_control import DISCHARGE_START_IMPORT_W, _round10, force_standby, write_guard
     ctl = db.get_zendure_ctl()
     mode = ctl["mode"]
-    if mode not in ("charge", "discharge") or not ctl["limit_w"]:
+    if mode not in ("charge", "discharge") or not ctl["limit_w"] or (mode == "charge" and ctl.get("grid_charge")):
+        # grid_charge: Kalibrierung oder „Laden erzwungen“ – Laden aus dem Netz ist gewollt, nicht drosseln
         state.pop("excess", None)
         state.pop("unreadable", None)
         return None

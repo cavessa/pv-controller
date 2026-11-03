@@ -1659,6 +1659,14 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
   color: var(--c-grid); font-size: 13px; line-height: 1.5;
 }
 .zd-foreign.hidden { display: none; }
+.zd-calib {
+  margin: 8px 0 10px; padding: 10px 12px; border-radius: 10px; font-size: 13px; line-height: 1.5;
+  border: 1px solid rgba(91,140,255,0.5); background: rgba(91,140,255,0.10); color: var(--text);
+}
+.zd-calib.aborted { border-color: rgba(248,113,113,0.55); background: rgba(248,113,113,0.12); color: var(--c-grid); }
+.zd-calib.hidden { display: none; }
+.zd-calib-report { margin: 6px 0 0; white-space: pre-wrap; font: 12px/1.45 inherit; font-family: inherit; color: var(--text-muted); }
+.calib-box { margin: 10px 0 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
 .zd-foreign-meta { color: var(--text-muted); font-size: 12px; }
 .wb-banner.zd-foreign-banner { font-weight: 600; border-color: rgba(248,113,113,0.6); background: rgba(248,113,113,0.12); }
 .zd-decision { margin-top: 10px; font-size: 12px; color: var(--text-muted); line-height: 1.5; }

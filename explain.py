@@ -458,6 +458,10 @@ def _settings_lines(config: Any) -> list[str]:
                      f"Ziel-SoC {zc.target_soc:g} %, Laden bis {int(zc.max_charge_w)} W, Entladen bis "
                      f"{int(zc.max_discharge_w)} W nur für die Grundlast; Entladen immer gesperrt, während die Wallbox lädt "
                      f"oder nicht lesbar ist")
+        try:
+            lines.append(_calib_line())
+        except Exception:
+            pass
     else:
         lines.append("Batterie: nicht eingerichtet")
     wb = config.wallbox
@@ -479,6 +483,29 @@ def _settings_lines(config: Any) -> list[str]:
     lines.append(f"Steuerung: {'an' if rt.enabled else 'aus (nur Beobachten)'}"
                  + ("; Dry-Run: es wird nichts geschaltet" if rt.dry_run else ""))
     return lines
+
+
+def _calib_line() -> str:
+    """Akku-Kalibrierung für den Warum-Chat (Zustand aus der DB)."""
+    import calibration
+    import db
+    st = calibration.status(db.get_calib_state())
+    if not st.get("phase"):
+        return ("Batterie-Kalibrierung: nicht aktiv (Schalter in den Settings: volle Zyklen mit Laden aus dem "
+                "Netz bis 100 %, Haltezeit, Entladen bis 5 %)")
+    p = st["params"]
+    head = (f"Batterie-Kalibrierung: {'aktiv' if st['active'] else st['phase_de']}, Zyklus {st['cycle']}/{st['cycles']}, "
+            f"Phase {st['phase_de']}" + (f" (pausiert: {st['paused']})" if st.get("paused") else "")
+            + f"; Vorgaben {p['charge_w']} W aus dem Netz (+ PV), Haltezeit {p['hold_min']} min, Netz gesamt "
+            f"höchstens {p['max_grid_w']} W. In Lade-/Haltephase gelten Lade-Deckel, Wächter-Drosselung und "
+            "Wallbox-Puffer nicht, der ganze PV-Überschuss geht an die Batterie; lädt die Wallbox, pausiert sie; "
+            "Entladen ins Auto bleibt gesperrt. Grund-Codes calib_charge_grid, calib_hold_full, calib_discharge, "
+            "calib_aborted, calib_paused_wallbox, calib_paused_grid")
+    if st.get("abort_reason"):
+        head += f"; abgebrochen: {st['abort_reason']}"
+    if st.get("report"):
+        head += "; Bericht: " + st["report"].replace("\n", " | ")
+    return head
 
 
 def _health_lines(now: datetime, since: datetime) -> list[str]:

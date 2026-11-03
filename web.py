@@ -496,8 +496,22 @@ def _zendure_status_block(cfg: Config, r) -> dict[str, Any]:
         "ctl_mode": ctl["mode"] if z.control_enabled else None,
         "limit_w": ctl["limit_w"] if z.control_enabled else None,
         "foreign": _zendure_foreign(ctl, st) if z.control_enabled else None,
+        "calib": _calib_status(),
         **energy,
     }
+
+
+def _calib_status() -> dict[str, Any]:
+    """Akku-Kalibrierung für Batterie-Card und Settings (Zustand, Zyklen, Bericht)."""
+    try:
+        import calibration
+        from db import get_calib_cycles, get_calib_request, get_calib_state
+        s = get_calib_state()
+        rows = get_calib_cycles(s["run_id"]) if s and s.get("run_id") else []
+        return calibration.status(s, rows, pending=get_calib_request())
+    except Exception:
+        log.warning("Kalibrier-Status nicht lesbar", exc_info=True)
+        return {"active": False, "show": False}
 
 
 def _zendure_foreign(ctl: dict, st) -> dict[str, Any]:
@@ -807,6 +821,39 @@ def api_zendure_test(req: ZendureTestRequest, response: Response) -> dict[str, A
     if not res.get("ok"):
         raise HTTPException(503, res.get("error", "Zendure nicht erreichbar"))
     return res
+
+
+class CalibRequest(BaseModel):
+    enabled: bool
+    params: Optional[dict[str, Any]] = None
+
+
+@app.get("/api/zendure/calibration")
+def api_zendure_calibration(response: Response) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    return _calib_status()
+
+
+@app.post("/api/zendure/calibration")
+def api_zendure_calibration_set(req: CalibRequest, response: Response) -> dict[str, Any]:
+    """Kalibrierung starten/stoppen. Der Minutenlauf übernimmt die Anfrage (nächste volle Minute)."""
+    response.headers["Cache-Control"] = "no-store"
+    import calibration
+    from db import set_calib_request
+    cfg = _load_cfg()
+    if req.enabled:
+        if not cfg.zendure_active or not cfg.zendure.control_enabled:
+            raise HTTPException(400, "Kalibrierung braucht eine aktive Batterie-Steuerung (zendure.control_enabled)")
+        raw = {**calibration.params_from_config(cfg.zendure), **(req.params or {})}
+        try:
+            params = calibration.validate_params(raw)
+        except ValueError as e:
+            raise HTTPException(400, f"Kalibrierung: {e}")
+        set_calib_request({"action": "start", "params": params, "at": datetime.now().isoformat(timespec="seconds")})
+    else:
+        set_calib_request({"action": "stop", "at": datetime.now().isoformat(timespec="seconds")})
+    _poll_wakeup.set()
+    return {"ok": True, "dry_run": bool(cfg.runtime.dry_run), **_calib_status()}
 
 
 @app.get("/api/zendure/history")
@@ -1233,6 +1280,8 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
     if patch.zendure:
         allowed = {"enabled", "ip", "sn", "name", "capacity_wh", "max_charge_w", "max_discharge_w",
                    "min_soc", "target_soc", "control_enabled", "discharge_target_grid_w",
+                   "calib_cycles", "calib_charge_w", "calib_hold_min", "calib_start", "calib_start_time",
+                   "calib_max_grid_w",
                    "block_discharge_while_wallbox_charging"}      # alt: wird ignoriert (Sperre ist fest)
         bad = set(patch.zendure) - allowed
         if bad:
@@ -1248,11 +1297,20 @@ def _validated_update(current: dict[str, Any], patch: ConfigUpdate) -> dict[str,
             elif k in {"ip", "sn", "name"}:
                 if not isinstance(v, str) or (k == "name" and not v.strip()):
                     raise HTTPException(400, f"zendure.{k} must be a string")
+            elif k == "calib_start":
+                if v not in ("now", "at"):
+                    raise HTTPException(400, "zendure.calib_start muss 'now' oder 'at' sein")
+            elif k == "calib_start_time":
+                import re
+                if not isinstance(v, str) or not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", v):
+                    raise HTTPException(400, "zendure.calib_start_time muss HH:MM sein")
             else:
                 if not isinstance(v, (int, float)) or isinstance(v, bool):
                     raise HTTPException(400, f"zendure.{k} must be a number")
                 lim = {"capacity_wh": (100, 100000), "max_charge_w": (0, 2400), "max_discharge_w": (0, 2400),
-                       "min_soc": (0, 50), "target_soc": (70, 100), "discharge_target_grid_w": (0, 300)}[k]
+                       "min_soc": (0, 50), "target_soc": (70, 100), "discharge_target_grid_w": (0, 300),
+                       "calib_cycles": (1, 5), "calib_charge_w": (500, 2400), "calib_hold_min": (0, 240),
+                       "calib_max_grid_w": (1000, 30000)}[k]
                 if not lim[0] <= v <= lim[1]:
                     raise HTTPException(400, f"zendure.{k} must be between {lim[0]} and {lim[1]}")
                 if k == "min_soc":
@@ -1461,6 +1519,14 @@ def _apply_min_soc_change(old: dict[str, Any], new: dict[str, Any]) -> Optional[
     if (new.get("runtime") or {}).get("dry_run"):
         return {"ok": True, "dry_run": True, "written": None, "read": None,
                 "error": None, "note": "dry_run – nicht ans Gerät geschrieben"}
+    try:
+        from db import get_calib_state
+        cs = get_calib_state()
+        if cs and (cs.get("active") or cs.get("restore_pending")):
+            return {"ok": True, "calib": True, "written": None, "read": None, "error": None,
+                    "note": "Kalibrierung aktiv – Gerät bleibt auf 5 %, der neue Wert wird am Ende geschrieben"}
+    except Exception:
+        pass
     try:
         from clients.zendure_client import ZendureClient
         from zendure_control import apply_min_soc

@@ -63,6 +63,15 @@ REASONS: dict[str, str] = {
     "base_load_unknown": "Grundlast unbekannt (PV oder Hauszähler nicht lesbar) – kein Entladen",
     "wallbox_lock": "Entladen gesperrt, weil die Wallbox lädt",
     "write_failed": "Befehl an die Batterie fehlgeschlagen – neuer Versuch im nächsten Lauf",
+    # Akku-Kalibrierung (volle Zyklen, Laden aus dem Netz)
+    "calib_charge_grid": "Kalibrierung Zyklus {cycle}/{cycles}: Laden aus dem Netz mit {watts} W "
+                         "(davon Netz {grid_w} W) bis 100 %, SoC {soc} %",
+    "calib_hold_full": "Kalibrierung Zyklus {cycle}/{cycles}: Halten bei 100 % für den Zellausgleich "
+                       "(noch {remaining_min} min)",
+    "calib_discharge": "Kalibrierung Zyklus {cycle}/{cycles}: Entladen bis {min_soc} % – {detail}",
+    "calib_aborted": "Kalibrierung abgebrochen: {why} – Batterie im Standby",
+    "calib_paused_wallbox": "Kalibrierung pausiert: Wallbox lädt (nicht beides aus dem Netz)",
+    "calib_paused_grid": "Kalibrierung pausiert: Haus zieht schon {house_w} W (Grenze {max_grid_w} W gesamt)",
     "not_in_cascade": "Nicht in der Kaskade eingerichtet",
     # ── Wallbox ──────────────────────────────────────────────────────────────
     "wallbox_disabled": "Wallbox-Steuerung ist in den Einstellungen aus",

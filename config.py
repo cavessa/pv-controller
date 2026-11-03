@@ -42,6 +42,14 @@ class ZendureConfig:
     # Entladen regelt auf diesen Netzbezug statt auf 0 W: Puffer gegen Einspeisung aus der Batterie,
     # wenn eine Last abschaltet (der Wächter senkt erst ab > 100 W Einspeisung)
     discharge_target_grid_w: float = 40.0
+    # Akku-Kalibrierung (Laden aus dem Netz, volle Zyklen; Start/Stopp per Schalter in den Settings –
+    # der Schalter selbst ist Laufzeit-Zustand in der DB, hier nur die Vorgaben)
+    calib_cycles: int = 3                 # 1–5
+    calib_charge_w: float = 1200.0        # Ladeleistung aus dem Netz, 500–2400 W (+ PV-Überschuss)
+    calib_hold_min: int = 120             # Haltezeit bei 100 %, 0–240 min (Zellausgleich)
+    calib_start: str = "now"              # now | at
+    calib_start_time: str = "22:00"       # HH:MM bei calib_start = at
+    calib_max_grid_w: float = 10000.0     # Netzbezug gesamt höchstens (Kalibrier-Leistung wird reduziert)
     # Entladen ist fest gesperrt, solange die Wallbox lädt (früherer Schalter
     # block_discharge_while_wallbox_charging entfällt; alter Config-Eintrag wird ignoriert)
 

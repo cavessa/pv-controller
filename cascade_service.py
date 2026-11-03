@@ -287,8 +287,15 @@ class CascadeService:
             charge_w, reason = self._handle_zendure(
                 battery_dev, avail_w, surplus, zd_status, -bat_feed_in, base_load_w,
                 self._active_override(battery_dev), failsafe=battery_failsafe, export_cap_w=export_cap_w,
+                meter_import_w=None if main_feed_in is None else -float(raw_feed_in),
             )
             p = self._last_plan
+            if p.grid == "calib" and p.mode == "charge":
+                # Kalibrierung lädt aus dem Netz: der ganze PV-Überschuss gehört der Batterie (Heizstab und
+                # Geräte dahinter bekommen ihn nicht zusätzlich); Netzanteil steht nicht im Überschuss
+                results.append(self._result(battery_dev, reason, p.action, p.code, {**p.data, "limit_w": p.limit_w}))
+                battery_plan.update(charge_w=avail_w, waiting=False, calib=True)
+                return avail_w
             code = p.code
             if code == "charging_surplus" and HEATER_MAX in order and order.index(BATTERY) < order.index(HEATER_MAX):
                 code = "priority_first"               # Batterie steht im Profil vor dem Heizstab
@@ -323,6 +330,8 @@ class CascadeService:
             return new_remaining
 
         def heater_fn(gross_w: int, battery_w: int, remaining_w: int) -> None:
+            if battery_plan.get("calib"):
+                gross_w = battery_w                   # Kalibrierung: kein PV-Budget für den Heizstab
             reason = self._store_heater_budget(
                 heater_dev, gross_w, battery_w, remaining_w, surplus, season, temp, ctx,
                 actual_heater_w, self._active_override(heater_dev),
@@ -688,6 +697,7 @@ class CascadeService:
         self, device: dict, avail_w: float, surplus: int, st, import_w: float,
         base_load_w: Optional[float], override: Optional[str],
         failsafe: Optional[str] = None, export_cap_w: Optional[float] = None,
+        meter_import_w: Optional[float] = None,
     ) -> tuple[float, str]:
         """Batterie regeln; liefert (gewünschte Ladeleistung W, Begründung) – gewünscht, nicht
         gedeckelt, damit der Heizstab (dahinter) für die Batterie Platz macht."""
@@ -699,7 +709,7 @@ class CascadeService:
             st, avail_w=max(0, avail_w), import_w=import_w, base_load_w=base_load_w,
             wallbox_charging=wb, override=override,
             hysteresis_w=int(device["hysteresis_watts"]), failsafe=failsafe, export_cap_w=export_cap_w,
-            wallbox_check=lambda: charging_now(self.goe_battery),
+            wallbox_check=lambda: charging_now(self.goe_battery), meter_import_w=meter_import_w,
         )
         charge_w = (p.want_w if p.want_w is not None else p.limit_w) if (p.mode == "charge" and st is not None) else 0
 

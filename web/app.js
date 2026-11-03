@@ -3196,9 +3196,93 @@ function renderZendureCard(z) {
   $("#zd-range-label").textIfChanged = rngLabel;
   $("#zd-range").textIfChanged = rng;
   renderZendureForeign(z.foreign);
+  renderZendureCalib(z.calib, z);
+  if (z.calib?.active) $("#zd-minmark").style.left = "5%";
   const dec = $("#zd-decision");
   dec.textIfChanged = z.control_enabled && z.decision ? z.decision : "";
   dec.classList.toggle("hidden", !(z.control_enabled && z.decision));
+}
+
+// Akku-Kalibrierung: Zeile auf der Batterie-Card (aktiv: Zyklus/Phase; danach 7 Tage Bericht bzw. Abbruchgrund)
+function calibText(c, z) {
+  if (!c || !c.phase) return "";
+  const cyc = `Zyklus ${c.cycle || 1}/${c.cycles}`;
+  const kw = w => (w / 1000).toFixed(1).replace(".", ",") + " kW";
+  const soc = z?.soc != null ? ` · SoC ${Math.round(z.soc)} %` : "";
+  if (c.phase === "wait") return `Kalibrierung startet um ${(c.wait_until || "").slice(11, 16)}`;
+  if (c.paused === "wallbox") return `Kalibrierung ${cyc} · pausiert: Wallbox lädt${soc}`;
+  if (c.paused === "grid") return `Kalibrierung ${cyc} · pausiert: Netzgrenze erreicht${soc}`;
+  if (c.phase === "charge") {
+    const w = c.last_limit || c.params?.charge_w || 0;
+    let eta = "";
+    if (z?.soc != null && z?.capacity_wh && w > 0) {
+      const m = Math.max(1, Math.round(Math.max(0, 100 - z.soc) / 100 * z.capacity_wh / w * 60));
+      eta = ` · noch ca. ${m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} min` : `${m} min`}`;
+    }
+    return `Kalibrierung ${cyc} · Laden aus Netz ${kw(w)}${soc}${eta}`;
+  }
+  if (c.phase === "hold") {
+    const left = c.hold_since ? Math.max(0, Math.round(c.params.hold_min - (Date.now() - new Date(c.hold_since).getTime()) / 60000)) : c.params.hold_min;
+    return `Kalibrierung ${cyc} · Halten bei 100 % (noch ${left} min)`;
+  }
+  if (c.phase === "discharge") return `Kalibrierung ${cyc} · Entladen bis 5 %${soc}`;
+  if (c.phase === "aborted") return `Kalibrierung abgebrochen: ${c.abort_reason || "?"}`;
+  if (c.phase === "stopped") return "Kalibrierung gestoppt";
+  if (c.phase === "done") return "Kalibrierung abgeschlossen";
+  return "";
+}
+
+function renderZendureCalib(c, z) {
+  const box = $("#zd-calib");
+  if (!box) return;
+  const show = c?.show === true || !!c?.pending;
+  box.classList.toggle("hidden", !show);
+  if (!show) return;
+  let html = `<b>${escapeHtml(c.pending === "start" && !c.active ? "Kalibrierung startet in der nächsten Minute"
+    : c.pending === "stop" && c.active ? "Kalibrierung wird gestoppt …" : calibText(c, z))}</b>`;
+  if (c.active && !c.min_soc_ok && c.phase !== "wait") html += `<br><span class="zd-foreign-meta">Mindest-SoC 5 % am Gerät noch nicht bestätigt</span>`;
+  if (!c.active && c.restore_pending) html += `<br><span class="zd-foreign-meta">Mindest-SoC am Gerät wird zurückgesetzt …</span>`;
+  if (c.report) html += `<pre class="zd-calib-report">${escapeHtml(c.report)}</pre>`;
+  box.htmlIfChanged = html;
+  box.classIfChanged = "zd-calib" + (c.phase === "aborted" ? " aborted" : "");
+}
+
+async function loadCalibSettings() {
+  try { renderCalibSettings(await api("/api/zendure/calibration")); } catch (e) { /* Settings ohne Batterie */ }
+}
+
+function renderCalibSettings(c) {
+  const t = $("#zd-calib-toggle"), msg = $("#zd-calib-msg");
+  if (!t) return;
+  t.checked = c.pending ? c.pending === "start" : !!c.active;
+  msg.textContent = c.pending === "start" ? "Startet in der nächsten Minute …"
+    : c.pending === "stop" ? "Wird in der nächsten Minute gestoppt …"
+    : calibText(c, lastZendure);
+  msg.className = "form-msg" + (c.phase === "aborted" ? " error" : c.active ? " ok" : "");
+}
+
+async function toggleCalib(ev) {
+  const f = $("#settings-form"), t = ev.target, msg = $("#zd-calib-msg");
+  const num = n => { const v = f.elements.namedItem(n)?.value; return v === "" || v == null ? undefined : Number(v); };
+  if (t.checked && !confirm("Kalibrierung starten? Die Batterie lädt dann aus dem Netz bis 100 % und entlädt bis 5 %.")) {
+    t.checked = false; return;
+  }
+  const params = {
+    cycles: num("zendure.calib_cycles"), charge_w: num("zendure.calib_charge_w"), hold_min: num("zendure.calib_hold_min"),
+    max_grid_w: num("zendure.calib_max_grid_w"), start: f.elements.namedItem("zendure.calib_start")?.value,
+    start_time: f.elements.namedItem("zendure.calib_start_time")?.value,
+  };
+  try {
+    const r = await api("/api/zendure/calibration", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: t.checked, params }),
+    });
+    renderCalibSettings(r);
+    if (r.dry_run) msg.textContent += " (Dry-Run: es wird nichts geschrieben)";
+  } catch (e) {
+    t.checked = !t.checked;
+    msg.textContent = "Fehler: " + e.message; msg.className = "form-msg error";
+  }
 }
 
 // Fremdregler (App-Energieplan/HEMS) – roter Hinweis oben im Dashboard und in der Batterie-Card
@@ -4064,6 +4148,13 @@ async function loadSettings() {
     setFormValue(f, "zendure.target_soc", zc.target_soc ?? 100);
     setFormValue(f, "zendure.discharge_target_grid_w", zc.discharge_target_grid_w ?? 40);
     setFormValue(f, "zendure.control_enabled", zc.control_enabled ?? false);
+    setFormValue(f, "zendure.calib_cycles", zc.calib_cycles ?? 3);
+    setFormValue(f, "zendure.calib_charge_w", zc.calib_charge_w ?? 1200);
+    setFormValue(f, "zendure.calib_hold_min", zc.calib_hold_min ?? 120);
+    setFormValue(f, "zendure.calib_start", zc.calib_start ?? "now");
+    setFormValue(f, "zendure.calib_start_time", zc.calib_start_time ?? "22:00");
+    setFormValue(f, "zendure.calib_max_grid_w", zc.calib_max_grid_w ?? 10000);
+    loadCalibSettings();
     setFormValue(f, "location.latitude",  lastConfig.latitude  ?? "");
     setFormValue(f, "location.longitude", lastConfig.longitude ?? "");
     setFormValue(f, "location.name",      lastConfig.location_name ?? "");
@@ -4220,6 +4311,12 @@ async function saveSettings(e) {
       target_soc: numField("zendure.target_soc"),
       discharge_target_grid_w: numField("zendure.discharge_target_grid_w"),
       control_enabled: boolField("zendure.control_enabled"),
+      calib_cycles: numField("zendure.calib_cycles"),
+      calib_charge_w: numField("zendure.calib_charge_w"),
+      calib_hold_min: numField("zendure.calib_hold_min"),
+      calib_start: f.elements.namedItem("zendure.calib_start")?.value || undefined,
+      calib_start_time: f.elements.namedItem("zendure.calib_start_time")?.value || undefined,
+      calib_max_grid_w: numField("zendure.calib_max_grid_w"),
     },
     location: {
       latitude:  numField("location.latitude"),
@@ -4251,6 +4348,7 @@ async function saveSettings(e) {
     const ms = res.zendure_min_soc;
     if (ms) {
       if (ms.dry_run) msg.textContent += " · Mindest-Ladestand: Dry-Run, nicht ans Gerät geschrieben";
+      else if (ms.calib) msg.textContent += " · Mindest-Ladestand: " + ms.note;
       else if (ms.ok) msg.textContent += ` · Mindest-Ladestand am Gerät bestätigt (${ms.read / 10} %)`;
       else { msg.textContent += ` · Mindest-Ladestand NICHT am Gerät: ${ms.error}`; msg.className = "form-msg error"; }
     }
@@ -4422,6 +4520,7 @@ function boot() {
   $("#solax2-test-btn")?.addEventListener("click", testSolax2);
   $("#main-meter-test-btn")?.addEventListener("click", testMainMeter);
   $("#zendure-test-btn")?.addEventListener("click", testZendure);
+  $("#zd-calib-toggle")?.addEventListener("change", toggleCalib);
   $$("#storage-range button").forEach(b => b.addEventListener("click", () => setStorageRange(b.dataset.range)));
   $("#btn-logs-refresh").addEventListener("click", refreshLogs);
   $("#log-lines").addEventListener("change", refreshLogs);

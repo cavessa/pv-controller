@@ -40,6 +40,7 @@ Regeln:
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import fcntl
 import json
 import logging
@@ -50,7 +51,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
+import calibration
 import db
+import reasons
 from clients.zendure_client import (
     AC_MODE_CHARGE,
     AC_MODE_DISCHARGE,
@@ -128,6 +131,7 @@ class Plan:
     code: str = ""             # Grund-Code (reasons.py) – nur Protokoll, ohne Einfluss auf die Regelung
     data: dict = field(default_factory=dict)
     want_w: Optional[int] = None   # gewünschte Ladeleistung vor dem Einspeise-Deckel (für das Heizstab-Budget)
+    grid: str = ""             # Laden darf aus dem Netz ziehen: "calib" (Kalibrierung) | "override" (Laden erzwungen)
 
 
 def _w(v: Optional[float]) -> Optional[int]:
@@ -157,11 +161,13 @@ def plan(
     base_load_w: Optional[float] = UNLIMITED,
     failsafe: Optional[str] = None,
     export_cap_w: Optional[float] = None,
+    forced: Optional[Plan] = None,
 ) -> Plan:
     """Gewünschte Betriebsart bestimmen (siehe Modul-Docstring).
 
     ``failsafe``: Text, was nicht lesbar ist → Standby (hart). ``export_cap_w``: jetzige
-    Ladeleistung + jetzige Einspeisung am Hauptzähler – Obergrenze für den Ladesollwert."""
+    Ladeleistung + jetzige Einspeisung am Hauptzähler – Obergrenze für den Ladesollwert.
+    ``forced``: Vorgabe der Kalibrierung (Laden aus dem Netz / Pause) – gilt vor allem außer dem Fail-safe."""
     max_c = int(min(zc.max_charge_w, DEVICE_MAX_W))
     max_d = int(min(zc.max_discharge_w, DEVICE_MAX_W))
     soc = st.soc if st.soc is not None else 0.0
@@ -206,9 +212,13 @@ def plan(
     if failsafe:
         desired = Plan("idle", 0, False, f"Fail-safe: {failsafe} nicht lesbar – Batterie im Standby", "blocked",
                        hard=True, code="failsafe_global", data={**nums, "unreadable": failsafe})
+    elif forced is not None:
+        desired = forced
+        desired.data = {**nums, **desired.data}
     elif want_c > 0:
         desired = Plan("charge", target_c, False, reason_c, "override" if override == "on" else "charge",
-                       hard=override == "on", code=code_c, data={**nums, **data_c}, want_w=want_c)
+                       hard=override == "on", code=code_c, data={**nums, **data_c}, want_w=want_c,
+                       grid="override" if override == "on" else "")
     else:
         # --- Entladen -------------------------------------------------------
         if blocked_reason:
@@ -444,13 +454,20 @@ class ZendureControl:
         failsafe: Optional[str] = None,
         export_cap_w: Optional[float] = None,
         wallbox_check: Optional[Callable[[], bool]] = None,
+        meter_import_w: Optional[float] = None,
     ) -> Plan:
         """``wallbox_check``: liest go-e frisch (True = lädt oder nicht lesbar); wird unter dem
-        Schreib-Lock unmittelbar vor jedem Entlade-Befehl aufgerufen."""
+        Schreib-Lock unmittelbar vor jedem Entlade-Befehl aufgerufen. ``meter_import_w``: Hauptzähler
+        jetzt inkl. Batterie (+ = Bezug) – nur für die Netzenergie der Kalibrierung."""
         ctl = db.get_zendure_ctl()
         now = datetime.now()
+        cal = self._calib_load(now)
 
         if st is None:
+            if calibration.is_active(cal):
+                cal, ev = calibration.on_unreadable(cal, now)
+                self._calib_events(ev, None, cal)
+                db.set_calib_state(cal)
             fails = ctl["fail_count"] + 1
             db.set_zendure_ctl(fail_count=fails)
             text = f"Batterie nicht erreichbar ({min(fails, MAX_FAILS)}/{MAX_FAILS})"
@@ -474,18 +491,55 @@ class ZendureControl:
             db.set_zendure_ctl(fail_count=0)
         if not self.dry_run:
             try:
-                self._check_foreign(st, ctl, now)
+                self._check_foreign(st, ctl, now, cal)
             except Exception:
                 log.warning("Zendure: Fremdregler-Prüfung fehlgeschlagen", exc_info=True)
+
+        directive = None
+        if cal is not None:
+            try:
+                ctl_f = db.get_zendure_ctl()
+                inp = calibration.Inputs(
+                    soc=st.soc, charge_w=st.charge_w, grid_in_w=st.grid_in_w, packs=st.packs,
+                    avail_w=max(0.0, avail_w), house_import_w=import_w, meter_import_w=meter_import_w,
+                    wallbox_charging=wallbox_charging,
+                    meter_ok=not (failsafe and "Hauptzähler" in failsafe),
+                    foreign_at=ctl_f.get("foreign_at"),
+                    max_charge_w=int(min(self.zc.max_charge_w, DEVICE_MAX_W)), capacity_wh=self.zc.capacity_wh)
+                if calibration.is_active(cal):
+                    cal["fails_zd"] = 0
+                cal, directive, ev = calibration.step(cal, inp, now)
+                self._calib_events(ev, st, cal)
+                db.set_calib_state(cal)
+            except Exception:
+                log.exception("Kalibrierung: Fehler im Lauf – normale Regelung")
+                directive = None
+
+        zc = self.zc
+        forced = None
+        if directive is not None:
+            if directive.mode == "charge":
+                forced = Plan("charge", directive.limit_w, False, directive.reason, "charge", hard=True,
+                              code=directive.code, data=dict(directive.data), grid="calib")
+            elif directive.mode == "idle":
+                forced = Plan("idle", 0, False, directive.reason, "blocked", hard=True,
+                              code=directive.code, data=dict(directive.data))
+            elif directive.min_soc is not None:
+                zc = dataclasses.replace(zc, min_soc=directive.min_soc, target_soc=100.0)
 
         changed_at = datetime.fromisoformat(ctl["changed_at"]) if ctl["changed_at"] else None
         since = (now - changed_at).total_seconds() if changed_at else 1e9
         p = plan(
-            self.zc, st, avail_w=avail_w, import_w=import_w, wallbox_charging=wallbox_charging,
+            zc, st, avail_w=avail_w, import_w=import_w, wallbox_charging=wallbox_charging,
             override=override, ctl_mode=ctl["mode"], ctl_limit_w=ctl["limit_w"],
             seconds_since_change=since, hysteresis_w=hysteresis_w, base_load_w=base_load_w,
-            failsafe=failsafe, export_cap_w=export_cap_w,
+            failsafe=failsafe, export_cap_w=export_cap_w, forced=forced,
         )
+        if directive is not None and directive.mode == "normal" and directive.code and p.code != "failsafe_global":
+            # Entladephase: normale Regelung (Mindest-SoC 5 %), Grund-Code der Kalibrierung mit dem Detail
+            p.data = {**p.data, **directive.data, "detail": reasons.text(p.code, p.data), "inner": p.code}
+            p.reason = f"{directive.reason} – {p.reason}"
+            p.code = directive.code
 
         reason = p.reason
         if p.write:
@@ -508,7 +562,8 @@ class ZendureControl:
                     else:
                         ok = self.client.set_mode(None, input_limit=0, output_limit=0)
                 if ok:
-                    upd = dict(mode=p.mode, limit_w=p.limit_w, written_at=datetime.now().isoformat(timespec="seconds"))
+                    upd = dict(mode=p.mode, limit_w=p.limit_w, written_at=datetime.now().isoformat(timespec="seconds"),
+                               grid_charge=(p.grid or None) if p.mode == "charge" else None)
                     if p.mode != ctl["mode"]:
                         upd["changed_at"] = now.isoformat(timespec="seconds")
                     db.set_zendure_ctl(**upd)
@@ -517,31 +572,109 @@ class ZendureControl:
                     reason = f"Schreiben fehlgeschlagen ({p.mode} {p.limit_w} W) – neuer Versuch im nächsten Lauf"
                     p.write = False
                     p.code, p.data = "write_failed", {**p.data, "wanted": p.code}
+        elif not p.write and p.mode == ctl["mode"] == "charge" and (p.grid or None) != ctl.get("grid_charge"):
+            db.set_zendure_ctl(grid_charge=p.grid or None)      # Sollwert gleich, Kennzeichen geändert
         db.set_zendure_ctl(decision=reason, decided_at=now.isoformat(timespec="seconds"))
         p.reason = reason
         return p
 
-    def _check_foreign(self, st: ZendureStatus, ctl: dict, now: datetime) -> None:
+    # ---- Kalibrierung ------------------------------------------------------------------
+
+    def _calib_load(self, now: datetime) -> Optional[dict]:
+        """Kalibrier-Zustand laden und eine Anfrage aus den Settings übernehmen (start/stop)."""
+        try:
+            cal = db.get_calib_state()
+            req = db.take_calib_request()
+        except Exception:
+            log.warning("Kalibrierung: Zustand nicht lesbar", exc_info=True)
+            return None
+        if req:
+            ev: list = []
+            if req.get("action") == "start" and not calibration.is_active(cal):
+                try:
+                    params = calibration.validate_params(req.get("params") or {})
+                except ValueError as e:
+                    log.error("Kalibrierung: Start abgelehnt – %s", e)
+                    return cal
+                pending_restore = bool(cal and cal.get("restore_pending"))
+                cal = calibration.begin(params, now, float(self.zc.min_soc))
+                if pending_restore:
+                    cal["restore_pending"] = False      # Gerät steht noch auf 5 % – passt zur neuen Kalibrierung
+                    cal["min_soc_ok"] = True
+                log.info("Kalibrierung gestartet: %s", params)
+                ev.append(("phase", "start"))
+            elif req.get("action") == "stop" and calibration.is_active(cal):
+                calibration._finish(cal, "stopped", now, ev)
+            self._calib_events(ev, None, cal)
+            db.set_calib_state(cal)
+        return cal
+
+    def _calib_events(self, ev: list, st: Optional[ZendureStatus], cal: Optional[dict]) -> None:
+        """Ereignisse aus calibration.step ausführen: Mindest-SoC, Zyklus speichern, Bericht, Log, Standby."""
+        for e in ev:
+            kind, arg = e[0], e[1]
+            try:
+                if kind == "log":
+                    continue
+                if kind == "min_soc" or kind == "min_soc_restore":
+                    pct = arg if kind == "min_soc" else float(self.zc.min_soc)
+                    if self.dry_run:
+                        log.info("[Dry-Run] Kalibrierung: würde Mindest-SoC %g %% ans Gerät schreiben", pct)
+                        ok = True
+                    else:
+                        ok = bool(apply_min_soc(self.client, pct).get("ok"))
+                    if cal is not None and kind == "min_soc":
+                        cal["min_soc_ok"] = ok
+                    elif cal is not None and ok:
+                        cal["restore_pending"] = False
+                        cal["min_soc_ok"] = False
+                    if not ok:
+                        log.error("Kalibrierung: Mindest-SoC %g %% am Gerät nicht bestätigt – neuer Versuch in "
+                                  "%d min", pct, calibration.MIN_SOC_RETRY_S // 60)
+                elif kind == "phase":
+                    if st is not None:
+                        db.record_soc_props(st.props, st.soc, event=f"calib:{arg}")
+                elif kind == "cycle":
+                    db.save_calib_cycle(arg)
+                    log.info("Kalibrierung: Zyklus %s gespeichert (%s)", arg.get("cycle"), arg.get("end_kind"))
+                elif kind == "report" and cal is not None:
+                    rows = db.get_calib_cycles(cal["run_id"])
+                    cal["report"] = calibration.report(rows, _baseline_bms_soc(cal["run_id"]), cal.get("notes"))
+                    log.info("Kalibrierung – Bericht:\n%s", cal["report"])
+                elif kind == "standby":
+                    pass                                 # Standby kommt über die Vorgabe „idle“ (bzw. Fail-safe)
+            except Exception:
+                log.warning("Kalibrierung: Ereignis %s fehlgeschlagen", kind, exc_info=True)
+        for e in ev:
+            if e[0] == "log":
+                _, level, msg = e
+                getattr(log, level, log.info)(msg)
+
+    def _check_foreign(self, st: ZendureStatus, ctl: dict, now: datetime, cal: Optional[dict] = None) -> None:
         """Fremdregler (Sollwerte ohne eigenen Befehl geändert) und minSoc am Gerät prüfen."""
+        active = calibration.is_active(cal)
+        want_min = calibration.device_min_soc(cal, self.zc.min_soc)
         age = _age_s(ctl.get("written_at"), now)
         if age is None or age >= FOREIGN_GRACE_S:
-            dev = foreign_deviation(st, ctl["mode"], ctl["limit_w"], target_soc=self.zc.target_soc,
-                                    min_soc=self.zc.min_soc)
+            dev = foreign_deviation(st, ctl["mode"], ctl["limit_w"], target_soc=100.0 if active else self.zc.target_soc,
+                                    min_soc=calibration.CALIB_MIN_SOC if active else self.zc.min_soc)
             if dev:
                 record_foreign(dev, "Minutenlauf")
+        if active and not cal.get("min_soc_ok"):
+            return                                       # Mindest-SoC 5 % wird gerade von der Kalibrierung geschrieben
         have = st.props.get("minSoc") if st.props else None
         try:
             have = int(float(have))
         except (TypeError, ValueError):
             return
-        want = int(round(float(self.zc.min_soc) * 10))
+        want = int(round(float(want_min) * 10))
         if have == want:
             return
-        record_foreign(f"Mindest-SoC am Gerät {have / 10:g} % statt {self.zc.min_soc:g} %", "Minutenlauf")
+        record_foreign(f"Mindest-SoC am Gerät {have / 10:g} % statt {want_min:g} %", "Minutenlauf")
         fixed = _age_s(ctl.get("min_soc_fixed_at"), now)
         if fixed is None or fixed >= MIN_SOC_REFIX_S:
             db.set_zendure_ctl(min_soc_fixed_at=now.isoformat(timespec="seconds"))
-            apply_min_soc(self.client, self.zc.min_soc)
+            apply_min_soc(self.client, want_min)
 
 
 def force_standby(client: ZendureClient, reason: str, dry_run: bool = False) -> bool:
@@ -557,7 +690,7 @@ def force_standby(client: ZendureClient, reason: str, dry_run: bool = False) -> 
         ok = client.set_mode(None, input_limit=0, output_limit=0)
     try:
         if ok:
-            db.set_zendure_ctl(mode="idle", limit_w=0, changed_at=now, written_at=now)
+            db.set_zendure_ctl(mode="idle", limit_w=0, changed_at=now, written_at=now, grid_charge=None)
         # decided_at bleibt: das ist der Herzschlag der Regelung, den der Watchdog prüft
         db.set_zendure_ctl(decision=f"Standby: {reason}" if ok else f"Standby fehlgeschlagen: {reason}")
     except Exception:
@@ -567,6 +700,17 @@ def force_standby(client: ZendureClient, reason: str, dry_run: bool = False) -> 
     else:
         log.error("Zendure: Standby konnte nicht geschrieben werden – %s", reason)
     return ok
+
+
+def _baseline_bms_soc(run_id: str) -> Optional[float]:
+    """Mittlerer SoC der ersten BMS-Begrenzung in den 14 Tagen vor der Kalibrierung (Vergleichswert)."""
+    try:
+        start = run_id[:10]
+        vals = [r["soc"] for r in db.get_bms_limits(30) if r.get("soc") is not None and r["day"] < start]
+        vals = vals[-14:]
+        return sum(vals) / len(vals) if vals else None
+    except Exception:
+        return None
 
 
 def control_age_s(now: Optional[datetime] = None) -> Optional[float]:

@@ -128,12 +128,29 @@ def _stage(key: str, devs: dict[str, dict], e: dict, temp: Optional[float], comf
     return WAITING, name, f"{name} wartet{why}."
 
 
+CALIB_STATES = {"calib_charge_grid": "Kalibrierung – Laden aus dem Netz",
+                "calib_hold_full": "Kalibrierung – Halten bei 100 %",
+                "calib_paused_wallbox": "Kalibrierung pausiert",
+                "calib_paused_grid": "Kalibrierung pausiert"}
+
+
+def _calib_headline(d: Optional[dict]) -> Optional[dict[str, str]]:
+    """Kalibrierung in Lade-/Haltephase bestimmt die Überschrift (Entladephase: normale Überschrift)."""
+    if not d or d.get("reason") not in CALIB_STATES:
+        return None
+    import reasons
+    return {"state": CALIB_STATES[d["reason"]], "reason": reasons.text(d["reason"], d.get("data")) + "."}
+
+
 def cascade_headline(snap: dict[str, Any], order: list[str], temp: Optional[float], comfort: Optional[float],
                      tmax: float, heater_full: bool = False,
                      measured: Optional[dict[str, float]] = None) -> dict[str, Any]:
     """Überschrift, Text und Profil aus einem Entscheidungs-Schnappschuss."""
     e = snap.get("energy") or {}
     devs = {d["id"]: d for d in snap.get("devices") or []}
+    cal = _calib_headline(devs.get(BATTERY))
+    if cal is not None:
+        return {**cal, "severity": "ok", "profile": PROFILE_DE.get(snap.get("profile"), snap.get("profile") or "")}
     wb = devs.get("wallbox_control")
     wb_conn = None if wb is None else wb.get("reason") != "not_connected"
     surplus = e.get("surplus_w") or 0

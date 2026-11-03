@@ -144,6 +144,7 @@
         </div>
         <div class="big-temp" id="zd-soc">–</div>
         <div class="zd-foreign hidden" id="zd-foreign" role="alert"></div>
+        <div class="zd-calib hidden" id="zd-calib" role="status"></div>
         <div class="zd-bar">
           <div class="zd-cover" id="zd-cover"></div>
           <div class="zd-minmark" id="zd-minmark"></div>
@@ -782,6 +783,20 @@
               <small class="field-hint">Die Batterie deckt nur bis auf diesen Bezug (Puffer): schaltet eine Last ab, geht weniger aus der Batterie ins Netz. 0 = auf 0 W regeln.</small></label>
             <label class="check"><input type="checkbox" name="zendure.control_enabled"> <b>Steuerung aktiv</b> (Laden aus PV-Überschuss, Entladen bei Netzbezug)
               <small class="field-hint">erst einschalten, wenn der Verbindungstest und das acMode-Mapping (1 = Laden, 2 = Entladen) am Gerät geprüft sind. Bei Dry-Run (runtime) wird nur geloggt, nicht geschrieben. Die Kaskade muss aktiv sein.</small></label>
+            <div class="calib-box">
+              <label class="check"><input type="checkbox" id="zd-calib-toggle"> <b>Kalibrierung (Laden aus dem Netz)</b></label>
+              <small class="field-hint">Volle Zyklen gegen den SoC-Versatz: Laden bis 100 % (aus dem Netz + PV), Haltezeit für den Zellausgleich, Entladen bis 5 %. Wirkt sofort (nächste Minute) mit den Werten unten; schaltet sich nach dem letzten Zyklus selbst aus.</small>
+              <div class="form-msg" id="zd-calib-msg"></div>
+              <label>Zyklen<input type="number" step="1" min="1" max="5" name="zendure.calib_cycles"></label>
+              <label>Ladeleistung aus dem Netz (W)<input type="number" step="1" min="500" max="2400" name="zendure.calib_charge_w">
+                <small class="field-hint">PV-Überschuss kommt zusätzlich dazu (bis 2400 W).</small></label>
+              <label>Haltezeit bei 100 % (min)<input type="number" step="1" min="0" max="240" name="zendure.calib_hold_min"></label>
+              <label>Start<select name="zendure.calib_start">
+                  <option value="now">sofort</option><option value="at">ab Uhrzeit</option></select></label>
+              <label>Startzeit<input type="text" inputmode="numeric" pattern="([01][0-9]|2[0-3]):[0-5][0-9]" placeholder="22:00" name="zendure.calib_start_time"></label>
+              <label>Netzbezug gesamt höchstens (W)<input type="number" step="1" min="1000" max="30000" name="zendure.calib_max_grid_w">
+                <small class="field-hint">Zieht das Haus schon viel (Durchlauferhitzer …), wird die Kalibrier-Leistung reduziert. Lädt die Wallbox, pausiert die Kalibrierung.</small></label>
+            </div>
             <p class="note" style="margin-top:4px">Lokale API aktivieren: In der Zendure-App „HEMS hinzufügen" und wieder verlassen.</p>
             <button type="button" id="zendure-test-btn">Verbindung testen</button>
             <div class="form-msg" id="zendure-test-msg"></div>

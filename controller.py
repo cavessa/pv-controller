@@ -226,13 +226,17 @@ class Controller:
             if st is None:
                 return
             r.zendure = st
-            from db import record_zendure, record_zendure_packs
+            from db import record_soc_props, record_zendure, record_zendure_packs
             record_zendure(st.soc, st.charge_w, st.discharge_w)
             if st.packs:
                 try:
                     record_zendure_packs(st.packs)
                 except Exception:
                     log.warning("Zendure: Pack-Werte nicht gespeichert", exc_info=True)
+            try:        # batCalTime/socCompSwitch/socStatus/socLimit (nur lesen): stündlich + bei Änderung
+                record_soc_props(st.props, st.soc)
+            except Exception:
+                log.warning("Zendure: SoC-Properties nicht gespeichert", exc_info=True)
         except Exception:
             log.warning("Zendure-Lesen fehlgeschlagen", exc_info=True)
 

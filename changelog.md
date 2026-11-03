@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-03 – Akku-Kalibrierung: volle Zyklen mit Laden aus dem Netz (Schalter in den Settings)
+
+Anlass: Der Zendure-Support vermutet einen SoC-Versatz (BMS begrenzt schon bei ~80 % auf ~500 W; Pack 1 oben 160 mV, unten bei 10 % SoC ausgeglichen) und empfiehlt mehrere volle Zyklen. Im November reicht die PV nicht.
+- Neues Modul `calibration.py` (reine Zustandsmaschine, Zustand in der DB-Tabelle `zendure_calib`): je Zyklus **Laden** (Kalibrier-Leistung + PV-Überschuss, höchstens 2400 W und „Netz gesamt“ minus Hausbezug) bis 100 % und < 50 W Aufnahme in 3 Läufen (bleibt die Anzeige bei ≥ 98 % hängen und nimmt 30 min nichts auf: auch voll, mit Hinweis), **Halten** (Haltezeit, Laden bleibt freigegeben), **Entladen** normal mit Mindest-SoC 5 % (Gerät `minSoc` 50 mit Readback), bei 5 % nächster Zyklus. Nach dem letzten Zyklus aus, Mindest-SoC zurück (Gerät + Readback, bei Fehler alle 10 min erneut), Kurzbericht.
+- Nur in Lade-/Haltephase: Lade-Deckel, Wächter-Drosselung und Wallbox-Puffer gelten nicht; die Batterie reserviert in der Kaskade den ganzen PV-Überschuss (Heizstab-Budget 0). Lädt die Wallbox (`_wallbox_charging`: car=2 oder > 100 W, nicht lesbar = lädt; unabhängig vom go-e-Modus) → Pause; der Wächter stellt dann sofort auf Standby.
+- Abbruch (Standby, Hinweis, Mindest-SoC zurück): Zellspannung > 3,65 V, Pack-Temperatur > 45 °C, Fremdregler nach dem Start, Zendure bzw. Hauptzähler 3 Läufe in Folge nicht lesbar (ein einzelner Aussetzer ist der bestehende Fail-safe).
+- Eigenes Netzladen ist kein Fremdeingriff: Fremdregler-Prüfung und `minSoc`-Nachschreiben kennen die 5 %; Settings-Änderung des Mindest-SoC schreibt während der Kalibrierung nicht ins Gerät.
+- Neues Kennzeichen `zendure_ctl.grid_charge` („calib“ / „override“): `throttle_tick` drosselt dann nicht. **Fix:** „Laden erzwungen (30 min)“ wurde bisher vom Wächter nach ~6 s auf 0 gedrosselt.
+- Settings (Batterie): Schalter „Kalibrierung (Laden aus dem Netz)“ (wirkt über `POST /api/zendure/calibration`, Übernahme im nächsten Minutenlauf, schaltet sich selbst aus), Zyklen 1–5 (3), Ladeleistung 500–2400 W (1200), Haltezeit 0–240 min (120), Start sofort/ab Uhrzeit, Netzbezug gesamt (10 kW). Config `zendure.calib_*`.
+- Anzeige: Zeile auf der Batterie-Card (Zyklus, Phase, Leistung, SoC, Restzeit; nach dem Ende 7 Tage Bericht bzw. Abbruchgrund), Überschrift „Kalibrierung – Laden aus dem Netz“ / „… Halten bei 100 %“ / „… pausiert“, Grund-Codes `calib_charge_grid`, `calib_hold_full`, `calib_discharge`, `calib_aborted`, `calib_paused_wallbox`, `calib_paused_grid`; Warum-Chat bekommt Zustand und Bericht.
+- Auswertung: Tabelle `zendure_calib_cycle` je Zyklus (Netzenergie, AC-Energie, Ladedauer, SoC der ersten BMS-Begrenzung, max. Zelldifferenz je Pack bei 78–82 % und bei 100 %); Bericht vergleicht mit dem Mittel der BMS-Begrenzung der 14 Tage davor.
+- Nur Mitloggen (nie schreiben): `batCalTime`, `socCompSwitch`, `socStatus`, `socLimit` (+ `socSet`, `minSoc`) in `zendure_soc_props` – stündlich, bei Änderung und bei jedem Kalibrier-Phasenwechsel.
+- Dev (`dry_run`): schreibt nie ans Gerät (weder Sollwerte noch `minSoc`).
+- Tests: `tests/test_calibration.py` (43): Laden trotz Bezug, Deckel außerhalb, Netzgrenze, Haltezeit, Zyklen, 5 % → zurück, Abbrüche, Wallbox-Pause (Minutenlauf + Wächter), keine Entladung ins Auto, Override-Kennzeichen, Dry-Run, Kaskade (Heizstab-Budget 600 → 0 W).
+
 ## 2026-10-27 – Akku-Packs beobachten: Zellen-Differenz, Temperatur, erste BMS-Begrenzung pro Tag
 
 Nur Lesen und Aufzeichnen, keine Regelung geändert. Anlass: Pack 1 mit 3,53/3,36 V (170 mV) bei 84 % SoC, BMS begrenzt ab 80 %.

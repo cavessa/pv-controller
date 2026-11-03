@@ -169,6 +169,49 @@ def init_pv_logging_tables() -> None:
                 PRIMARY KEY (hour, pack)
             )
         """)
+        # Akku-Kalibrierung (03.11.2026): Zustand als JSON (eine Zeile, nur der Minutenlauf schreibt ihn) und
+        # Anfrage aus den Settings (start/stop – der Minutenlauf übernimmt sie, keine Schreib-Kollision)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS zendure_calib (
+                id       INTEGER PRIMARY KEY CHECK (id = 1),
+                state    TEXT,
+                request  TEXT
+            )
+        """)
+        conn.execute("INSERT OR IGNORE INTO zendure_calib (id) VALUES (1)")
+        # je Kalibrier-Zyklus: Netzenergie, Dauer, BMS-Begrenzung, Zelldifferenz bei ~80 % und 100 %
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS zendure_calib_cycle (
+                run_id      TEXT NOT NULL,       -- Start der Kalibrierung (ISO)
+                cycle       INTEGER NOT NULL,
+                started_at  TEXT,
+                full_at     TEXT,
+                ended_at    TEXT,
+                end_kind    TEXT,                -- full | aborted
+                grid_wh     REAL,
+                ac_wh       REAL,
+                charge_s    INTEGER,
+                bms_soc     REAL,
+                diff80      TEXT,                -- JSON {Pack: mV}
+                diff100     TEXT,
+                PRIMARY KEY (run_id, cycle)
+            )
+        """)
+        # SoC-bezogene Geräte-Properties (Bedeutung unbestätigt): stündlich, bei Änderung und bei Kalibrier-Phasen
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS zendure_soc_props (
+                at               TEXT NOT NULL,
+                event            TEXT NOT NULL,  -- hour | change | calib:<Phase>
+                soc              REAL,
+                bat_cal_time     INTEGER,
+                soc_comp_switch  INTEGER,
+                soc_status       INTEGER,
+                soc_limit        INTEGER,
+                soc_set          INTEGER,
+                min_soc          INTEGER
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_zendure_soc_props_at ON zendure_soc_props(at)")
         # Erste Ladebegrenzung durch das BMS pro Tag (Aufnahmegrenze der Kaskade)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS zendure_bms_limit (
@@ -581,7 +624,10 @@ def record_main_meter(power_w: float) -> None:
 
 # written_at: letzter eigener Schreibbefehl; foreign_*: Fremdregler (App/HEMS) erkannt;
 # min_soc_fixed_at: Mindest-SoC zuletzt nachgeschrieben (Flash, höchstens 1×/h)
-_ZENDURE_CTL_EXTRA_COLS = ("written_at", "foreign_at", "foreign_since", "foreign_detail", "min_soc_fixed_at")
+# grid_charge: eigener Ladesollwert darf aus dem Netz ziehen („calib“ Kalibrierung, „override“ Laden erzwungen) –
+# der Wächter drosselt dann nicht
+_ZENDURE_CTL_EXTRA_COLS = ("written_at", "foreign_at", "foreign_since", "foreign_detail", "min_soc_fixed_at",
+                           "grid_charge")
 _ZENDURE_CTL_COLS = ("mode", "limit_w", "changed_at", "fail_count", "decision", "decided_at") + _ZENDURE_CTL_EXTRA_COLS
 
 
@@ -691,6 +737,126 @@ def get_bms_limits(days: int = 14) -> list[dict]:
         conn.row_factory = sqlite3.Row
         return [dict(r) for r in conn.execute(
             "SELECT * FROM zendure_bms_limit WHERE day >= ? ORDER BY day", (since,)).fetchall()]
+
+
+# ---- Akku-Kalibrierung -------------------------------------------------------------------
+
+def get_calib_state() -> Optional[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        r = conn.execute("SELECT state FROM zendure_calib WHERE id = 1").fetchone()
+    if not r or not r[0]:
+        return None
+    try:
+        return json.loads(r[0])
+    except ValueError:
+        log.warning("Kalibrier-Zustand nicht lesbar")
+        return None
+
+
+def set_calib_state(state: Optional[dict]) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("UPDATE zendure_calib SET state = ? WHERE id = 1",
+                     (None if state is None else json.dumps(state),))
+
+
+def get_calib_request() -> Optional[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        r = conn.execute("SELECT request FROM zendure_calib WHERE id = 1").fetchone()
+    try:
+        return json.loads(r[0]) if r and r[0] else None
+    except ValueError:
+        return None
+
+
+def set_calib_request(req: Optional[dict]) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("UPDATE zendure_calib SET request = ? WHERE id = 1",
+                     (None if req is None else json.dumps(req),))
+
+
+def take_calib_request() -> Optional[dict]:
+    """Anfrage aus den Settings übernehmen und löschen (eine Transaktion)."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        r = conn.execute("SELECT request FROM zendure_calib WHERE id = 1").fetchone()
+        if r and r[0]:
+            conn.execute("UPDATE zendure_calib SET request = NULL WHERE id = 1")
+        conn.commit()
+    try:
+        return json.loads(r[0]) if r and r[0] else None
+    except ValueError:
+        return None
+
+
+_CALIB_CYCLE_COLS = ("run_id", "cycle", "started_at", "full_at", "ended_at", "end_kind", "grid_wh", "ac_wh",
+                     "charge_s", "bms_soc", "diff80", "diff100")
+
+
+def save_calib_cycle(row: dict) -> None:
+    vals = [json.dumps(row.get(k)) if k in ("diff80", "diff100") and row.get(k) is not None else row.get(k)
+            for k in _CALIB_CYCLE_COLS]
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(f"INSERT OR REPLACE INTO zendure_calib_cycle ({', '.join(_CALIB_CYCLE_COLS)}) "
+                     f"VALUES ({', '.join('?' for _ in _CALIB_CYCLE_COLS)})", vals)
+
+
+def get_calib_cycles(run_id: str) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM zendure_calib_cycle WHERE run_id = ? ORDER BY cycle", (run_id,)).fetchall()]
+    for r in rows:
+        for k in ("diff80", "diff100"):
+            try:
+                r[k] = json.loads(r[k]) if r[k] else None
+            except ValueError:
+                r[k] = None
+    return rows
+
+
+SOC_PROP_KEYS = (("bat_cal_time", "batCalTime"), ("soc_comp_switch", "socCompSwitch"), ("soc_status", "socStatus"),
+                 ("soc_limit", "socLimit"), ("soc_set", "socSet"), ("min_soc", "minSoc"))
+
+
+def record_soc_props(props: dict, soc, event: str = "hour", now: Optional[datetime] = None) -> bool:
+    """SoC-bezogene Geräte-Properties festhalten (nur lesen, Bedeutung teils unbestätigt).
+
+    ``event="hour"``: nur, wenn in dieser Stunde noch kein Eintrag steht oder sich ein Wert geändert hat
+    (dann als „change“). Andere Events (Kalibrier-Phasen) immer. True = gespeichert."""
+    now = now or datetime.now()
+
+    def _int(v):
+        try:
+            return int(float(v))
+        except (TypeError, ValueError):
+            return None
+    vals = {col: _int((props or {}).get(key)) for col, key in SOC_PROP_KEYS}
+    if all(v is None for v in vals.values()):
+        return False
+    cols = [c for c, _ in SOC_PROP_KEYS]
+    with sqlite3.connect(DB_PATH) as conn:
+        if event == "hour":
+            last = conn.execute(f"SELECT at, {', '.join(cols)} FROM zendure_soc_props ORDER BY at DESC LIMIT 1"
+                                ).fetchone()
+            if last is not None:
+                same_hour = last[0][:13] == now.isoformat()[:13]
+                changed = list(last[1:]) != [vals[c] for c in cols]
+                if same_hour and not changed:
+                    return False
+                if changed:
+                    event = "change"
+        conn.execute(f"INSERT INTO zendure_soc_props (at, event, soc, {', '.join(cols)}) "
+                     f"VALUES (?, ?, ?, {', '.join('?' for _ in cols)})",
+                     [now.isoformat(timespec="seconds"), event, soc] + [vals[c] for c in cols])
+    return True
+
+
+def get_soc_props(days: int = 14) -> list[dict]:
+    since = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM zendure_soc_props WHERE at >= ? ORDER BY at", (since,)).fetchall()]
 
 
 CONSUMER_READ_MARK = "__read__"
