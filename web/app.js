@@ -568,17 +568,7 @@ function renderEnergyFlow(heater, wb, cs, zd, wp, wh) {
       aktiv: on, flow: on, target: "whirlpool-card",
     });
   }
-  if (wh?.enabled) {
-    // Durchlauferhitzer: eigener 3EM, nur Anzeige (Teil des Hausverbrauchs)
-    const w = wh.power_w;
-    const on = w != null && w > 50;
-    bots.push({
-      icon: "🚿", label: (wh.name || "Durchlauferhitzer").toUpperCase().slice(0, 11),
-      value: !wh.reachable ? "n/a" : w == null ? "?" : kwOrW(w),
-      sub: !wh.reachable ? "offline" : on ? "heizt" : "aus",
-      aktiv: on, flow: on, target: "waterheater-card",
-    });
-  }
+  // Durchlauferhitzer: keine Kachel im Energiefluss (nur Zeile in der Verbraucher-Card)
   if (lastDishwasher?.enabled) {
     // Geschirrspüler (Home Connect): Status-Kachel, Leistung steckt im Hausverbrauch
     const d = lastDishwasher, o = d.obs || {};

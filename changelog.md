@@ -4,6 +4,7 @@
 
 - In der Prod-`config.json` war `waterheater_meter` aus und ohne Adresse, deshalb lief der Durchlauferhitzer (~19 kW) komplett unter „Rest“ in der Verbraucher-Card. Werte aus der Dev-Config über `PUT /api/config` übernommen (enabled, url, type, name). Kein Code geändert.
 - Verbraucher-Card: Der Durchlauferhitzer (eigener 3EM) erscheint als eigene Zeile, nach Leistung einsortiert (offline → „–“, ausgegraut). Nicht in „Σ gemessen“, im Rest wie bisher abgezogen. `/api/status` → `consumers.waterheater` (name, power_w, reachable). Test `test_status_block_waterheater_row`.
+- Energiefluss: Kachel des Durchlauferhitzers entfernt (nur noch Zeile in der Verbraucher-Card). Prod-Name auf „FeWo02 Durchlauferhitzer“ gesetzt (Config).
 
 ## 2026-11-03 – Akku-Kalibrierung: volle Zyklen mit Laden aus dem Netz (Schalter in den Settings)
 
