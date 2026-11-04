@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-11-04 – Batterie-Card: Gerät- und Pack-Temperatur getrennt
+
+- „Temperatur“ war die Wechselrichter-Temperatur (`hyperTmp`, beim Laden mit 2 kW ~49 °C) und wurde für Akku-Temperatur gehalten. Jetzt zwei Zeilen: „Temperatur Gerät“ und „Temperatur Pack 1/2/3“ (aus `packData.maxTemp`, wie in der Zendure-App).
+- `/api/zendure` → neues Feld `pack_temps_c` (Liste je Pack, °C). Test `test_pack_temps_in_status_block`.
+
 ## 2026-11-03 – Durchlauferhitzer: Zähler in Prod eingeschaltet, eigene Zeile in der Verbraucher-Card
 
 - In der Prod-`config.json` war `waterheater_meter` aus und ohne Adresse, deshalb lief der Durchlauferhitzer (~19 kW) komplett unter „Rest“ in der Verbraucher-Card. Werte aus der Dev-Config über `PUT /api/config` übernommen (enabled, url, type, name). Kein Code geändert.

@@ -3180,6 +3180,13 @@ function renderZendureCard(z) {
   $("#zd-charged").textIfChanged = k(z.charged_kwh);
   $("#zd-discharged").textIfChanged = k(z.discharged_kwh);
   $("#zd-temp").textIfChanged = z.temp_c != null ? Math.round(z.temp_c) + " °C" : "–";
+  // Pack-Temperaturen getrennt vom Gerät (Wechselrichter wird beim Laden deutlich wärmer)
+  const pt = z.pack_temps_c || [];
+  $("#zd-ptemp-row").classList.toggle("hidden", !pt.length);
+  if (pt.length) {
+    $("#zd-ptemp-label").textIfChanged = `Temperatur Pack ${pt.map((_, i) => i + 1).join("/")}`;
+    $("#zd-ptemp").textIfChanged = pt.map(t => t == null ? "–" : Math.round(t)).join(" / ") + " °C";
+  }
   // Nutzbarer Inhalt (über Mindest-SoC) und Reichweite bei der aktuellen Leistung
   const capWh = z.capacity_wh ?? 0;
   const usable = z.soc != null && capWh ? Math.max(0, (z.soc - (z.min_soc ?? 0)) / 100 * capWh) : null;

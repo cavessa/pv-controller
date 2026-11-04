@@ -1625,6 +1625,7 @@ details.wb-raw[open] > summary::before { content: '▾ '; }
 /* Akku-Packs: Zellen-Differenz (Beobachtung), 7-Tage-Verlauf */
 .zd-packs { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
 .zd-packs.hidden, .zd-packs-alert.hidden { display: none; }
+.kv > div#zd-ptemp-row.hidden { display: none; }
 .zd-packs-row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .zd-packs-row span { color: var(--text-dim); font-size: 11px; letter-spacing: 0.04em; }
 .zd-packs-row b { font-size: 13px; font-variant-numeric: tabular-nums; font-weight: 500; white-space: nowrap; }

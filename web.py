@@ -492,7 +492,9 @@ def _zendure_status_block(cfg: Config, r) -> dict[str, Any]:
         "discharge_w": st.discharge_w if st is not None else None,
         "grid_in_w": st.grid_in_w if st is not None else None,
         "home_out_w": st.home_out_w if st is not None else None,
-        "temp_c": st.temp_c if st is not None else None,
+        "temp_c": st.temp_c if st is not None else None,   # Gerät (Wechselrichter, hyperTmp)
+        "pack_temps_c": [None if p.get("temp_c") is None else round(p["temp_c"], 1) for p in (st.packs or [])]
+        if st is not None else [],
         "min_soc": z.min_soc,
         "target_soc": z.target_soc,
         "capacity_wh": z.capacity_wh,

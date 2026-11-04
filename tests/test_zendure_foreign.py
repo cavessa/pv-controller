@@ -170,6 +170,15 @@ class StatusBlockTest(DbCase):
         self.assertTrue(f["active"])
         self.assertEqual(f["device_min_soc"], 5.0)
 
+    def test_pack_temps_in_status_block(self):
+        cfg = SimpleNamespace(zendure=SimpleNamespace(**{**ZC.__dict__, "control_enabled": True, "name": "Batterie",
+                                                         "capacity_wh": 8640}), zendure_active=True)
+        r = SimpleNamespace(zendure=ZendureStatus(soc=44, temp_c=49.0, props={},
+                                                  packs=[{"temp_c": 38.04}, {"temp_c": 23.0}, {"temp_c": None}]))
+        b = web._zendure_status_block(cfg, r)
+        self.assertEqual((b["temp_c"], b["pack_temps_c"]), (49.0, [38.0, 23.0, None]))
+        self.assertEqual(web._zendure_status_block(cfg, SimpleNamespace(zendure=None))["pack_temps_c"], [])
+
     def test_old_detection_inactive(self):
         old = (datetime.now() - timedelta(minutes=20)).isoformat(timespec="seconds")
         db.set_zendure_ctl(foreign_at=old, foreign_since=old, foreign_detail="x")
